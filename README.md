@@ -116,8 +116,8 @@ Configuration is managed through `settings.toml` with support for multiple marke
 - **Database**: Local SQLite (`wcmktprod.db`) with Turso sync
 
 **Deployment Market (Optional)**:
-- **Region ID**: `10000001` (The Forge)
-- **System ID**: `30000072` (Nakah)
+- **Region ID**: `10000023` (Pure Blind)
+- **System ID**: `30002029` (B-9C24)
 - **Database**: Local SQLite (`wcmktnorth2.db`) with Turso sync
 
 **Watchlist**: DB table with ~850 common items and all WinterCo Doctrine ships and fittings.

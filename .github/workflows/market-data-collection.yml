@@ -7,6 +7,15 @@ on:
 
   workflow_dispatch: # Allow manual triggering
     inputs:
+      market:
+        description: 'Market to process'
+        required: true
+        default: 'both'
+        type: choice
+        options:
+          - primary
+          - deployment
+          - both
       include_history:
         description: 'Include historical data processing'
         required: false
@@ -16,6 +25,10 @@ on:
 jobs:
   collect-market-data:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        market: ${{ fromJSON(github.event.inputs.market == 'both' && '["primary", "deployment"]' || github.event.inputs.market == '' && '["primary", "deployment"]' || format('["{0}"]', github.event.inputs.market)) }}
 
     steps:
     - name: Checkout repository
@@ -45,6 +58,7 @@ jobs:
             'mkts_backend',
             'mkts_backend.cli',
             'mkts_backend.config.config',
+            'mkts_backend.config.market_context',
             'mkts_backend.config.logging_config',
             'mkts_backend.db.models',
             'mkts_backend.db.db_handlers',
@@ -72,10 +86,13 @@ jobs:
         echo "TURSO_SDE_TOKEN=${{ secrets.TURSO_SDE_TOKEN }}" >> $GITHUB_ENV
         echo "TURSO_FITTING_URL=${{ secrets.TURSO_FITTING_URL }}" >> $GITHUB_ENV
         echo "TURSO_FITTING_TOKEN=${{ secrets.TURSO_FITTING_TOKEN }}" >> $GITHUB_ENV
+        # Primary market (4-HWWF / wcmktprod)
         echo "TURSO_WCMKTPROD_URL=${{ secrets.TURSO_WCMKTPROD_URL }}" >> $GITHUB_ENV
         echo "TURSO_WCMKTPROD_TOKEN=${{ secrets.TURSO_WCMKTPROD_TOKEN }}" >> $GITHUB_ENV
+        # Deployment market (B-9C24 / wcmktnorth)
+        echo "TURSO_WCMKTNORTH_URL=${{ secrets.TURSO_WCMKTNORTH_URL }}" >> $GITHUB_ENV
+        echo "TURSO_WCMKTNORTH_TOKEN=${{ secrets.TURSO_WCMKTNORTH_TOKEN }}" >> $GITHUB_ENV
 
-    #- name: Set up Google Service Account
     - name: Write Google Service Account JSON
       env:
         GOOGLE_SA_JSON: ${{ secrets.GOOGLE_SA_JSON }}
@@ -87,11 +104,6 @@ jobs:
         echo "GOOGLE_APPLICATION_CREDENTIALS=$GITHUB_WORKSPACE/creds.json" >> $GITHUB_ENV
         # if you use pygsheets, this also works:
         echo "PYGSHEETS_JSON=$GITHUB_WORKSPACE/creds.json" >> $GITHUB_ENV
-        #run: not currently implemented. add reference to secrets.GOOGLE_SHEET_KEY to use.
-
-    - name: Set up EVE SSO refresh token
-      run: |
-        echo "REFRESH_TOKEN=${{ secrets.REFRESH_TOKEN }}" >> $GITHUB_ENV
 
     - name: Set up EVE SSO refresh token
       run: |
@@ -99,6 +111,7 @@ jobs:
 
     - name: Debug environment variables
       run: |
+        echo "Processing market: ${{ matrix.market }}"
         echo "Checking if required environment variables are set:"
         echo "CLIENT_ID is set: $([ -n "$CLIENT_ID" ] && echo "YES" || echo "NO")"
         echo "SECRET_KEY is set: $([ -n "$SECRET_KEY" ] && echo "YES" || echo "NO")"
@@ -110,25 +123,27 @@ jobs:
         echo "TURSO_FITTING_TOKEN is set: $([ -n "$TURSO_FITTING_TOKEN" ] && echo "YES" || echo "NO")"
         echo "TURSO_WCMKTPROD_URL is set: $([ -n "$TURSO_WCMKTPROD_URL" ] && echo "YES" || echo "NO")"
         echo "TURSO_WCMKTPROD_TOKEN is set: $([ -n "$TURSO_WCMKTPROD_TOKEN" ] && echo "YES" || echo "NO")"
+        echo "TURSO_WCMKTNORTH_URL is set: $([ -n "$TURSO_WCMKTNORTH_URL" ] && echo "YES" || echo "NO")"
+        echo "TURSO_WCMKTNORTH_TOKEN is set: $([ -n "$TURSO_WCMKTNORTH_TOKEN" ] && echo "YES" || echo "NO")"
 
     - name: Run market data collection
       run: |
+        HISTORY_FLAG=""
         if [ "${{ github.event.inputs.include_history }}" = "true" ]; then
-          uv run mkts-backend --history
+          HISTORY_FLAG="--history"
         elif [ "$(date -u +%H)" = "12" ]; then
           # Run with --history flag at 12:00 UTC
-          uv run mkts-backend --history
-        else
-          # Run without flags for all other scheduled runs
-          uv run mkts-backend
+          HISTORY_FLAG="--history"
         fi
+        echo "Running: uv run mkts-backend --market=${{ matrix.market }} $HISTORY_FLAG"
+        uv run mkts-backend --market=${{ matrix.market }} $HISTORY_FLAG
       timeout-minutes: 30
 
     - name: Upload logs as artifacts
       uses: actions/upload-artifact@v4
       if: always()
       with:
-        name: market-data-logs-${{ github.run_number }}
+        name: market-data-logs-${{ matrix.market }}-${{ github.run_number }}
         path: logs/
         retention-days: 7
 
@@ -138,3 +153,4 @@ jobs:
         rm -f wcdoctrines-1f629d861c2f.json
         rm -f token.json
         rm -f .env
+        rm -f creds.json

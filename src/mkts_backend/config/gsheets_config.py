@@ -3,13 +3,16 @@ import os
 import json
 import re
 from pathlib import Path
-from typing import Optional, List
+from typing import Optional, List, TYPE_CHECKING
 
 import gspread
 import pandas as pd
 from google.oauth2.service_account import Credentials
 
 from mkts_backend.config.logging_config import configure_logging
+
+if TYPE_CHECKING:
+    from mkts_backend.config.market_context import MarketContext
 
 logger = configure_logging(__name__)
 
@@ -47,13 +50,34 @@ class GoogleSheetConfig:
         private_key_file: Optional[str] = None,
         sheet_url: Optional[str] = None,
         sheet_name: Optional[str] = None,
+        market_context: Optional["MarketContext"] = None,
     ):
+        """
+        Initialize Google Sheets configuration.
+
+        Args:
+            private_key_file: Path to service account JSON file.
+            sheet_url: Google Sheets URL.
+            sheet_name: Default worksheet name.
+            market_context: Optional MarketContext that provides sheet URL and worksheets.
+                           When provided, takes precedence over sheet_url parameter.
+        """
         # Allow env overrides without changing code
         # For local dev: use GOOGLE_SERVICE_ACCOUNT_FILE (filename only, resolved to project root)
         # For CI: use GOOGLE_APPLICATION_CREDENTIALS (full path)
         self.google_private_key_file = private_key_file or self._resolve_credentials_file()
-        self.google_sheet_url = sheet_url or os.getenv("GOOGLE_SHEET_URL") or self._google_sheet_url
-        self.sheet_name = sheet_name or os.getenv("GOOGLE_SHEET_NAME") or self._default_sheet_name
+
+        if market_context is not None:
+            # Use MarketContext for configuration (preferred method)
+            self.google_sheet_url = market_context.gsheets_url
+            self.worksheets = market_context.gsheets_worksheets
+            self.sheet_name = sheet_name or self.worksheets.get("market_data", self._default_sheet_name)
+            logger.info(f"GoogleSheetConfig initialized from MarketContext: {market_context.name}")
+        else:
+            # Legacy initialization (backward compatibility)
+            self.google_sheet_url = sheet_url or os.getenv("GOOGLE_SHEET_URL") or self._google_sheet_url
+            self.sheet_name = sheet_name or os.getenv("GOOGLE_SHEET_NAME") or self._default_sheet_name
+            self.worksheets = {}
 
         self._client: Optional[gspread.Client] = None
         self._spreadsheet: Optional[gspread.Spreadsheet] = None

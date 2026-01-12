@@ -4,14 +4,29 @@ import time
 import httpx
 from aiolimiter import AsyncLimiter
 import backoff
+from typing import Optional, TYPE_CHECKING
 from mkts_backend.config.config import DatabaseConfig
 from mkts_backend.config.esi_config import ESIConfig
 from mkts_backend.config.logging_config import configure_logging
 
+if TYPE_CHECKING:
+    from mkts_backend.config.market_context import MarketContext
+
 logger = configure_logging(__name__)
 request_count = 0
 
-HEADERS = {"User-Agent": ESIConfig("primary").user_agent}
+# Default headers - can be overridden when market_ctx is provided
+_DEFAULT_HEADERS = None
+
+def _get_headers(market_ctx: Optional["MarketContext"] = None) -> dict:
+    """Get headers with user agent, optionally using market context."""
+    global _DEFAULT_HEADERS
+    if market_ctx is not None:
+        esi = ESIConfig(market_context=market_ctx)
+        return {"User-Agent": esi.user_agent}
+    if _DEFAULT_HEADERS is None:
+        _DEFAULT_HEADERS = {"User-Agent": ESIConfig("primary").user_agent}
+    return _DEFAULT_HEADERS
 
 
 def _on_backoff(details):
@@ -25,7 +40,7 @@ def _on_backoff(details):
     giveup=lambda e: isinstance(e, httpx.HTTPStatusError) and e.response.status_code in {400, 403, 404},
     on_backoff=_on_backoff,
 )
-async def call_one(client: httpx.AsyncClient, type_id: int, length: int, region_id: int, limiter: AsyncLimiter, sema: asyncio.Semaphore) -> dict:
+async def call_one(client: httpx.AsyncClient, type_id: int, length: int, region_id: int, limiter: AsyncLimiter, sema: asyncio.Semaphore, headers: dict) -> dict:
     global request_count
 
     total_req = length
@@ -34,7 +49,7 @@ async def call_one(client: httpx.AsyncClient, type_id: int, length: int, region_
         async with sema:
             r = await client.get(
                 f"https://esi.evetech.net/markets/{region_id}/history",
-                headers=HEADERS,
+                headers=headers,
                 params={"type_id": str(type_id)},
                 timeout=30.0,
             )
@@ -52,13 +67,23 @@ async def call_one(client: httpx.AsyncClient, type_id: int, length: int, region_
             return {"type_id": type_id, "data": r.json()}
 
 
-async def async_history(watchlist: list[int] = None, region_id: int = None):
-    # Default to primary region if none specified
+async def async_history(watchlist: list[int] = None, region_id: int = None, market_ctx: Optional["MarketContext"] = None):
+    # Get headers and defaults based on market context
+    headers = _get_headers(market_ctx)
+
+    # Default to market context region, then primary region if none specified
     if region_id is None:
-        region_id = ESIConfig("primary").region_id
+        if market_ctx is not None:
+            region_id = market_ctx.region_id
+        else:
+            region_id = ESIConfig("primary").region_id
 
     if watchlist is None:
-        watchlist = DatabaseConfig("wcmkt").get_watchlist()
+        if market_ctx is not None:
+            db = DatabaseConfig(market_context=market_ctx)
+        else:
+            db = DatabaseConfig("wcmkt")
+        watchlist = db.get_watchlist()
         type_ids = watchlist["type_id"].unique().tolist()
     else:
         type_ids = watchlist
@@ -71,14 +96,14 @@ async def async_history(watchlist: list[int] = None, region_id: int = None):
 
     t0 = time.perf_counter()
     async with httpx.AsyncClient(http2=True) as client:
-        results = await asyncio.gather(*(call_one(client, tid, length, region_id, limiter, sema) for tid in type_ids))
+        results = await asyncio.gather(*(call_one(client, tid, length, region_id, limiter, sema, headers) for tid in type_ids))
     logger.info(f"Got {len(results)} results in {time.perf_counter()-t0:.1f}s")
     logger.info(f"Request count: {request_count}")
     return results
 
 
-def run_async_history(watchlist: list[int] = None, region_id: int = None):
-    return asyncio.run(async_history(watchlist, region_id))
+def run_async_history(watchlist: list[int] = None, region_id: int = None, market_ctx: Optional["MarketContext"] = None):
+    return asyncio.run(async_history(watchlist, region_id, market_ctx))
 
 
 if __name__ == "__main__":

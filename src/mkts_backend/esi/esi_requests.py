@@ -24,12 +24,8 @@ def fetch_market_orders(esi: ESIConfig, order_type: str = "all", etag: str = Non
         request_count += 1
         logger.info(f"NEW REQUEST: request_count: {request_count}, page: {page}, max_pages: {max_pages}")
 
-        if esi.alias == "primary":
-            querystring = {"page": str(page)}
-        elif esi.alias == "secondary":
-            querystring = {"page": str(page), "order_type": order_type}
-        else:
-            raise ValueError(f"Invalid alias: {esi.alias}. Valid aliases are: {esi._valid_aliases}")
+        # Both primary and deployment use structure markets with same query format
+        querystring = {"page": str(page)}
         logger.info(f"querystring: {querystring}")
 
         response = requests.get(url, headers=headers, params=querystring, timeout=10)
@@ -259,62 +255,6 @@ def fetch_region_item_history(region_id: int, type_id: int) -> list[dict]:
     except Exception as e:
         print(f"    Unexpected error for type_id {type_id}: {e}")
         return []
-
-
-def fetch_region_history(watchlist: pd.DataFrame) -> list[dict]:
-    esi = ESIConfig("secondary")
-    MARKET_HISTORY_URL = esi.market_history_url
-
-    logger.info("Fetching history")
-    if watchlist is None or watchlist.empty:
-        logger.error("No watchlist provided or watchlist is empty")
-        return None
-    else:
-        logger.info("Watchlist found")
-        print(f"Watchlist found: {len(watchlist)} items")
-
-    type_ids = watchlist["type_id"].tolist()
-    logger.info(f"Fetching history for {len(type_ids)} types")
-
-    headers = esi.headers()
-
-    history = []
-    watchlist_length = len(watchlist)
-    for i, type_id in enumerate(type_ids):
-        item_name = watchlist[watchlist["type_id"] == type_id]["type_name"].values[0]
-        try:
-            url = f"{MARKET_HISTORY_URL}"
-            querystring = {"type_id": str(type_id)}
-
-            print(f"\rFetching history for ({i + 1}/{watchlist_length})", end="", flush=True)
-            response = requests.get(url, headers=headers, params=querystring)
-            response.raise_for_status()
-
-            if response.status_code == 200:
-                data = response.json()
-                for record in data:
-                    record["type_name"] = item_name
-                    record["type_id"] = type_id
-
-                if isinstance(data, list):
-                    history.extend(data)
-                else:
-                    logger.warning(f"Unexpected data format for {item_name}")
-            else:
-                logger.error(f"Error fetching history for {item_name}: {response.status_code}")
-        except Exception as e:
-            logger.error(f"Error processing {item_name}: {e}")
-            continue
-
-    if history:
-        logger.info(f"Successfully fetched {len(history)} total history records")
-        with open("region_history.json", "w") as f:
-            json.dump(history, f)
-        return history
-    else:
-        logger.error("No history records found")
-        return None
-
 
 if __name__ == "__main__":
     pass

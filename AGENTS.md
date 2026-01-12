@@ -1,16 +1,44 @@
-# LLM Agent Guide: Eve Online Market Data System Setup
+# LLM Agent Guide: Eve Online Market Data System
 
-This guide helps LLM agents assist users in implementing the Eve Online Market Data Collection and Analysis System for their own market structures and regions.
+This guide provides comprehensive documentation for LLM agents working with this Eve Online Market Data Collection and Analysis System. It covers both assisting users in implementing their own system and working with the existing codebase.
+
+## Quick Start for Development
+
+**Run the main application:**
+```bash
+uv run mkts-backend
+```
+
+**Include historical data:**
+```bash
+uv run mkts-backend --history
+```
+
+**Specify a market (uses primary market by default):**
+```bash
+uv run mkts-backend --market=deployment  # Uses deployment market config
+```
+
+**Check database tables:**
+```bash
+uv run mkts-backend --check_tables
+```
+
+**Dependencies are managed with uv:**
+```bash
+uv sync  # Install dependencies
+uv add <package>  # Add new dependency
+```
 
 ## System Overview
 
-This is a comprehensive market data system consisting of two repositories:
+This is a comprehensive Eve Online market data collection and analysis system consisting of two repositories:
 
 1. **mkts_backend** (this repo): Backend data collection, processing, and storage
-   - Fetches market data from Eve Online ESI API
-   - Processes and stores data in SQLite databases
-   - Calculates market statistics and doctrine availability
-   - Updates Google Sheets with market data
+   - Fetches market data from Eve Online ESI API for specific structures/regions
+   - Processes and stores market orders, history, and calculated statistics in SQLite databases
+   - Analyzes doctrine fits and calculates market availability for ship loadouts
+   - Tracks regional/system market data with automated Google Sheets integration
    - Supports local and remote (Turso) database sync
 
 2. **wcmkts_new** (frontend): Streamlit web application for data visualization
@@ -18,6 +46,157 @@ This is a comprehensive market data system consisting of two repositories:
    - Displays market statistics and trends
    - Shows doctrine/fitting availability
    - Provides interactive data exploration
+
+## Core Components and Architecture
+
+### Main Data Flow (`cli.py`)
+The primary orchestration file that coordinates all data collection and processing:
+- `fetch_market_orders()` - Gets current market orders from ESI API with OAuth
+- `fetch_history()` - Gets historical market data for watchlist items from primary region
+- `fetch_jita_history()` - Gets comparative historical data from The Forge region (Jita)
+- `calculate_market_stats()` - Computes statistics from orders and history
+- `calculate_doctrine_stats()` - Analyzes ship fitting availability
+- Regional order processing and system-specific market analysis
+
+### Database Layer (`config/config.py`, `db/db_handlers.py`)
+Manages all database operations:
+- **DatabaseConfig class**: Handles both local SQLite and remote Turso database sync
+  - Supports MarketContext-based initialization (preferred) or legacy alias-based init
+  - `verify_db_exists()`: Ensures database and metadata are in consistent state
+    - Handles 4 cases: neither exists, both exist, db without metadata, metadata without db
+    - Automatically syncs from remote or nukes inconsistent states
+  - `sync()`: Syncs local database with remote Turso database
+  - `nuke()`: Safely removes local database and metadata files
+- **db_handlers.py**: CRUD operations on market data tables
+- ORM-based data insertion with chunking for large datasets
+
+### Data Models (`models.py`)
+SQLAlchemy ORM model definitions:
+- **Core Models:** `MarketOrders`, `MarketHistory`, `MarketStats`, `Doctrines`, `Watchlist`
+- **Regional Models:** `RegionOrders`, `JitaHistory` (comparative pricing from The Forge)
+- **Organizational Models:** `ShipTargets`, `DoctrineMap`, `DoctrineInfo`
+- Tables stored in market-specific databases (e.g., `wcmktprod.db`, `wcmktnorth2.db`)
+
+### OAuth Authentication (`ESI_OAUTH_FLOW.py` / `esi_auth.py`)
+Handles Eve Online SSO authentication:
+- Eve Online SSO authentication for ESI API access
+- Token refresh and storage in `token.json`
+- Manages OAuth flow for initial authorization
+
+### Regional Market Processing (`nakah.py`)
+Specialized regional market data handling:
+- `get_region_orders()` - Fetches all market orders for a region
+- `process_system_orders()` - Processes orders for specific systems
+- `calculate_total_market_value()` - Calculates total market value excluding blueprints/skills
+- `calculate_total_ship_count()` - Counts ships available on the market
+
+### Google Sheets Integration (`google_sheets_utils.py` / `gsheets_config.py`)
+Automated spreadsheet updates:
+- Automated Google Sheets updates with market data
+- Service account authentication
+- Configurable append/replace data modes
+
+### Data Processing (`data_processing.py`)
+Statistics and analysis calculations:
+- Market statistics calculation with 5th percentile pricing
+- Doctrine availability analysis
+- Historical data integration (30-day averages)
+
+## Key Configuration Values
+
+Configuration is now managed through `settings.toml` with market-specific configs:
+
+### Primary Market (Production)
+- **Name:** 4-HWWF Keepstar
+- **Structure ID:** `1035466617946`
+- **Region ID:** `10000003` (The Vale of Silent)
+- **System ID:** `30000240`
+- **Database:** `wcmktprod.db` with Turso sync
+
+### Deployment Market (Optional)
+- **Name:** Nakah Market
+- **Region ID:** `10000001` (The Forge)
+- **System ID:** `30000072` (Nakah)
+- **Database:** `wcmktnorth2.db` with Turso sync
+
+### Configuration Files
+- **Market Settings:** `src/mkts_backend/config/settings.toml`
+- **ESI Config:** Auto-generated from MarketContext based on settings.toml
+- **Watchlist:** Database table with ~850 common items and WinterCo doctrine ships/fittings
+
+## External Dependencies
+
+- **EVE Static Data Export (SDE):** `sde.db` - game item/type information (synced from Turso)
+- **Custom dbtools:** External dependency package `mydbtools` for database utilities
+- **Turso/libsql:** For remote database synchronization (optional in dev, required in production)
+- **Google Sheets API:** For automated market data reporting (optional)
+
+## Data Processing Flow
+
+The complete data pipeline when running the application:
+
+1. **Initialize**: Load market configuration from settings.toml based on `--market` flag (defaults to primary)
+2. **Database Setup**: Verify database exists with `verify_db_exists()` (syncs from Turso if needed)
+3. **Authenticate**: Authenticate with Eve SSO using required scopes
+4. **Market Orders**: Fetch current market orders for configured structure
+5. **Historical Data** (optional with `--history` flag):
+   - Primary market history → `MarketHistory` table
+   - Jita comparative history (The Forge) → `JitaHistory` table (if configured)
+6. **Statistics**: Calculate market statistics (price, volume, days remaining)
+7. **Doctrine Analysis**: Analyze ship fitting availability based on market data
+8. **Regional Processing**: Update regional orders for the market's region
+9. **System Analysis**: Process system-specific orders and calculate market value/ship count
+10. **Google Sheets** (if enabled): Update spreadsheets with system market data
+11. **Storage**: Store all results in local database with automatic Turso sync
+
+## Environment Variables Required
+
+```env
+# Eve Online ESI Credentials (Required)
+CLIENT_ID=<eve_sso_client_id>
+SECRET_KEY=<eve_sso_client_secret>
+REFRESH_TOKEN=<your_refresh_token_here>
+
+# Google Sheets (Optional)
+GOOGLE_SHEET_KEY={"type":"service_account"...}  # Entire JSON key file content
+# OR
+GOOGLE_SHEETS_PRIVATE_KEY=<filename.json>  # Path to service account key file
+
+# Turso Remote Database (Production)
+TURSO_WCMKTPROD_URL=<production_market_db_url>
+TURSO_WCMKTPROD_TOKEN=<production_market_db_token>
+
+# Turso Remote Database (Optional - Testing/Development)
+TURSO_WCMKTTEST_URL=<test_market_db_url>
+TURSO_WCMKTTEST_TOKEN=<test_market_db_token>
+
+# Turso Remote Database (Optional - Deployment Market)
+TURSO_WCMKTNORTH_URL=<deployment_market_db_url>
+TURSO_WCMKTNORTH_TOKEN=<deployment_market_db_token>
+
+# Turso Remote Database (Shared Resources)
+TURSO_SDE_URL=<sde_db_url>
+TURSO_SDE_TOKEN=<sde_db_token>
+TURSO_FITTING_URL=<fitting_db_url>
+TURSO_FITTING_TOKEN=<fitting_db_token>
+```
+
+## Additional Features
+
+- **Multi-Market Support:** Configure and process multiple markets independently via `--market` flag
+- **Comparative Market Analysis:** Dual-region history tracking (primary market vs Jita) for price comparison charts
+- **Market Value Calculation:** Filters out blueprints and skills for accurate market value assessment
+- **Ship Count Tracking:** Specifically tracks ship availability on the market
+- **Google Sheets Automation:** Automatically updates spreadsheets with latest market data
+- **Database State Management:** Automatic verification and sync of database consistency
+- **Multi-Region Support:** Handles both structure-specific and region-wide market data
+- **Async Processing:** High-performance concurrent API requests with rate limiting and backoff
+- **Error Handling:** Comprehensive logging and error recovery for API failures
+- **GitHub Actions Integration:** Automated scheduled data collection via workflows
+
+---
+
+## User Implementation Guide
 
 ## Prerequisites Checklist
 
@@ -135,27 +314,36 @@ TURSO_SDE_TOKEN=your_sde_token_here
 
 ### Step 5: Customize Market Configuration
 
-Edit `src/mkts_backend/config/esi_config.py` to match user's market:
+Edit `src/mkts_backend/config/settings.toml` to match user's markets:
 
-```python
-class ESIConfig:
-    # Update these values for your market
-    _region_ids = {
-        "primary_region_id": 10000003,  # Change to your region ID
-        "secondary_region_id": None     # Optional secondary market
-    }
-    _system_ids = {
-        "primary_system_id": 30000240,  # Change to your system ID
-        "secondary_system_id": None
-    }
-    _structure_ids = {
-        "primary_structure_id": 1035466617946,  # Change to your structure ID
-        "secondary_structure_id": None
-    }
-    _names = {
-        "primary": "Your Structure Name",
-        "secondary": "Secondary Market Name"
-    }
+```toml
+[markets.primary]
+name = "Your Structure Name"
+region_id = 10000003        # Change to your region ID
+system_id = 30000240        # Change to your system ID
+structure_id = 1035466617946  # Change to your structure ID
+database_alias = "wcmktprod"
+database_file = "wcmktprod.db"
+turso_url_env = "TURSO_WCMKTPROD_URL"
+turso_token_env = "TURSO_WCMKTPROD_TOKEN"
+
+[markets.deployment]  # Optional second market
+name = "Deployment Market Name"
+region_id = 10000001
+system_id = 30000072
+structure_id = 1046831245129  # Change to your structure ID
+database_alias = "wcmktnorth"
+database_file = "wcmktnorth2.db"
+turso_url_env = "TURSO_WCMKTNORTH_URL"
+turso_token_env = "TURSO_WCMKTNORTH_TOKEN"
+
+# Optional: Configure Jita comparative pricing for each market
+[markets.primary.jita_comparison]
+enabled = true
+region_id = 10000002  # The Forge
+
+[markets.deployment.jita_comparison]
+enabled = false
 ```
 
 **Finding Your IDs**:
@@ -192,13 +380,19 @@ If tracking doctrine availability, add ship fittings:
 ### Step 7: Initialize Databases
 
 ```bash
-# First run will create local SQLite databases
+# First run will verify databases exist and sync from Turso if configured
 uv run mkts-backend
 
-# This creates:
-# - wcmkt2.db (main market database)
+# The system will automatically:
+# 1. Check if database files exist with proper metadata
+# 2. Sync from Turso remote if files are missing or inconsistent
+# 3. Create tables if needed
+
+# This creates local copies of:
+# - wcmktprod.db (primary market database)
+# - wcmktnorth2.db (deployment market database, if configured)
 # - wcfitting.db (fittings/doctrines)
-# - sde_info.db (Eve static data export)
+# - sde.db (Eve static data export)
 ```
 
 **Database Schema**:
@@ -207,6 +401,17 @@ uv run mkts-backend
 - `marketstats`: Calculated statistics
 - `doctrines`: Fitting availability analysis
 - `watchlist`: Items being tracked
+- `region_orders`: Regional market data
+- `ship_targets`: Ship production targets
+- `doctrine_map`: Doctrine to fitting mappings
+- `doctrine_info`: Doctrine metadata
+
+**Database State Management**:
+The system uses `verify_db_exists()` to ensure database consistency:
+- If neither database nor metadata exists: syncs from remote
+- If both exist: validates and continues
+- If database exists without metadata: nukes and re-syncs
+- If metadata exists without database: nukes metadata and re-syncs
 
 ### Step 8: Configure Google Sheets Integration (Optional)
 
@@ -267,7 +472,7 @@ pip install -r requirements.txt
 The frontend needs access to the backend database. Options:
 
 1. **Local Database** (development):
-   - Copy or symlink `wcmkt2.db` from backend to frontend directory
+   - Copy or symlink market database files (e.g., `wcmktprod.db`) from backend to frontend directory
    - Update database path in frontend config
 
 2. **Remote Database** (production):
@@ -351,14 +556,42 @@ To switch to a different market structure:
 4. Link doctrines in `doctrine_map` table
 5. Run doctrine analysis: `uv run mkts-backend`
 
-### Multi-Region Support
+### Multi-Market Support
 
-To track multiple regions:
+To track multiple markets simultaneously:
 
-1. Update `esi_config.py` with secondary market IDs
-2. Add secondary watchlist if needed
-3. Run separate data collection jobs
-4. Frontend can display multi-region comparisons
+1. **Configure Markets**: Add market configurations to `settings.toml`
+   ```toml
+   [markets.primary]
+   name = "Primary Market"
+   # ... configuration
+
+   [markets.deployment]
+   name = "Deployment Market"
+   # ... configuration
+   ```
+
+2. **Set Environment Variables**: Add Turso credentials for each market
+   ```env
+   TURSO_WCMKTPROD_URL=...
+   TURSO_WCMKTPROD_TOKEN=...
+   TURSO_WCMKTNORTH_URL=...
+   TURSO_WCMKTNORTH_TOKEN=...
+   ```
+
+3. **Run Individual Markets**:
+   ```bash
+   # Process primary market (default)
+   uv run mkts-backend --history
+
+   # Process deployment market
+   uv run mkts-backend --market=deployment --history
+   ```
+
+4. **GitHub Actions Parallel Processing**:
+   - Use matrix strategy in `.github/workflows/market-data-collection.yml`
+   - Process multiple markets in parallel jobs
+   - Each job runs independently with its own database
 
 ## Troubleshooting Guide
 
@@ -492,8 +725,8 @@ Data Flow:
    ↓ (OAuth authenticated requests)
 2. Backend Data Collection (mkts_backend)
    ↓ (SQLAlchemy ORM)
-3. SQLite Database (wcmkt2.db)
-   ↓ (Optional: libsql sync)
+3. SQLite Database (wcmktprod.db, wcmktnorth2.db, etc.)
+   ↓ (libsql sync with verify_db_exists)
 4. Turso Remote Database
    ↓ (SQLite connection)
 5. Streamlit Frontend (wcmkts_new)

@@ -2,6 +2,7 @@ import sys
 import json
 import time
 import os
+from typing import Optional
 
 from mkts_backend.config.logging_config import configure_logging
 from mkts_backend.db.db_queries import get_table_length
@@ -31,6 +32,7 @@ from mkts_backend.utils.validation import validate_all
 from mkts_backend.utils.parse_fits import update_fit_workflow, parse_fit_metadata
 from mkts_backend.config.config import load_settings, DatabaseConfig
 from mkts_backend.config.gsheets_config import GoogleSheetConfig
+from mkts_backend.config.market_context import MarketContext
 
 settings = load_settings(file_path="src/mkts_backend/config/settings.toml")
 logger = configure_logging(__name__)
@@ -52,8 +54,11 @@ def check_tables():
     db.engine.dispose()
 
 def display_cli_help():
-    print("\nUsage: mkts-backend [--history|--include-history] [--check_tables] [add_watchlist --type_id=<list[int]>] [parse-items --input=<file> --output=<file>] [update-fit --fit-file=<path> --meta-file=<path> [--remote] [--no-clear] [--dry-run] [--target=<wcmkt|wcmktnorth>|--north]]\n")
+    print("\nUsage: mkts-backend [--market=<alias>|--primary|--deployment] [--history|--include-history] [--check_tables] [add_watchlist --type_id=<list[int]>] [parse-items --input=<file> --output=<file>] [update-fit --fit-file=<path> --meta-file=<path> [--remote] [--no-clear] [--dry-run] [--target=<wcmkt|wcmktnorth>|--north]]\n")
     print("""Options:\n
+  [--market=<alias>]: Select market to process (primary, deployment). Default: primary\n
+  [--primary]: Shorthand for --market=primary\n
+  [--deployment]: Shorthand for --market=deployment\n
   [--history | --include-history]: Include history processing\n
   [--check_tables]:  Check the tables in the database\n
   [add_watchlist]: --type_id=<list>: Add items to watchlist by type IDs (comma-separated --type_id=81144,88001,89240)\n
@@ -62,7 +67,8 @@ def display_cli_help():
   [parse-items --input=<file> --output=<file>]: Parse Eve structure data and create CSV with pricing from database\n
   [sync]: Sync the database\n
   [validate]: Validate the database\n
-  [--validate-env]: Validate environment credentials and exit\n\n
+  [--validate-env]: Validate environment credentials and exit\n
+  [--list-markets]: List available market configurations\n\n
 """)
 
 def process_add_watchlist(type_ids_str: str, remote: bool = False):
@@ -107,18 +113,23 @@ def process_add_watchlist(type_ids_str: str, remote: bool = False):
         print(f"Error: {e}")
         return False
 
-def process_market_orders(esi: ESIConfig, order_type: str = "all", test_mode: bool = False) -> bool:
-    """Fetches market orders from ESI and updates the database"""
+def process_market_orders(
+    esi: ESIConfig,
+    order_type: str = "all",
+    test_mode: bool = False,
+    market_ctx: Optional[MarketContext] = None
+) -> bool:
+    """Fetches market orders from ESI and updates the database."""
     save_path = "data/market_orders_new.json"
     data = fetch_market_orders(esi, order_type=order_type, test_mode=test_mode)
     if data:
         with open(save_path, "w") as f:
             json.dump(data, f)
         logger.info(f"ESI returned {len(data)} market orders. Saved to {save_path}")
-        status = update_market_orders(data)
+        status = update_market_orders(data, market_ctx=market_ctx)
         if status:
-            log_update("marketorders",remote=True)
-            logger.info(f"Orders updated:{get_table_length('marketorders')} items")
+            log_update("marketorders", remote=True, market_ctx=market_ctx)
+            logger.info(f"Orders updated:{get_table_length('marketorders', market_ctx=market_ctx)} items")
             return True
         else:
             logger.error(
@@ -129,26 +140,26 @@ def process_market_orders(esi: ESIConfig, order_type: str = "all", test_mode: bo
         logger.error("no data returned from ESI call.")
         return False
 
-def process_history():
+def process_history(market_ctx: Optional[MarketContext] = None):
     logger.info("History mode enabled")
     logger.info("Processing history")
-    data = run_async_history()
+    data = run_async_history(market_ctx=market_ctx)
     if data:
         with open("data/market_history_new.json", "w") as f:
             json.dump(data, f)
-        status = update_history(data)
+        status = update_history(data, market_ctx=market_ctx)
         if status:
-            log_update("market_history",remote=True)
-            logger.info(f"History updated:{get_table_length('market_history')} items")
+            log_update("market_history", remote=True, market_ctx=market_ctx)
+            logger.info(f"History updated:{get_table_length('market_history', market_ctx=market_ctx)} items")
             return True
         else:
             logger.error("Failed to update market history")
             return False
 
-def process_market_stats():
+def process_market_stats(market_ctx: Optional[MarketContext] = None):
     logger.info("Calculating market stats")
     logger.info("syncing database")
-    db = DatabaseConfig("wcmkt")
+    db = DatabaseConfig(market_context=market_ctx) if market_ctx else DatabaseConfig("wcmkt")
     db.sync()
     logger.info("database synced")
     logger.info("validating database")
@@ -160,7 +171,7 @@ def process_market_stats():
         raise Exception("database validation failed in market stats")
 
     try:
-        market_stats_df = calculate_market_stats()
+        market_stats_df = calculate_market_stats(market_ctx=market_ctx)
         if len(market_stats_df) > 0:
             logger.info(f"Market stats calculated: {len(market_stats_df)} items")
         else:
@@ -183,10 +194,10 @@ def process_market_stats():
         return False
     try:
         logger.info("Updating market stats in database")
-        status = upsert_database(MarketStats, market_stats_df)
+        status = upsert_database(MarketStats, market_stats_df, market_ctx=market_ctx)
         if status:
-            log_update("marketstats",remote=True)
-            logger.info(f"Market stats updated:{get_table_length('marketstats')} items")
+            log_update("marketstats", remote=True, market_ctx=market_ctx)
+            logger.info(f"Market stats updated:{get_table_length('marketstats', market_ctx=market_ctx)} items")
             return True
         else:
             logger.error("Failed to update market stats")
@@ -195,10 +206,10 @@ def process_market_stats():
         logger.error(f"Failed to update market stats: {e}")
         return False
 
-def process_doctrine_stats():
+def process_doctrine_stats(market_ctx: Optional[MarketContext] = None):
     logger.info("Calculating doctrines stats")
     logger.info("syncing database")
-    db = DatabaseConfig("wcmkt")
+    db = DatabaseConfig(market_context=market_ctx) if market_ctx else DatabaseConfig("wcmkt")
     db.sync()
     logger.info("database synced")
     logger.info("validating database")
@@ -209,28 +220,48 @@ def process_doctrine_stats():
         logger.error("database validation failed")
         raise Exception("database validation failed in doctrines stats")
 
-    doctrine_stats_df = calculate_doctrine_stats()
+    doctrine_stats_df = calculate_doctrine_stats(market_ctx=market_ctx)
     doctrine_stats_df = convert_datetime_columns(doctrine_stats_df, ["timestamp"])
-    status = upsert_database(Doctrines, doctrine_stats_df)
+    status = upsert_database(Doctrines, doctrine_stats_df, market_ctx=market_ctx)
     if status:
-        log_update("doctrines",remote=True)
-        logger.info(f"Doctrines updated:{get_table_length('doctrines')} items")
+        log_update("doctrines", remote=True, market_ctx=market_ctx)
+        logger.info(f"Doctrines updated:{get_table_length('doctrines', market_ctx=market_ctx)} items")
         return True
     else:
         logger.error("Failed to update doctrines")
         return False
 
-def google_sheets_update_workflow():
-    settings = load_settings(file_path="src/mkts_backend/config/settings.toml")
-    google_sheet_url2 = settings["google_sheets"]["sheet_url2"]
-    google_sheet_config = GoogleSheetConfig(sheet_url=google_sheet_url2)
-    update_google_sheet(google_sheet_config, sheet_name="market_orders_4h", table_name="marketorders")
-    update_google_sheet(google_sheet_config, sheet_name="market_data_4h", table_name="marketstats")
+def google_sheets_update_workflow(market_ctx: Optional[MarketContext] = None):
+    """Update Google Sheets with market data."""
+    if market_ctx is not None:
+        # Use market-specific Google Sheets configuration
+        google_sheet_config = GoogleSheetConfig(market_context=market_ctx)
+        worksheets = market_ctx.gsheets_worksheets
 
-def update_google_sheet(google_sheet_config: GoogleSheetConfig, sheet_name: str, table_name: str):
+        # Update market orders sheet
+        market_orders_sheet = worksheets.get("market_orders", "market_orders")
+        update_google_sheet(google_sheet_config, sheet_name=market_orders_sheet, table_name="marketorders", market_ctx=market_ctx)
+
+        # Update market data sheet
+        market_data_sheet = worksheets.get("market_data", "market_data")
+        update_google_sheet(google_sheet_config, sheet_name=market_data_sheet, table_name="marketstats", market_ctx=market_ctx)
+    else:
+        # Legacy behavior for backward compatibility
+        settings = load_settings(file_path="src/mkts_backend/config/settings.toml")
+        google_sheet_url2 = settings["google_sheets"]["sheet_url2"]
+        google_sheet_config = GoogleSheetConfig(sheet_url=google_sheet_url2)
+        update_google_sheet(google_sheet_config, sheet_name="market_orders_4h", table_name="marketorders")
+        update_google_sheet(google_sheet_config, sheet_name="market_data_4h", table_name="marketstats")
+
+def update_google_sheet(
+    google_sheet_config: GoogleSheetConfig,
+    sheet_name: str,
+    table_name: str,
+    market_ctx: Optional[MarketContext] = None
+):
     import pandas as pd
 
-    db = DatabaseConfig("wcmkt")
+    db = DatabaseConfig(market_context=market_ctx) if market_ctx else DatabaseConfig("wcmkt")
     engine = db.engine
     with engine.connect() as conn:
         df = pd.read_sql_table(table_name, conn)
@@ -245,6 +276,28 @@ def parse_args(args: list[str])->dict | None:
 
     if "--help" in args:
         display_cli_help()
+        exit()
+
+    # Parse --market flag (supports --market=<alias>, --primary, --deployment shorthands)
+    market_alias = "primary"  # default
+    for arg in args:
+        if arg.startswith("--market="):
+            market_alias = arg.split("=", 1)[1]
+            break
+        elif arg == "--deployment":
+            market_alias = "deployment"
+            break
+        elif arg == "--primary":
+            market_alias = "primary"
+            break
+    return_args["market"] = market_alias
+
+    if "--list-markets" in args:
+        available = MarketContext.list_available()
+        print(f"Available markets: {', '.join(available)}")
+        for alias in available:
+            ctx = MarketContext.from_settings(alias)
+            print(f"  {alias}: {ctx.name} (region={ctx.region_id}, db={ctx.database_alias})")
         exit()
 
     if "--check_tables" in args:
@@ -381,17 +434,25 @@ def parse_args(args: list[str])->dict | None:
         exit()
 
     if "--history" in args or "--include-history" in args:
-        history = True
-        return_args["history"] = history
+        return_args["history"] = True
+    else:
+        return_args["history"] = False
+
+    # If we have a market specified but no other command, run the main workflow
+    if return_args.get("market"):
         return return_args
 
     display_cli_help()
     exit()
 
-def main(history: bool = False):
-    """Main function to process market orders, history, market stats, and doctrines"""
-    # Accept flags when invoked via console_script entrypoint
+def main(history: bool = False, market_alias: str = "primary"):
+    """
+    Main function to process market orders, history, market stats, and doctrines.
 
+    Args:
+        history: Whether to include historical data processing.
+        market_alias: Market alias to process (e.g., "primary", "deployment").
+    """
     start_time = time.perf_counter()
 
     # Validate environment credentials before proceeding
@@ -411,21 +472,41 @@ def main(history: bool = False):
     logger.info(f"Data directory created: {os.path.abspath('data')}")
     logger.info("=" * 80)
 
+    # Parse command line arguments
     if len(sys.argv) > 1:
         args = parse_args(sys.argv)
 
-        if args is not None and "history" in args:
-            history = args["history"]
+        if args is not None:
+            history = args.get("history", False)
+            market_alias = args.get("market", "primary")
         else:
             return
 
-    esi = ESIConfig("primary")
-    db = DatabaseConfig("wcmkt")
-    logger.info(f"Database: {db.alias}")
-    validation_test = db.validate_sync()
+    # Create MarketContext for the selected market
+    try:
+        market_ctx = MarketContext.from_settings(market_alias)
+    except ValueError as e:
+        logger.error(f"Invalid market: {e}")
+        print(f"Error: {e}")
+        print(f"Available markets: {', '.join(MarketContext.list_available())}")
+        sys.exit(1)
 
+    logger.info("=" * 80)
+    logger.info(f"Processing market: {market_ctx.name} ({market_ctx.alias})")
+    logger.info(f"  Region: {market_ctx.region_id}")
+    logger.info(f"  Structure: {market_ctx.structure_id}")
+    logger.info(f"  Database: {market_ctx.database_alias}")
+    logger.info("=" * 80)
+
+    # Initialize configurations using MarketContext
+    esi = ESIConfig(market_context=market_ctx)
+    db = DatabaseConfig(market_context=market_ctx)
+    logger.info(f"Database: {db.alias} ({db.path})")
+
+    # Validate and sync database
+    validation_test = db.validate_sync()
     if not validation_test:
-        logger.warning("wcmkt database is not up to date. Updating...")
+        logger.warning(f"{db.alias} database is not up to date. Syncing...")
         db.sync()
         logger.info("database synced")
         validation_test = db.validate_sync()
@@ -433,13 +514,13 @@ def main(history: bool = False):
             logger.info("database validated")
         else:
             logger.error("database validation failed")
-            raise Exception("database validation failed in main")
+            raise Exception(f"database validation failed for {db.alias}")
 
     print("=" * 80)
-    print("Fetching market orders")
+    print(f"Fetching market orders for {market_ctx.name}")
     print("=" * 80)
 
-    status = process_market_orders(esi, order_type="all", test_mode=False)
+    status = process_market_orders(esi, order_type="all", test_mode=False, market_ctx=market_ctx)
     if status:
         logger.info("Market orders updated")
     else:
@@ -456,25 +537,23 @@ def main(history: bool = False):
         exit()
 
     if history:
-        logger.info("Processing history ")
-        status = process_history()
+        logger.info("Processing history")
+        status = process_history(market_ctx=market_ctx)
         if status:
             logger.info("History updated")
         else:
             logger.error("Failed to update history")
-
-
     else:
         logger.info("History mode disabled. Skipping history processing")
 
-    status = process_market_stats()
+    status = process_market_stats(market_ctx=market_ctx)
     if status:
         logger.info("Market stats updated")
     else:
         logger.error("Failed to update market stats")
         exit()
 
-    status = process_doctrine_stats()
+    status = process_doctrine_stats(market_ctx=market_ctx)
     if status:
         logger.info("Doctrines updated")
     else:
@@ -483,12 +562,12 @@ def main(history: bool = False):
 
     if settings["google_sheets"]["enabled"]:
         logger.info("Google Sheets are enabled in settings.toml. Updating Google Sheets")
-        google_sheets_update_workflow()
+        google_sheets_update_workflow(market_ctx=market_ctx)
     else:
         logger.info("Google Sheets are disabled in settings.toml. Skipping Google Sheets update")
 
     logger.info("=" * 80)
-    logger.info(f"Market job complete in {time.perf_counter()-start_time:.1f}s")
+    logger.info(f"Market job complete for {market_ctx.name} in {time.perf_counter()-start_time:.1f}s")
     logger.info("=" * 80)
 
 

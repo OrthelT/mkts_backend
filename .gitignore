@@ -15,7 +15,6 @@ logs/
 *.csv
 market_orders.sqlite
 CLAUDE.md
-tests/
 archive/
 db_cleanup.py
 hfi.txt
@@ -52,3 +51,4 @@ new_zealot993.txt
 *.txt
 archive/
 *.bak
+rebuild_database.py

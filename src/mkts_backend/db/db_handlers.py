@@ -5,6 +5,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from dotenv import load_dotenv
 from datetime import datetime, timezone
+from typing import Optional, TYPE_CHECKING
 import time
 import numpy as np
 import os
@@ -21,12 +22,31 @@ from mkts_backend.db.models import Base, MarketHistory, MarketOrders, UpdateLog
 from mkts_backend.config.config import DatabaseConfig
 from mkts_backend.db.db_queries import get_table_length, get_remote_status
 
+if TYPE_CHECKING:
+    from mkts_backend.config.market_context import MarketContext
 
 load_dotenv()
 logger = configure_logging(__name__)
 
-db = DatabaseConfig("wcmkt")
-sde_db = DatabaseConfig("sde")
+# Lazy initialization - these will be initialized on first use or via market_ctx
+_db = None
+_sde_db = None
+
+def _get_db(market_ctx: Optional["MarketContext"] = None) -> DatabaseConfig:
+    """Get database config, optionally using market context."""
+    if market_ctx is not None:
+        return DatabaseConfig(market_context=market_ctx)
+    global _db
+    if _db is None:
+        _db = DatabaseConfig("wcmkt")
+    return _db
+
+def _get_sde_db() -> DatabaseConfig:
+    """Get SDE database config (shared across all markets)."""
+    global _sde_db
+    if _sde_db is None:
+        _sde_db = DatabaseConfig("sde")
+    return _sde_db
 
 def handle_nulls(df: pd.DataFrame, tabname: str) -> pd.DataFrame:
     # CRITICAL SAFETY CHECK: Clean all NaN/inf values before conversion to dict
@@ -96,12 +116,17 @@ def handle_nulls(df: pd.DataFrame, tabname: str) -> pd.DataFrame:
                     df[col] = df[col].fillna(0)
     return df
 
-def upsert_database(table: Base, df: pd.DataFrame) -> bool:
-    """Upsert data into the database
+def upsert_database(
+    table: Base,
+    df: pd.DataFrame,
+    market_ctx: Optional["MarketContext"] = None
+) -> bool:
+    """Upsert data into the database.
 
     Args:
         table: The table model to update
         df: The DataFrame containing the data to update
+        market_ctx: Optional MarketContext for market-specific database
 
     Returns:
         True if successful, False otherwise
@@ -120,20 +145,15 @@ def upsert_database(table: Base, df: pd.DataFrame) -> bool:
         logger.error(f"No data to upsert into {tabname}")
         return False
 
-    #MAX_PARAMETER_BYTES = 256 * 1024
-    #BYTES_PER_PARAMETER = 8
-    #MAX_PARAMETERS = MAX_PARAMETER_BYTES // BYTES_PER_PARAMETER
-
     column_count = len(df.columns)
     chunk_size = 1000
-    #chunk_size = min(100, MAX_PARAMETERS // column_count)
 
     logger.info(
         f"Table {table.__tablename__} has {column_count} columns, using chunk size {chunk_size}"
     )
 
-    db = DatabaseConfig("wcmkt")
-    logger.info(f"updating: {db}")
+    db = _get_db(market_ctx)
+    logger.info(f"updating: {db.alias} ({db.path})")
 
     remote_engine = db.remote_engine
     session = Session(bind=remote_engine)
@@ -292,10 +312,16 @@ def upsert_database(table: Base, df: pd.DataFrame) -> bool:
         remote_engine.dispose()
     return True
 
-def update_history(history_results: list[dict]):
-    """Prepares data for update to the market_history table, then calls upsert_database to update the table
+def update_history(
+    history_results: list[dict],
+    market_ctx: Optional["MarketContext"] = None
+):
+    """Prepares data for update to the market_history table, then calls upsert_database to update the table.
+
     Args:
         history_results: List of dicts, each containing history data from the ESI
+        market_ctx: Optional MarketContext for market-specific database
+
     Returns:
         True if successful, False otherwise
     """
@@ -330,12 +356,11 @@ def update_history(history_results: list[dict]):
     logger.info(f"Expected columns: {list(valid_history_columns)}")
 
     # Get type names efficiently with bulk lookup
-    from mkts_backend.utils.utils import sde_db
-    import sqlalchemy as sa
     from sqlalchemy import text
 
     unique_type_ids = history_df['type_id'].unique()
 
+    sde_db = _get_sde_db()
     engine = sde_db.engine
     with engine.connect() as conn:
         placeholders = ','.join([':type_id_' + str(i) for i in range(len(unique_type_ids))])
@@ -364,25 +389,29 @@ def update_history(history_results: list[dict]):
     history_df.fillna(0)
 
     try:
-        upsert_database(MarketHistory, history_df)
+        upsert_database(MarketHistory, history_df, market_ctx=market_ctx)
     except Exception as e:
         logger.error(f"history data update failed: {e}")
         return False
 
-    status = get_remote_status()['market_history']
+    status = get_remote_status(market_ctx=market_ctx)['market_history']
     if status > 0:
-        logger.info(f"History updated:{get_table_length('market_history')} items")
-        print(f"History updated:{get_table_length('market_history')} items")
+        logger.info(f"History updated:{get_table_length('market_history', market_ctx=market_ctx)} items")
+        print(f"History updated:{get_table_length('market_history', market_ctx=market_ctx)} items")
     else:
         logger.error("Failed to update market history")
         return False
     return True
 
-def update_market_orders(orders: list[dict]) -> bool:
-    """Prepares data for update to the marketorders table, then calls upsert_database to update the table
-    
+def update_market_orders(
+    orders: list[dict],
+    market_ctx: Optional["MarketContext"] = None
+) -> bool:
+    """Prepares data for update to the marketorders table, then calls upsert_database to update the table.
+
     Args:
         orders: List of dicts, each containing order data from the ESI
+        market_ctx: Optional MarketContext for market-specific database
 
     Returns:
         True if successful, False otherwise
@@ -402,22 +431,33 @@ def update_market_orders(orders: list[dict]) -> bool:
     orders_df = validate_columns(orders_df, valid_columns)
 
     logger.info(f"Orders fetched:{len(orders_df)} items")
-    status = upsert_database(MarketOrders, orders_df)
+    status = upsert_database(MarketOrders, orders_df, market_ctx=market_ctx)
     if status:
-        logger.info(f"Orders updated:{get_table_length('marketorders')} items")
+        logger.info(f"Orders updated:{get_table_length('marketorders', market_ctx=market_ctx)} items")
         return True
     else:
         logger.error("Failed to update market orders")
         return False
 
-def log_update(table_name: str, remote: bool = False):
-    db = DatabaseConfig("wcmkt")
+def log_update(
+    table_name: str,
+    remote: bool = False,
+    market_ctx: Optional["MarketContext"] = None
+):
+    """Log a table update timestamp.
+
+    Args:
+        table_name: Name of the table that was updated
+        remote: Whether to use remote database
+        market_ctx: Optional MarketContext for market-specific database
+    """
+    db = _get_db(market_ctx)
     engine = db.remote_engine if remote else db.engine
 
     session = Session(bind=engine)
     with session.begin():
         session.execute(delete(UpdateLog).where(UpdateLog.table_name == table_name))
-        session.add(UpdateLog(table_name=table_name,timestamp=datetime.now(timezone.utc)))
+        session.add(UpdateLog(table_name=table_name, timestamp=datetime.now(timezone.utc)))
         session.commit()
         session.close()
 

@@ -1,8 +1,11 @@
+from __future__ import annotations
+from typing import Iterable
+import requests
+
 import pandas as pd
 import json
 import sqlalchemy as sa
 from sqlalchemy import text, create_engine
-import requests
 from mkts_backend.config.config import DatabaseConfig
 from mkts_backend.config.esi_config import ESIConfig
 from mkts_backend.config.logging_config import configure_logging
@@ -15,7 +18,12 @@ fittings_db = DatabaseConfig("fittings")
 wcmkt_db = DatabaseConfig("wcmkt")
 
 def get_type_names_from_df(df: pd.DataFrame) -> pd.DataFrame:
-    engine = sa.create_engine(sde_db.url)
+    verify_db_exists = sde_db.verify_db_exists()
+    if not verify_db_exists:
+        logger.error("SDE database is not up to date. Exiting...")
+        sde_db.sync()
+    
+    engine = sde_db.engine
     with engine.connect() as conn:
         stmt = text("SELECT typeID, typeName, groupName, categoryName, categoryID FROM inv_info")
         res = conn.execute(stmt)
@@ -125,19 +133,27 @@ def update_watchlist_data(esi: ESIConfig, watchlist_csv: str = "data/watchlist.c
     logger.info(f"Watchlist updated: {len(df)} items")
     return True
 
-def init_databases():
-    aliases = ["wcmkt", "sde", "fittings"]
+
+def init_databases(aliases: str | list[str] | None = None) -> None:
+    if aliases is None:
+        aliases = ["sde", "fittings"]
+    elif isinstance(aliases, str):
+        aliases = [aliases]
+
     for alias in aliases:
-        logger.info(f"Initializing database {alias}")
+        logger.debug(f"connecting to database {alias}")
         try:
             db = DatabaseConfig(alias)
-            logger.info(f"Database {alias} initialized")
+            db.verify_db_exists()
         except Exception as e:
             logger.warning(f"Error initializing database {alias}: {e}")
             continue
         try:
-            db.verify_db_exists()
-            logger.info(f"Database {alias} verified")
+            if db.needs_init():
+                logger.info(f"initializing database {alias}")
+                db.sync()
+            else:
+                logger.info(f"Database {alias} verified")
         except Exception as e:
             logger.warning(f"Error initializing database {alias}: {e}")
 

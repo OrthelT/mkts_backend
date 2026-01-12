@@ -1,4 +1,5 @@
 import pandas as pd
+from typing import Optional, TYPE_CHECKING
 from mkts_backend.config.logging_config import configure_logging
 from mkts_backend.utils.db_utils import fix_null_doctrine_stats_timestamps
 from mkts_backend.db.models import MarketStats, MarketHistory
@@ -7,11 +8,25 @@ from sqlalchemy.orm import Session
 from sqlalchemy import select, func
 from mkts_backend.db.db_queries import get_remote_status
 
-wcmkt_db = DatabaseConfig("wcmkt")
+if TYPE_CHECKING:
+    from mkts_backend.config.market_context import MarketContext
 
 logger = configure_logging(__name__)
 
-def calculate_5_percentile_price() -> pd.DataFrame:
+# Lazy database initialization
+_wcmkt_db = None
+
+def _get_db(market_ctx: Optional["MarketContext"] = None) -> DatabaseConfig:
+    """Get database config, optionally using market context."""
+    if market_ctx is not None:
+        return DatabaseConfig(market_context=market_ctx)
+    global _wcmkt_db
+    if _wcmkt_db is None:
+        _wcmkt_db = DatabaseConfig("wcmkt")
+    return _wcmkt_db
+
+
+def calculate_5_percentile_price(market_ctx: Optional["MarketContext"] = None) -> pd.DataFrame:
     query = """
     SELECT
     type_id,
@@ -19,7 +34,8 @@ def calculate_5_percentile_price() -> pd.DataFrame:
     FROM marketorders
     WHERE is_buy_order = 0
     """
-    engine = wcmkt_db.engine
+    db = _get_db(market_ctx)
+    engine = db.engine
     with engine.connect() as conn:
         df = pd.read_sql_query(query, conn)
     conn.close()
@@ -30,7 +46,7 @@ def calculate_5_percentile_price() -> pd.DataFrame:
     df.columns = ["type_id", "5_perc_price"]
     return df
 
-def calculate_market_stats() -> pd.DataFrame:
+def calculate_market_stats(market_ctx: Optional["MarketContext"] = None) -> pd.DataFrame:
     query = """
     SELECT
     w.type_id,
@@ -71,7 +87,7 @@ def calculate_market_stats() -> pd.DataFrame:
     GROUP BY type_id
     ) AS h ON w.type_id = h.type_id
     """
-    db = DatabaseConfig("wcmkt")
+    db = _get_db(market_ctx)
     engine = db.engine
     with engine.connect() as conn:
         df = pd.read_sql_query(query, conn)
@@ -79,13 +95,13 @@ def calculate_market_stats() -> pd.DataFrame:
     engine.dispose()
 
     logger.info("Calculating 5 percentile price")
-    df2 = calculate_5_percentile_price()
+    df2 = calculate_5_percentile_price(market_ctx)
     logger.info("Merging 5 percentile price with market stats")
     df = df.merge(df2, on="type_id", how="left")
     df = df.rename(columns={"5_perc_price": "price"})
 
 
-    df = fill_nulls_from_history(df)
+    df = fill_nulls_from_history(df, market_ctx)
 
 
     df["last_update"] = pd.Timestamp.now(tz="UTC")
@@ -104,7 +120,7 @@ def calculate_market_stats() -> pd.DataFrame:
     logger.info(f"Market stats calculated: {df.shape[0]} items")
     return df
 
-def fill_nulls_from_history(stats: pd.DataFrame) -> pd.DataFrame:
+def fill_nulls_from_history(stats: pd.DataFrame, market_ctx: Optional["MarketContext"] = None) -> pd.DataFrame:
     """
     Fill nulls from market history data.
     """
@@ -131,7 +147,8 @@ def fill_nulls_from_history(stats: pd.DataFrame) -> pd.DataFrame:
         return stats
 
     logger.info("Querying history")
-    engine = wcmkt_db.engine
+    db = _get_db(market_ctx)
+    engine = db.engine
     session = Session(engine)
     try:
         with session.begin():
@@ -198,7 +215,7 @@ def fill_nulls_from_history(stats: pd.DataFrame) -> pd.DataFrame:
         logger.error(f"stats has nulls after filling: {stats.isnull().sum().sum()}")
     return stats
 
-def calculate_doctrine_stats() -> pd.DataFrame:
+def calculate_doctrine_stats(market_ctx: Optional["MarketContext"] = None) -> pd.DataFrame:
     doctrine_query = """
     SELECT
     *
@@ -209,7 +226,7 @@ def calculate_doctrine_stats() -> pd.DataFrame:
     *
     FROM marketstats
     """
-    db = DatabaseConfig("wcmkt")
+    db = _get_db(market_ctx)
     engine = db.engine
     with engine.connect() as conn:
         doctrine_stats = pd.read_sql_query(doctrine_query, conn)

@@ -1,41 +1,106 @@
-# Not fully implemented yet. Please use with caution and veryify.
+# Settings for mkts-backend
+# This file configures the market data collection system for multiple markets.
 
 [esi]
-user_agent = "wcmkts_backend/2.1dev, orthel.toralen@gmail.com, (https://github.com/OrthelT/wcmkts_backend)" #change this to reflect your app please.
+user_agent = "wcmkts_backend/2.1dev, orthel.toralen@gmail.com, (https://github.com/OrthelT/wcmkts_backend)"
 compatibility_date = "2025-08-26"
 
 [auth]
-# esi_client_id, esi_secret_key, and refresh token should be set in .env file for local development. Use secure credential storage (github secrets) in production.
+# esi_client_id, esi_secret_key, and refresh token should be set in .env file for local development.
+# Use secure credential storage (github secrets) in production.
 callback_url = "http://localhost:8000/callback"
 token_file = "file:token.json"
 
 [app]
 name = "WinterCo Markets"
-market_name = "4-HWWF"
 environment = "production"  # "production" or "development"
 log_level = "info"
 
-[db] # change this to reflect your database. You will need to also edit the database aliases in the .env file and in the .github/workflows/market-data-collection.yml file.
-production_database_alias = "wcmktprod"
-production_database_file = "wcmktprod.db"
+# ============================================================================
+# MARKETS CONFIGURATION
+# ============================================================================
+# Each market section defines all configuration needed for that market.
+# To add a new market, create a new [markets.<alias>] section.
 
-testing_database_alias = "wcmkttest"
-testing_database_file = "wcmkttest.db"
+[markets]
+default = "primary"
 
-# North market (secondary production) database
-north_database_alias = "wcmktnorth"
-north_database_file = "wcmktnorth2.db"
+[markets.primary]
+name = "4-HWWF Keepstar"
+region_id = 10000003          # Vale of Silent
+system_id = 30000240
+structure_id = 1035466617946
+database_alias = "wcmktprod"
+database_file = "wcmktprod.db"
+turso_url_env = "TURSO_WCMKTPROD_URL"
+turso_token_env = "TURSO_WCMKTPROD_TOKEN"
+gsheets_url = "https://docs.google.com/spreadsheets/d/1sLr5VaUsHKfwZV_CA1K1o2bfywwzl4w-FGYWVnKmwKA/edit"
+
+[markets.primary.gsheets_worksheets]
+market_orders = "market_orders_4h"
+market_data = "market_data_4h"
+
+[markets.deployment]
+name = "B-9C24 Keepstar"
+region_id = 10000023          # Pure Blind
+system_id = 30002029
+structure_id = 1046831245129
+database_alias = "wcmktnorth"
+database_file = "wcmktnorth2.db"
+turso_url_env = "TURSO_WCMKTNORTH_URL"
+turso_token_env = "TURSO_WCMKTNORTH_TOKEN"
+gsheets_url = "https://docs.google.com/spreadsheets/d/1I5XwtI9dfAVE4E73v3Lwr8z3od-ibr3h_evBeaAuhaw/edit"
+
+[markets.deployment.gsheets_worksheets]
+market_orders = "market_orders"
+market_data = "market_data"
+doctrines = "doctrines_mkt"
+
+# ============================================================================
+# LEGACY MARKET DATA (for backward compatibility)
+# ============================================================================
+# These values are used by legacy code that hasn't been migrated to MarketContext.
+# Prefer using [markets] sections for new code.
 
 [market_data]
-primary_market_region_id = 10000003
-secondary_market_region_id = 'None'
-primary_market_system_id = 30000240
-secondary_market_system_id = 'None'
-primary_market_structure_id = 1035466617946
-secondary_market_structure_id = 'None'
+primary_region_id = 10000003
+deployment_region_id = 10000023
+primary_system_id = 30000240
+deployment_system_id = 30002029
+primary_structure_id = 1035466617946
+deployment_structure_id = 1046831245129
+primary_market_name = "4-HWWF Keepstar"
+deployment_market_name = "B-9C24 Keepstar"
+
+# ============================================================================
+# SHARED DATABASE CONFIGURATION
+# ============================================================================
+# These are shared databases that don't vary by market.
+
+[db]
+# Legacy aliases for backward compatibility
+production_database_alias = "wcmktprod"
+production_database_file = "wcmktprod.db"
+testing_database_alias = "wcmkttest"
+testing_database_file = "wcmkttest.db"
+deployment_database_alias = "wcmktnorth"
+deployment_database_file = "wcmktnorth2.db"
+
+# Shared databases (same for all markets)
+[db.shared]
+sde_alias = "sde"
+sde_file = "sde.db"
+fittings_alias = "fittings"
+fittings_file = "wcfitting.db"
+
+# ============================================================================
+# GOOGLE SHEETS CONFIGURATION
+# ============================================================================
+# Note: Market-specific sheets are configured in [markets.<alias>] sections.
+# These settings are for global Google Sheets configuration.
 
 [google_sheets]
 enabled = true
-sheet_url = 'https://docs.google.com/spreadsheets/d/1RmNJB9Yz4lG6kKKitGQ0zDuPbOiSe0ywn4SbSKabdwc/edit?gid=0#gid=0'
-sheet_url2 = 'https://docs.google.com/spreadsheets/d/1sLr5VaUsHKfwZV_CA1K1o2bfywwzl4w-FGYWVnKmwKA/edit?gid=1670971557#gid=1670971557'
-# private_key_file should be in .env or github secrets
+# Legacy URLs (prefer using market-specific URLs in [markets] sections)
+sheet_url = "https://docs.google.com/spreadsheets/d/1RmNJB9Yz4lG6kKKitGQ0zDuPbOiSe0ywn4SbSKabdwc/edit"
+sheet_url2 = "https://docs.google.com/spreadsheets/d/1sLr5VaUsHKfwZV_CA1K1o2bfywwzl4w-FGYWVnKmwKA/edit"

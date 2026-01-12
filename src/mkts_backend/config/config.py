@@ -283,26 +283,58 @@ class DatabaseConfig:
         conn.close()
         return df
 
-    def verify_db_exists(self):
+    def verify_db_exists(self) -> bool:
         """
-        Verifies that the database file and metadata exist. If the database
-        is in an inconsistent state, it will be nuked and synced.
-        """
-        if not self.confirm_metadata_exists():
-            logger.warning(f"Database metadata does not exist: {self.path}")
-            self.nuke_db()
-            self.sync()
+        Verifies database and metadata are in a consistent state.
 
-        logger.info(f"Verifying database exists: {self.path}")
-        if self.needs_init():
-            logger.warning(f"Database file does not exist: {self.path}")
-            self.sync()
-        if not self.confirm_metadata_exists() and not self.needs_init():
-            logger.warning(f"Database metadata does not exist: {self.path}")
-            return False
-        else:
-            logger.info(f"Database metadata exists: {self.path}")
+        Cases handled:
+        1. Neither exists → sync() to initialize
+        2. Both exist → valid state, return True
+        3. DB exists without metadata → nuke db then sync
+        4. Metadata exists without DB → nuke metadata then sync
+
+        Important: Never call sync() on a db file that lacks its -info file.
+        It is safe to call sync() when neither file exists.
+
+        Returns:
+            True if database is in valid state, False otherwise.
+        """
+        db_exists = Path(self.path).exists()
+        metadata_exists = self.confirm_metadata_exists()
+
+        logger.info(f"Verifying db state: db_exists={db_exists}, metadata_exists={metadata_exists}")
+
+        if db_exists and metadata_exists:
+            # Case 2: Valid state
+            logger.info(f"Database {self.path} is properly initialized")
             return True
+
+        if db_exists and not metadata_exists:
+            # Case 3: DB without metadata (improperly created, e.g., bare sqlite.connect)
+            # MUST nuke before sync - cannot sync a db without its -info file
+            logger.warning(f"DB exists without metadata, nuking: {self.path}")
+            if not self._nuke_db_file():
+                logger.error(f"Failed to delete db file: {self.path}")
+                return False
+
+        if not db_exists and metadata_exists:
+            # Case 4: Orphaned metadata
+            logger.warning(f"Orphaned metadata found, removing: {self.path}-info")
+            if not self._nuke_metadata_file():
+                logger.error(f"Failed to delete metadata: {self.path}-info")
+                return False
+
+        # Case 1/3/4: Need to sync from remote
+        logger.info(f"Initializing database via sync: {self.path}")
+        self.sync()
+
+        # Verify sync succeeded
+        if Path(self.path).exists() and self.confirm_metadata_exists():
+            logger.info(f"Database {self.path} successfully initialized")
+            return True
+        else:
+            logger.error(f"Sync failed to create valid db state: {self.path}")
+            return False
 
     def read_db_info(self) -> str:
         info_path = f"{self.path}-info"
@@ -321,24 +353,20 @@ class DatabaseConfig:
 
     def needs_init(self) -> bool:
         """
-        Returns True if the database is missing or not initialized (schema not present).
-        Designed for CI/local bootstrap logic: if True, verify_db_exists will call db.sync().
+        Pure check: Returns True if database needs initialization.
+
+        A database needs initialization if either the db file or its metadata
+        file is missing. Does NOT modify state - use verify_db_exists() for
+        initialization with side effects.
+
+        Returns:
+            True if database needs initialization, False if properly initialized.
         """
-        db_path = Path(self.path)
-        logger.info(f"checkinh db_path")
-        # If it doesn't exist, it's definitely not initialized.
-        if not db_path.exists():
-            logger.info(f"no local db file {db_path} checking metadata")
-            if not self.confirm_metadata_exists():
-                logger.warning(f"Database metadata does not exist: {db_path}")
-                return True
-            else:
-                logger.info(f"Database metadata exists: {db_path}, but db file does not exist")
-                self.nuke_db()
-                if not self.confirm_metadata_exists():
-                    return True
-        else:
-            return False
+        db_exists = Path(self.path).exists()
+        metadata_exists = self.confirm_metadata_exists()
+        needs_init = not (db_exists and metadata_exists)
+        logger.info(f"needs_init check: db_exists={db_exists}, metadata_exists={metadata_exists}, needs_init={needs_init}")
+        return needs_init
 
 
     def confirm_metadata_exists(self) -> bool:
@@ -351,16 +379,52 @@ class DatabaseConfig:
             return False
         return True
 
-    def nuke_db(self):
+    def _nuke_db_file(self) -> bool:
+        """
+        Delete just the database file.
+
+        Returns:
+            True if file was deleted or didn't exist, False on error.
+        """
         db_path = Path(self.path)
         if db_path.exists():
-            db_path.unlink()
-            expected_metadata = Path(f"{self.path}-info")
-            if expected_metadata.exists():
-                expected_metadata.unlink()
-        else:
-            return False
-        return True
+            try:
+                db_path.unlink()
+                logger.info(f"Deleted db file: {db_path}")
+                return True
+            except OSError as e:
+                logger.error(f"Failed to delete db file {db_path}: {e}")
+                return False
+        return True  # Already gone
+
+    def _nuke_metadata_file(self) -> bool:
+        """
+        Delete just the metadata (-info) file.
+
+        Returns:
+            True if file was deleted or didn't exist, False on error.
+        """
+        info_path = Path(f"{self.path}-info")
+        if info_path.exists():
+            try:
+                info_path.unlink()
+                logger.info(f"Deleted metadata file: {info_path}")
+                return True
+            except OSError as e:
+                logger.error(f"Failed to delete metadata file {info_path}: {e}")
+                return False
+        return True  # Already gone
+
+    def nuke_db(self) -> bool:
+        """
+        Delete both database and metadata files.
+
+        Returns:
+            True if both files were deleted (or didn't exist), False on any error.
+        """
+        db_ok = self._nuke_db_file()
+        meta_ok = self._nuke_metadata_file()
+        return db_ok and meta_ok
   
 
 if __name__ == "__main__":

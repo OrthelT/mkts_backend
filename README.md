@@ -70,11 +70,14 @@ Please update these settings for your application here. Settings for the ESI, ma
 ### Running the Application
 
 ```bash
-# Run with market orders only
+# Run with market orders only (primary market)
 uv run mkts-backend
 
 # Run with historical data processing
 uv run mkts-backend --history
+
+# Process a specific market
+uv run mkts-backend --market=deployment --history
 ```
 
 ## Architecture
@@ -104,11 +107,20 @@ uv run mkts-backend --history
 
 ### Key Settings
 
-These settings are the default. You can override them to customize.
+Configuration is managed through `settings.toml` with support for multiple markets:
+
+**Primary Market (Default)**:
 - **Structure ID**: `1035466617946` (4-HWWF Keepstar)
 - **Region ID**: `10000003` (The Vale of Silent)
+- **System ID**: `30000240`
 - **Database**: Local SQLite (`wcmktprod.db`) with Turso sync
-- **Watchlist**: DB table with items to track. Default are ~850 common items and all WinterCo Doctrine ships and fittings.
+
+**Deployment Market (Optional)**:
+- **Region ID**: `10000001` (The Forge)
+- **System ID**: `30000072` (Nakah)
+- **Database**: Local SQLite (`wcmktnorth2.db`) with Turso sync
+
+**Watchlist**: DB table with ~850 common items and all WinterCo Doctrine ships and fittings.
 
 ### Google Sheets Integration (optional)
 

@@ -24,6 +24,11 @@ uv run mkts-backend --market=deployment  # Uses deployment market config
 uv run mkts-backend --check_tables
 ```
 
+**Check market availability for a ship fit:**
+```bash
+uv run fit-check --file=path/to/fit.txt --market=primary
+```
+
 **Dependencies are managed with uv:**
 ```bash
 uv sync  # Install dependencies
@@ -184,6 +189,7 @@ TURSO_FITTING_TOKEN=<fitting_db_token>
 ## Additional Features
 
 - **Multi-Market Support:** Configure and process multiple markets independently via `--market` flag
+- **Fit Checking Tool:** CLI command to check market availability for ship fittings with export options
 - **Comparative Market Analysis:** Dual-region history tracking (primary market vs Jita) for price comparison charts
 - **Market Value Calculation:** Filters out blueprints and skills for accurate market value assessment
 - **Ship Count Tracking:** Specifically tracks ship availability on the market
@@ -193,6 +199,76 @@ TURSO_FITTING_TOKEN=<fitting_db_token>
 - **Async Processing:** High-performance concurrent API requests with rate limiting and backoff
 - **Error Handling:** Comprehensive logging and error recovery for API failures
 - **GitHub Actions Integration:** Automated scheduled data collection via workflows
+
+## CLI Tools
+
+### fit-check Command
+
+The fit-check command displays market availability and pricing for ship fittings from EFT-formatted files.
+
+**Basic Usage:**
+```bash
+# Check fit availability against primary market
+uv run fit-check --file=path/to/fit.txt
+
+# Check against specific market
+uv run fit-check --file=fit.txt --market=deployment
+
+# Override target quantity
+uv run fit-check --file=fit.txt --target=50
+
+# Export to CSV
+uv run fit-check --file=fit.txt --export-csv=output.csv
+
+# Show multibuy format for restocking
+uv run fit-check --file=fit.txt --multibuy
+
+# Combine options
+uv run fit-check --file=fit.txt --market=deployment --target=100 --export-csv=results.csv --multibuy
+```
+
+**Display Features:**
+- **Header Section**: Shows fit name, ship name, ship type ID, total fit cost, fits available (bottleneck), and target quantity
+- **Market Data Table**: Displays for each item:
+  - `type_id`: Item type ID
+  - `type_name`: Item name
+  - `market_stock`: Current inventory on market
+  - `fit_qty`: Quantity required per fit
+  - `fits`: Number of complete fits available (bottleneck highlighted)
+  - `price`: Market price (5th percentile from marketstats)
+  - `fit_cost`: Total cost for this item in one fit
+  - `avg_price`: 30-day average price
+  - `qty_needed`: Quantity needed to meet target (only shown when target available)
+- **Summary Section**: Shows item availability counts and missing items
+- **Missing Items for Target**: Lists items below target with quantities needed
+
+**Target Integration:**
+- Automatically looks up target quantities from `doctrine_fits` table by fit_name or ship_type_id
+- Use `--target=N` to override the database target
+- Displays "Qty Needed" column when target is available
+- Shows missing items list with quantities needed to reach target
+
+**Export Options:**
+- `--export-csv=<path>`: Exports the fit status table to CSV file for spreadsheet analysis
+- `--multibuy`: Displays items below target in Eve Multi-buy/jEveAssets stockpile format:
+  ```
+  Damage Control II 15
+  Gyrostabilizer II 30
+  Large Shield Extender II 20
+  ```
+  This format can be copied directly into Eve Online or jEveAssets for easy restocking.
+
+**Database Integration:**
+- Queries `marketstats` table for items on watchlist (uses pre-calculated pricing)
+- Falls back to `marketorders` table for non-watchlist items (calculates 5th percentile on-the-fly)
+- Looks up targets from `doctrine_fits` table
+- Uses SDE database for type name resolution when needed
+
+**Implementation Details:**
+- Location: `/home/orthel/workspace/github/mkts_backend/src/mkts_backend/cli_tools/fit_check.py`
+- Uses Rich library for beautiful console output
+- Handles missing items gracefully with fallback pricing
+- Supports both file input and stdin (via `--paste` flag)
 
 ---
 
@@ -405,6 +481,11 @@ uv run mkts-backend
 - `ship_targets`: Ship production targets
 - `doctrine_map`: Doctrine to fitting mappings
 - `doctrine_info`: Doctrine metadata
+- `doctrine_fits`: Doctrine fitting configurations with target quantities and market flags
+  - Fields: `id`, `doctrine_name`, `fit_name`, `ship_type_id`, `doctrine_id`, `fit_id`, `ship_name`, `target`, `market_flag`
+  - Used by fit-check to retrieve target quantities for fits
+  - `target`: Number of fits to maintain in stock
+  - `market_flag`: Market assignment (primary, deployment, or both)
 
 **Database State Management**:
 The system uses `verify_db_exists()` to ensure database consistency:

@@ -31,6 +31,8 @@ from mkts_backend.utils.parse_items import parse_items
 from mkts_backend.utils.validation import validate_all
 from mkts_backend.utils.parse_fits import update_fit_workflow, parse_fit_metadata
 from mkts_backend.config.config import load_settings, DatabaseConfig
+from mkts_backend.cli_tools.fit_check import fit_check_command
+from mkts_backend.cli_tools.fit_update import fit_update_command
 from mkts_backend.config.gsheets_config import GoogleSheetConfig
 from mkts_backend.config.market_context import MarketContext
 
@@ -54,7 +56,7 @@ def check_tables():
     db.engine.dispose()
 
 def display_cli_help():
-    print("\nUsage: mkts-backend [--market=<alias>|--primary|--deployment] [--history|--include-history] [--check_tables] [add_watchlist --type_id=<list[int]>] [parse-items --input=<file> --output=<file>] [update-fit --fit-file=<path> --meta-file=<path> [--remote] [--no-clear] [--dry-run] [--target=<wcmkt|wcmktnorth>|--north]]\n")
+    print("\nUsage: mkts-backend [--market=<alias>|--primary|--deployment] [--history|--include-history] [--check_tables] [add_watchlist --type_id=<list[int]>] [parse-items --input=<file> --output=<file>] [update-fit --fit-file=<path> --meta-file=<path> [--remote] [--no-clear] [--dry-run] [--target=<wcmkt|wcmktnorth>|--north]] [fit-check --file=<path> [--market=<alias>]]\n")
     print("""Options:\n
   [--market=<alias>]: Select market to process (primary, deployment). Default: primary\n
   [--primary]: Shorthand for --market=primary\n
@@ -63,6 +65,21 @@ def display_cli_help():
   [--check_tables]:  Check the tables in the database\n
   [add_watchlist]: --type_id=<list>: Add items to watchlist by type IDs (comma-separated --type_id=81144,88001,89240)\n
   [update-fit]: Process an EFT fit file and metadata and update doctrine tables (defaults local, add --remote for production, --no-clear to keep existing items, --dry-run to preview; use --target=wcmktnorth or --north to write to north DB)\n
+  [fit-check]: Display market availability for an EFT fit file\n
+    --file=<path>: Path to EFT fit file (required unless --paste)\n
+    --market=<alias>: Market to check (primary, deployment). Default: primary\n
+    --paste: Read EFT from stdin instead of file\n
+    --target=<N>: Override target quantity (default: from doctrine_fits table)\n
+    --export-csv=<path>: Export fit status table to CSV file\n
+    --multibuy: Show Eve Multi-buy/jEveAssets stockpile format for items below target\n
+  [fit-update]: Interactive tool for managing fits and doctrines\n
+    Subcommands:\n
+      add: Add new fit (--file=<path> --interactive | --file=<path> --meta-file=<path>)\n
+      update: Update existing fit (--fit-id=<id> --file=<path> --meta-file=<path>)\n
+      assign-market: Set market flag (--fit-id=<id> --market=<primary|deployment|both>)\n
+      list-fits: List all doctrine fits\n
+      list-doctrines: List all available doctrines\n
+    Options: --dry-run, --remote, --local-only, --target=<wcmkt|wcmktnorth>\n
   [--local]: Use local database instead of remote for commands that default to remote\n
   [parse-items --input=<file> --output=<file>]: Parse Eve structure data and create CSV with pricing from database\n
   [sync]: Sync the database\n
@@ -378,6 +395,113 @@ def parse_args(args: list[str])->dict | None:
             logger.error(f"update-fit failed: {e}")
             print(f"Error running update-fit: {e}")
             exit(1)
+
+    # Handle fit-check command
+    if "fit-check" in args:
+        file_path = None
+        paste_mode = "--paste" in args
+        target = None
+        export_csv = None
+        show_multibuy = "--multibuy" in args
+
+        for arg in args:
+            if arg.startswith("--file="):
+                file_path = arg.split("=", 1)[1]
+            elif arg.startswith("--target="):
+                try:
+                    target = int(arg.split("=", 1)[1])
+                except ValueError:
+                    print("Error: --target must be an integer")
+                    return None
+            elif arg.startswith("--export-csv="):
+                export_csv = arg.split("=", 1)[1]
+
+        if not file_path and not paste_mode:
+            print("Error: --file=<path> is required for fit-check command (or use --paste)")
+            print("Usage: mkts-backend fit-check --file=fits/hfi.txt --market=primary")
+            print("       mkts-backend fit-check --file=fits/hfi.txt --target=100 --multibuy")
+            print("       mkts-backend fit-check --file=fits/hfi.txt --export-csv=output.csv")
+            return None
+
+        eft_text = None
+        if paste_mode:
+            print("Paste your EFT fit below (Ctrl+D or blank line to finish):")
+            lines = []
+            try:
+                import sys
+                for line in sys.stdin:
+                    if line.strip() == "":
+                        # Second blank line signals end
+                        if lines and lines[-1] == "":
+                            break
+                        lines.append("")
+                    else:
+                        lines.append(line.rstrip())
+            except EOFError:
+                pass
+            eft_text = "\n".join(lines)
+
+        success = fit_check_command(
+            file_path=file_path,
+            eft_text=eft_text,
+            market_alias=market_alias,
+            show_legend=True,
+            target=target,
+            export_csv=export_csv,
+            show_multibuy=show_multibuy,
+        )
+        exit(0 if success else 1)
+
+    # Handle fit-update command with subcommands
+    if "fit-update" in args:
+        # Determine subcommand (first positional arg after fit-update)
+        fit_update_idx = args.index("fit-update")
+        subcommand = None
+        for arg in args[fit_update_idx + 1:]:
+            if not arg.startswith("--"):
+                subcommand = arg
+                break
+
+        if not subcommand:
+            print("Error: fit-update requires a subcommand")
+            print("Available: add, update, assign-market, list-fits, list-doctrines")
+            return None
+
+        # Parse options
+        file_path = None
+        meta_file = None
+        fit_id = None
+        target_alias = "wcmkt"
+        interactive = "--interactive" in args
+        remote = "--remote" in args
+        local_only = "--local-only" in args
+        dry_run = "--dry-run" in args
+
+        for arg in args:
+            if arg.startswith("--file="):
+                file_path = arg.split("=", 1)[1]
+            elif arg.startswith("--meta-file="):
+                meta_file = arg.split("=", 1)[1]
+            elif arg.startswith("--fit-id="):
+                fit_id = int(arg.split("=", 1)[1])
+            elif arg.startswith("--target="):
+                target_alias = arg.split("=", 1)[1]
+            elif arg == "--north":
+                target_alias = "wcmktnorth"
+
+        success = fit_update_command(
+            subcommand=subcommand,
+            fit_id=fit_id,
+            file_path=file_path,
+            meta_file=meta_file,
+            market_flag=market_alias,  # Reuse market_alias parsed earlier
+            remote=remote,
+            local_only=local_only,
+            dry_run=dry_run,
+            interactive=interactive,
+            target_alias=target_alias,
+        )
+        exit(0 if success else 1)
 
     if "sync" in args:
         db = DatabaseConfig("wcmkt")

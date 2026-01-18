@@ -1,17 +1,59 @@
 # Doctrine Tools CLI
 
+This document tracks the development of doctrine management tools for the mkts_backend system.
 
-This update will expand the functionality of 'src/mkts-backend/utils/parse_fits.py' 
+## Fit Check ✓ IMPLEMENTED
 
-It will add two new features:
+A command-line interface that displays market availability for ship fittings from EFT-formatted files.
 
-## Fit Check
-- Add a command line interface called fit-check that will display a table of market availability from the wcmkt db of fit items for an EFT formatted .txt (and if possible from a cut and paste in the cli.) 
-- It should take market as an argument: either primary or deployment. 
-- It should present a beautiful table that includes type_id, type_name, market_stock, fit_qty, (the quantity of the item required for each fit), fits (the number of fits that can be constructed based on the market_stock of the item), price (the market price of the item), fit_price (fit_qty * price) and avg_price (average price over 30 days). The header names should align with the schema of the marketstats table for simplicity. 
-- It should include a header with the name of the fit, ship_name, ship type id and the fit_cost (some of fit_price)
-- If the item is not on the watchlist, pricing information will not be available in the marketstats table in the wcmkt database. In this case, it should query the marketorder table to obtain the market information using similar logic to the calculate_market_stats() function, and execute an ESI api call to obtain the historical information. 
-- Use a cli library like Rich or other libraries that you think would be useful in creating a beautiful cli. 
+### Features Implemented:
+- **Input Methods**: Accepts EFT-formatted .txt files via `--file` parameter or stdin via `--paste`
+- **Market Selection**: Takes market as argument (`--market=primary` or `--market=deployment`)
+- **Rich Table Display**: Uses Rich library for beautiful console output with the following columns:
+  - `type_id`: Item type ID
+  - `type_name`: Item name
+  - `market_stock`: Current market inventory (total_volume_remain)
+  - `fit_qty`: Quantity required per fit
+  - `fits`: Number of complete fits available (market_stock / fit_qty)
+  - `price`: Market price (5th percentile from marketstats)
+  - `fit_cost`: Cost for this item in one fit (fit_qty × price)
+  - `avg_price`: 30-day average price
+  - `qty_needed`: Quantity needed to meet target (only shown when target available)
+- **Header Information**: Displays fit name, ship name, ship type ID, total fit cost, fits available (bottleneck), and target quantity
+- **Target Integration**: Automatically looks up target quantities from `doctrine_fits` table
+- **Target Override**: `--target=N` parameter to override database target
+- **Fallback Pricing**: For items not on watchlist, queries `marketorders` table and calculates 5th percentile pricing
+- **Missing Items Report**: Shows items below target with quantity needed
+- **Export Options**:
+  - `--export-csv=<path>`: Export table to CSV file
+  - `--multibuy`: Display Eve Multi-buy/jEveAssets stockpile format for items below target
+
+### CLI Usage:
+```bash
+# Basic usage
+fit-check --file=<path>
+
+# With market selection
+fit-check --file=<path> --market=deployment
+
+# Override target quantity
+fit-check --file=<path> --target=50
+
+# Export to CSV
+fit-check --file=<path> --export-csv=output.csv
+
+# Show multibuy format for restocking
+fit-check --file=<path> --multibuy
+
+# Read from stdin
+cat fit.txt | fit-check --paste
+```
+
+### Database Integration:
+- Queries `marketstats` table for watchlist items
+- Falls back to `marketorders` for non-watchlist items
+- Looks up targets from `doctrine_fits` table by fit_name or ship_type_id
+- Uses SDE database for type name resolution 
 
 ## Fit Update Tool
 Extend the update_fit_workflow() in parse_fits.py with an interactive interface that:

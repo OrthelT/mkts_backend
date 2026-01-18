@@ -136,9 +136,20 @@ class DoctrineFit:
                 conn.commit()
 
 
-def upsert_doctrine_fits(doctrine_fit: DoctrineFit, remote: bool = False, db_alias: str = "wcmkt") -> None:
+def upsert_doctrine_fits(
+    doctrine_fit: DoctrineFit,
+    remote: bool = False,
+    db_alias: str = "wcmkt",
+    market_flag: str = "primary"
+) -> None:
     """
     Upsert doctrine_fits entry keyed by (doctrine_id, fit_id).
+
+    Args:
+        doctrine_fit: DoctrineFit dataclass with fit information
+        remote: Whether to use remote database
+        db_alias: Database alias to use
+        market_flag: Market assignment ('primary', 'deployment', or 'both')
     """
     engine = _get_engine(db_alias, remote)
     with engine.connect() as conn:
@@ -155,15 +166,16 @@ def upsert_doctrine_fits(doctrine_fit: DoctrineFit, remote: bool = False, db_ali
                     ship_type_id = :ship_type_id,
                     doctrine_id = :doctrine_id,
                     ship_name = :ship_name,
-                    target = :target
+                    target = :target,
+                    market_flag = :market_flag
                 WHERE fit_id = :fit_id AND doctrine_id = :doctrine_id
                 """
             )
         else:
             stmt = text(
                 """
-                INSERT INTO doctrine_fits (doctrine_name, fit_name, ship_type_id, doctrine_id, fit_id, ship_name, target)
-                VALUES (:doctrine_name, :fit_name, :ship_type_id, :doctrine_id, :fit_id, :ship_name, :target)
+                INSERT INTO doctrine_fits (doctrine_name, fit_name, ship_type_id, doctrine_id, fit_id, ship_name, target, market_flag)
+                VALUES (:doctrine_name, :fit_name, :ship_type_id, :doctrine_id, :fit_id, :ship_name, :target, :market_flag)
                 """
             )
         conn.execute(
@@ -176,11 +188,78 @@ def upsert_doctrine_fits(doctrine_fit: DoctrineFit, remote: bool = False, db_ali
                 "fit_id": doctrine_fit.fit_id,
                 "ship_name": doctrine_fit.ship_name,
                 "target": doctrine_fit.target,
+                "market_flag": market_flag,
             },
         )
         conn.commit()
     engine.dispose()
-    logger.info(f"Upserted doctrine_fits for fit_id {doctrine_fit.fit_id}")
+    logger.info(f"Upserted doctrine_fits for fit_id {doctrine_fit.fit_id} with market_flag={market_flag}")
+
+
+def update_fit_market_flag(
+    fit_id: int,
+    market_flag: str,
+    remote: bool = False,
+    db_alias: str = "wcmkt"
+) -> bool:
+    """
+    Update the market_flag for a fit.
+
+    Args:
+        fit_id: The fit ID to update
+        market_flag: New market assignment ('primary', 'deployment', or 'both')
+        remote: Whether to use remote database
+        db_alias: Database alias to use
+
+    Returns:
+        True if update succeeded, False if fit not found
+    """
+    if market_flag not in ("primary", "deployment", "both"):
+        raise ValueError(f"Invalid market_flag: {market_flag}. Must be 'primary', 'deployment', or 'both'")
+
+    engine = _get_engine(db_alias, remote)
+    with engine.connect() as conn:
+        result = conn.execute(
+            text("UPDATE doctrine_fits SET market_flag = :market_flag WHERE fit_id = :fit_id"),
+            {"fit_id": fit_id, "market_flag": market_flag},
+        )
+        conn.commit()
+        rows_affected = result.rowcount
+
+    engine.dispose()
+
+    if rows_affected > 0:
+        logger.info(f"Updated market_flag to '{market_flag}' for fit_id {fit_id} ({rows_affected} rows)")
+        return True
+    else:
+        logger.warning(f"No rows found for fit_id {fit_id}")
+        return False
+
+
+def get_fit_market_flag(fit_id: int, remote: bool = False, db_alias: str = "wcmkt") -> str | None:
+    """
+    Get the market_flag for a fit.
+
+    Args:
+        fit_id: The fit ID to query
+        remote: Whether to use remote database
+        db_alias: Database alias to use
+
+    Returns:
+        The market_flag value, or None if fit not found
+    """
+    engine = _get_engine(db_alias, remote)
+    with engine.connect() as conn:
+        result = conn.execute(
+            text("SELECT market_flag FROM doctrine_fits WHERE fit_id = :fit_id LIMIT 1"),
+            {"fit_id": fit_id},
+        ).fetchone()
+
+    engine.dispose()
+
+    if result:
+        return result[0]
+    return None
 
 
 def upsert_doctrine_map(doctrine_id: int, fit_id: int, remote: bool = False, db_alias: str = "wcmkt") -> None:

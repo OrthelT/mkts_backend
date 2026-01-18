@@ -7,6 +7,7 @@ A comprehensive market data collection and analysis system for Eve Online that f
 - **Market Data Collection**: Fetches real-time market orders from Eve Online's ESI API
 - **Historical Analysis**: Collects and analyzes market history for trend analysis
 - **Doctrine Analysis**: Calculates ship fitting availability and market depth
+- **Fit Checking**: CLI tool to check market availability for ship fittings with export options
 - **Regional Processing**: Handles both structure-specific and region-wide market data
 - **Google Sheets Integration**: Automatically updates spreadsheets with market data
 - **Market Value Calculation**: Calculates total market value excluding blueprints/skills
@@ -80,6 +81,44 @@ uv run mkts-backend --history
 uv run mkts-backend --market=deployment --history
 ```
 
+## CLI Commands
+
+### fit-check - Check Market Availability for Ship Fittings
+
+Display market availability and pricing for ship fits from EFT-formatted files.
+
+```bash
+# Basic usage - check fit availability
+uv run fit-check --file=path/to/fit.txt
+
+# Check against specific market
+uv run fit-check --file=fit.txt --market=deployment
+
+# Override target quantity
+uv run fit-check --file=fit.txt --target=50
+
+# Export results to CSV
+uv run fit-check --file=fit.txt --output=csv
+
+# Show multibuy format for restocking items below target
+uv run fit-check --file=fit.txt --output=multibuy
+
+# Export markdown for Discord sharing
+uv run fit-check --file=fit.txt --output=markdown
+
+# Read from stdin
+cat fit.txt | uv run fit-check --paste
+```
+
+**Features:**
+- Displays complete fit breakdown with market availability
+- Shows bottleneck items (lowest fits available)
+- Automatically retrieves target quantities from doctrine_fits table
+- Calculates quantity needed to reach target
+- Exports to CSV for spreadsheet analysis
+- Generates Eve Multi-buy format for easy restocking
+- Falls back to live market data for items not on watchlist
+
 ## Architecture
 
 ### Core Components
@@ -146,6 +185,10 @@ Configuration is managed through `settings.toml` with support for multiple marke
 - **`ship_targets`**: Ship production targets and goals
 - **`doctrine_map`**: Mapping between doctrines and fittings
 - **`doctrine_info`**: Doctrine metadata and information
+- **`doctrine_fits`**: Doctrine fitting configurations with target quantities
+  - Stores fit_name, ship_type_id, target quantity, and market_flag
+  - Used by fit-check command to retrieve target quantities
+  - Market flag indicates which markets track this doctrine (primary, deployment, both)
 
 ## API Integration
 

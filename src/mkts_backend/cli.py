@@ -31,6 +31,8 @@ from mkts_backend.utils.parse_items import parse_items
 from mkts_backend.utils.validation import validate_all
 from mkts_backend.utils.parse_fits import update_fit_workflow, parse_fit_metadata
 from mkts_backend.config.config import load_settings, DatabaseConfig
+from mkts_backend.cli_tools.fit_check import fit_check_command
+from mkts_backend.cli_tools.fit_update import fit_update_command
 from mkts_backend.config.gsheets_config import GoogleSheetConfig
 from mkts_backend.config.market_context import MarketContext
 
@@ -54,21 +56,178 @@ def check_tables():
     db.engine.dispose()
 
 def display_cli_help():
-    print("\nUsage: mkts-backend [--market=<alias>|--primary|--deployment] [--history|--include-history] [--check_tables] [add_watchlist --type_id=<list[int]>] [parse-items --input=<file> --output=<file>] [update-fit --fit-file=<path> --meta-file=<path> [--remote] [--no-clear] [--dry-run] [--target=<wcmkt|wcmktnorth>|--north]]\n")
-    print("""Options:\n
-  [--market=<alias>]: Select market to process (primary, deployment). Default: primary\n
-  [--primary]: Shorthand for --market=primary\n
-  [--deployment]: Shorthand for --market=deployment\n
-  [--history | --include-history]: Include history processing\n
-  [--check_tables]:  Check the tables in the database\n
-  [add_watchlist]: --type_id=<list>: Add items to watchlist by type IDs (comma-separated --type_id=81144,88001,89240)\n
-  [update-fit]: Process an EFT fit file and metadata and update doctrine tables (defaults local, add --remote for production, --no-clear to keep existing items, --dry-run to preview; use --target=wcmktnorth or --north to write to north DB)\n
-  [--local]: Use local database instead of remote for commands that default to remote\n
-  [parse-items --input=<file> --output=<file>]: Parse Eve structure data and create CSV with pricing from database\n
-  [sync]: Sync the database\n
-  [validate]: Validate the database\n
-  [--validate-env]: Validate environment credentials and exit\n
-  [--list-markets]: List available market configurations\n\n
+    print("\nUsage: mkts-backend [command] [options]\n")
+    print("""Commands:
+  fit-check          Display market availability for an EFT fit file
+  fit-update         Interactive tool for managing fits and doctrines
+  update-fit         Process an EFT fit file and update doctrine tables
+  add_watchlist      Add items to watchlist by type IDs
+  parse-items        Parse Eve structure data and create CSV with pricing
+  sync               Sync the database
+  validate           Validate the database
+
+Global Options:
+  --market=<alias>   Select market (primary, deployment). Default: primary
+  --primary          Shorthand for --market=primary
+  --deployment       Shorthand for --market=deployment
+  --history          Include history processing
+  --check_tables     Check the tables in the database
+  --validate-env     Validate environment credentials and exit
+  --list-markets     List available market configurations
+  --help             Show this help message
+
+Use 'mkts-backend <command> --help' for more information about a command.
+
+Examples:
+  mkts-backend --history                      # Run main workflow with history
+  mkts-backend fit-check --file=fits/hfi.txt  # Check fit availability
+  mkts-backend fit-update list-fits           # List all doctrine fits
+""")
+
+
+def display_fit_check_help():
+    """Display help for the fit-check subcommand."""
+    print("""
+fit-check - Display market availability for items in an EFT-formatted ship fit
+
+USAGE:
+    mkts-backend fit-check --file=<path> [options]
+    mkts-backend fit-check --paste [options]
+
+DESCRIPTION:
+    Analyzes an EFT (Eve Fitting Tool) formatted ship fit and displays market
+    availability for each item. Shows how many complete fits can be built from
+    current market stock, with color-coded status indicators.
+
+    If the fit exists in the doctrine_fits table, the target quantity is
+    automatically loaded and used to calculate items needed.
+
+OPTIONS:
+    --file=<path>        Path to EFT fit file (required unless using --paste)
+    --paste              Read EFT fit from stdin instead of file
+    --market=<alias>     Market to check: primary, deployment (default: primary)
+    --target=<N>         Override target quantity (default: from doctrine_fits)
+    --output=<format>    Export format: csv, multibuy, or markdown
+    --help               Show this help message
+
+OUTPUT:
+    Header displays:
+      - Ship name and type ID
+      - Market being queried
+      - Total fit cost (sum of all items at current prices)
+      - Fits Available (minimum fits across all items - the bottleneck)
+      - Target (from doctrine_fits table, if available)
+
+    Table columns:
+      - Type ID      Item's Eve Online type ID
+      - Item Name    Name of the module/ship
+      - Stock        Current market stock
+      - Fit Qty      Quantity needed per fit
+      - Fits         How many complete fits this item supports
+      - Qty Needed   Items needed to reach target (only if target set)
+      - Price        Current 5th percentile price
+      - Fit Cost     Price × Fit Qty
+      - Source       ✓ = marketstats, * = fallback data
+
+EXPORT FORMATS (--output):
+    csv       Exports items below target to a CSV file (auto-named from fit)
+    multibuy  Eve Multi-buy/jEveAssets stockpile format (ItemName qty)
+    markdown  Discord-friendly markdown with bold formatting
+
+EXAMPLES:
+    # Basic fit check
+    mkts-backend fit-check --file=fits/hurricane_fleet.txt
+
+    # Check against deployment market
+    mkts-backend fit-check --file=fits/hfi.txt --market=deployment
+
+    # Override target to 50 and show multi-buy list
+    mkts-backend fit-check --file=fits/hfi.txt --target=50 --output=multibuy
+
+    # Export to CSV for spreadsheet analysis
+    mkts-backend fit-check --file=fits/hfi.txt --target=100 --output=csv
+
+    # Export markdown for Discord
+    mkts-backend fit-check --file=fits/hfi.txt --target=300 --output=markdown
+
+    # Paste fit directly (end with two blank lines or Ctrl+D)
+    mkts-backend fit-check --paste --market=primary
+""")
+
+
+def display_fit_update_help():
+    """Display help for the fit-update subcommand."""
+    print("""
+fit-update - Interactive tool for managing fits and doctrines
+
+USAGE:
+    mkts-backend fit-update <subcommand> [options]
+
+SUBCOMMANDS:
+    add              Add a new fit to the doctrine system
+    update           Update an existing fit
+    assign-market    Set market flag for a fit
+    list-fits        List all doctrine fits
+    list-doctrines   List all available doctrines
+
+OPTIONS:
+    --file=<path>        Path to EFT fit file
+    --meta-file=<path>   Path to metadata JSON file
+    --fit-id=<id>        Fit ID to update or modify
+    --market=<flag>      Market flag: primary, deployment, both
+    --interactive        Use interactive prompts for metadata
+    --dry-run            Preview changes without saving
+    --remote             Use remote database
+    --local-only         Use local database only
+    --target=<alias>     Target database: wcmkt, wcmktnorth
+    --north              Shorthand for --target=wcmktnorth
+    --help               Show this help message
+
+EXAMPLES:
+    # List all fits
+    mkts-backend fit-update list-fits
+
+    # Add new fit interactively
+    mkts-backend fit-update add --file=fits/new_fit.txt --interactive
+
+    # Add fit with metadata file
+    mkts-backend fit-update add --file=fits/hfi.txt --meta-file=fits/hfi_meta.json
+
+    # Update existing fit
+    mkts-backend fit-update update --fit-id=123 --file=fits/updated.txt
+
+    # Assign fit to deployment market
+    mkts-backend fit-update assign-market --fit-id=123 --market=deployment
+""")
+
+
+def display_update_fit_help():
+    """Display help for the update-fit subcommand."""
+    print("""
+update-fit - Process an EFT fit file and metadata to update doctrine tables
+
+USAGE:
+    mkts-backend update-fit --fit-file=<path> --meta-file=<path> [options]
+
+OPTIONS:
+    --fit-file=<path>    Path to EFT fit file (required)
+    --meta-file=<path>   Path to metadata JSON file (required)
+    --remote             Use remote database (default: local)
+    --no-clear           Keep existing items (default: clear and replace)
+    --dry-run            Preview changes without saving
+    --target=<alias>     Target database: wcmkt, wcmktnorth
+    --north              Shorthand for --target=wcmktnorth
+    --help               Show this help message
+
+EXAMPLES:
+    # Update fit locally (preview)
+    mkts-backend update-fit --fit-file=fits/hfi.txt --meta-file=fits/hfi_meta.json --dry-run
+
+    # Update fit to remote database
+    mkts-backend update-fit --fit-file=fits/hfi.txt --meta-file=fits/hfi_meta.json --remote
+
+    # Update fit to north database
+    mkts-backend update-fit --fit-file=fits/hfi.txt --meta-file=fits/hfi_meta.json --north
 """)
 
 def process_add_watchlist(type_ids_str: str, remote: bool = False):
@@ -274,9 +433,18 @@ def parse_args(args: list[str])->dict | None:
     if len(args) == 0:
         return None
 
+    # Handle --help: check for subcommand-specific help first
     if "--help" in args:
-        display_cli_help()
-        exit()
+        # Check if this is a subcommand help request
+        subcommands_with_help = ["fit-check", "fit-update", "update-fit"]
+        for subcmd in subcommands_with_help:
+            if subcmd in args:
+                # Let the subcommand handler show its help
+                break
+        else:
+            # No subcommand found, show general help
+            display_cli_help()
+            exit()
 
     # Parse --market flag (supports --market=<alias>, --primary, --deployment shorthands)
     market_alias = "primary"  # default
@@ -329,6 +497,11 @@ def parse_args(args: list[str])->dict | None:
         exit()
 
     if "update-fit" in args:
+        # Check for subcommand help
+        if "--help" in args:
+            display_update_fit_help()
+            exit(0)
+
         fit_file = None
         meta_file = None
         target_alias = "wcmkt"
@@ -344,6 +517,7 @@ def parse_args(args: list[str])->dict | None:
 
         if not fit_file or not meta_file:
             print("Error: --fit-file and --meta-file are required for update-fit")
+            print("Use 'mkts-backend update-fit --help' for usage information.")
             return None
 
         remote = "--remote" in args  # default to local per user preference
@@ -378,6 +552,122 @@ def parse_args(args: list[str])->dict | None:
             logger.error(f"update-fit failed: {e}")
             print(f"Error running update-fit: {e}")
             exit(1)
+
+    # Handle fit-check command
+    if "fit-check" in args:
+        # Check for subcommand help
+        if "--help" in args:
+            display_fit_check_help()
+            exit(0)
+
+        file_path = None
+        paste_mode = "--paste" in args
+        target = None
+        output_format = None
+
+        for arg in args:
+            if arg.startswith("--file="):
+                file_path = arg.split("=", 1)[1]
+            elif arg.startswith("--target="):
+                try:
+                    target = int(arg.split("=", 1)[1])
+                except ValueError:
+                    print("Error: --target must be an integer")
+                    return None
+            elif arg.startswith("--output="):
+                output_format = arg.split("=", 1)[1].lower()
+                if output_format not in ("csv", "multibuy", "markdown"):
+                    print(f"Error: --output must be one of: csv, multibuy, markdown")
+                    return None
+
+        if not file_path and not paste_mode:
+            print("Error: --file=<path> is required for fit-check command (or use --paste)")
+            print("Use 'mkts-backend fit-check --help' for usage information.")
+            return None
+
+        eft_text = None
+        if paste_mode:
+            print("Paste your EFT fit below (Ctrl+D or blank line to finish):")
+            lines = []
+            try:
+                import sys
+                for line in sys.stdin:
+                    if line.strip() == "":
+                        # Second blank line signals end
+                        if lines and lines[-1] == "":
+                            break
+                        lines.append("")
+                    else:
+                        lines.append(line.rstrip())
+            except EOFError:
+                pass
+            eft_text = "\n".join(lines)
+
+        success = fit_check_command(
+            file_path=file_path,
+            eft_text=eft_text,
+            market_alias=market_alias,
+            show_legend=True,
+            target=target,
+            output_format=output_format,
+        )
+        exit(0 if success else 1)
+
+    # Handle fit-update command with subcommands
+    if "fit-update" in args:
+        # Check for subcommand help
+        if "--help" in args:
+            display_fit_update_help()
+            exit(0)
+
+        # Determine subcommand (first positional arg after fit-update)
+        fit_update_idx = args.index("fit-update")
+        subcommand = None
+        for arg in args[fit_update_idx + 1:]:
+            if not arg.startswith("--"):
+                subcommand = arg
+                break
+
+        if not subcommand:
+            print("Error: fit-update requires a subcommand")
+            print("Use 'mkts-backend fit-update --help' for usage information.")
+            return None
+
+        # Parse options
+        file_path = None
+        meta_file = None
+        fit_id = None
+        target_alias = "wcmkt"
+        interactive = "--interactive" in args
+        remote = "--remote" in args
+        local_only = "--local-only" in args
+        dry_run = "--dry-run" in args
+
+        for arg in args:
+            if arg.startswith("--file="):
+                file_path = arg.split("=", 1)[1]
+            elif arg.startswith("--meta-file="):
+                meta_file = arg.split("=", 1)[1]
+            elif arg.startswith("--fit-id="):
+                fit_id = int(arg.split("=", 1)[1])
+            elif arg.startswith("--target="):
+                target_alias = arg.split("=", 1)[1]
+            elif arg == "--north":
+                target_alias = "wcmktnorth"
+
+        success = fit_update_command(
+            subcommand=subcommand,
+            fit_id=fit_id,
+            file_path=file_path,
+            meta_file=meta_file,
+            market_flag=market_alias,  # Reuse market_alias parsed earlier
+            remote=remote,
+            local_only=local_only,
+            dry_run=dry_run,
+            interactive=interactive,
+            target_alias=target_alias,
+        )
+        exit(0 if success else 1)
 
     if "sync" in args:
         db = DatabaseConfig("wcmkt")

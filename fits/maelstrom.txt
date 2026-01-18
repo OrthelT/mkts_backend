@@ -4,17 +4,17 @@ Damage Control II
 Gyrostabilizer II
 Gyrostabilizer II
 Gyrostabilizer II
-Tracking Enhancer II
+Power Diagnostic System II
 
-500MN Y-T8 Compact Microwarpdrive
+500MN Cold-Gas Enduring Microwarpdrive
 Large Shield Extender II
 EM Shield Hardener II
 Large Shield Extender II
-Multispectrum Shield Hardener II
 Large Shield Extender II
-Medium F-RX Compact Capacitor Booster
+Multispectrum Shield Hardener II
+Medium Capacitor Booster II
 
-Heavy Gremlin Compact Energy Neutralizer
+Heavy Infectious Scoped Energy Neutralizer
 1400mm Howitzer Artillery II
 1400mm Howitzer Artillery II
 1400mm Howitzer Artillery II
@@ -43,7 +43,6 @@ Republic Fleet Nuclear L x400
 Republic Fleet Phased Plasma L x400
 Republic Fleet Proton L x250
 Republic Fleet Titanium Sabot L x400
-Inherent Implants 'Squire' Power Grid Management EG-602 x1
 Nanofiber Internal Structure II x2
-Power Diagnostic System II x1
 'Notos' Compact Large Proton Smartbomb x1
+Tracking Enhancer II x1

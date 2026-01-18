@@ -218,13 +218,16 @@ uv run fit-check --file=fit.txt --market=deployment
 uv run fit-check --file=fit.txt --target=50
 
 # Export to CSV
-uv run fit-check --file=fit.txt --export-csv=output.csv
+uv run fit-check --file=fit.txt --output=csv
 
 # Show multibuy format for restocking
-uv run fit-check --file=fit.txt --multibuy
+uv run fit-check --file=fit.txt --output=multibuy
+
+# Export markdown for Discord
+uv run fit-check --file=fit.txt --output=markdown
 
 # Combine options
-uv run fit-check --file=fit.txt --market=deployment --target=100 --export-csv=results.csv --multibuy
+uv run fit-check --file=fit.txt --market=deployment --target=100 --output=csv
 ```
 
 **Display Features:**
@@ -248,15 +251,23 @@ uv run fit-check --file=fit.txt --market=deployment --target=100 --export-csv=re
 - Displays "Qty Needed" column when target is available
 - Shows missing items list with quantities needed to reach target
 
-**Export Options:**
-- `--export-csv=<path>`: Exports the fit status table to CSV file for spreadsheet analysis
-- `--multibuy`: Displays items below target in Eve Multi-buy/jEveAssets stockpile format:
+**Export Options (`--output=<format>`):**
+- `csv`: Exports the fit status table to CSV file for spreadsheet analysis (auto-named from fit)
+- `multibuy`: Displays items below target in Eve Multi-buy/jEveAssets stockpile format:
   ```
   Damage Control II 15
   Gyrostabilizer II 30
   Large Shield Extender II 20
   ```
   This format can be copied directly into Eve Online or jEveAssets for easy restocking.
+- `markdown`: Discord-friendly markdown format with bold formatting for sharing fit status:
+  ```markdown
+  # Hurricane Fleet Issue
+  Target (**300**); Fits (**245**)
+
+  - **Damage Control II**: 165 needed (current: 245.0 fits)
+  - **Gyrostabilizer II**: 330 needed (current: 245.0 fits)
+  ```
 
 **Database Integration:**
 - Queries `marketstats` table for items on watchlist (uses pre-calculated pricing)

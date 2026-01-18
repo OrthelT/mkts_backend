@@ -108,6 +108,7 @@ def create_fit_status_table(
         price = item.get("price")
         fit_price = item.get("fit_price", 0)
         is_fallback = item.get("is_fallback", False)
+        is_ship = item.get("is_ship", False)
 
         # Color coding based on availability
         if fits >= 10:
@@ -120,6 +121,9 @@ def create_fit_status_table(
         # Mark fallback data with asterisk
         source_indicator = "[yellow]*[/yellow]" if is_fallback else "[green]✓[/green]"
 
+        # Style ship row differently (bold cyan name)
+        name_display = f"[bold cyan]{type_name}[/bold cyan]" if is_ship else type_name
+
         # Calculate qty_needed if target is set
         if target is not None:
             qty_needed = max(0, int((target - fits) * fit_qty)) if fits < target else 0
@@ -128,7 +132,7 @@ def create_fit_status_table(
 
             table.add_row(
                 str(type_id),
-                type_name,
+                name_display,
                 format_quantity(market_stock),
                 str(fit_qty),
                 f"[{fits_style}]{format_fits(fits)}[/{fits_style}]",
@@ -136,17 +140,19 @@ def create_fit_status_table(
                 format_isk(price, include_suffix=False),
                 format_isk(fit_price, include_suffix=False),
                 source_indicator,
+                end_section=is_ship,  # Add divider after ship row
             )
         else:
             table.add_row(
                 str(type_id),
-                type_name,
+                name_display,
                 format_quantity(market_stock),
                 str(fit_qty),
                 f"[{fits_style}]{format_fits(fits)}[/{fits_style}]",
                 format_isk(price, include_suffix=False),
                 format_isk(fit_price, include_suffix=False),
                 source_indicator,
+                end_section=is_ship,  # Add divider after ship row
             )
 
     return table

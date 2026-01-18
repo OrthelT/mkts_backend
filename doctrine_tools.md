@@ -24,9 +24,10 @@ A command-line interface that displays market availability for ship fittings fro
 - **Target Override**: `--target=N` parameter to override database target
 - **Fallback Pricing**: For items not on watchlist, queries `marketorders` table and calculates 5th percentile pricing
 - **Missing Items Report**: Shows items below target with quantity needed
-- **Export Options**:
-  - `--export-csv=<path>`: Export table to CSV file
-  - `--multibuy`: Display Eve Multi-buy/jEveAssets stockpile format for items below target
+- **Export Options** (`--output=<format>`):
+  - `csv`: Export table to CSV file (auto-named from fit)
+  - `multibuy`: Display Eve Multi-buy/jEveAssets stockpile format for items below target
+  - `markdown`: Discord-friendly markdown format with bold formatting
 
 ### CLI Usage:
 ```bash
@@ -40,10 +41,13 @@ fit-check --file=<path> --market=deployment
 fit-check --file=<path> --target=50
 
 # Export to CSV
-fit-check --file=<path> --export-csv=output.csv
+fit-check --file=<path> --output=csv
 
 # Show multibuy format for restocking
-fit-check --file=<path> --multibuy
+fit-check --file=<path> --output=multibuy
+
+# Export markdown for Discord
+fit-check --file=<path> --output=markdown
 
 # Read from stdin
 cat fit.txt | fit-check --paste

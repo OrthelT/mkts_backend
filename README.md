@@ -98,10 +98,13 @@ uv run fit-check --file=fit.txt --market=deployment
 uv run fit-check --file=fit.txt --target=50
 
 # Export results to CSV
-uv run fit-check --file=fit.txt --export-csv=output.csv
+uv run fit-check --file=fit.txt --output=csv
 
 # Show multibuy format for restocking items below target
-uv run fit-check --file=fit.txt --multibuy
+uv run fit-check --file=fit.txt --output=multibuy
+
+# Export markdown for Discord sharing
+uv run fit-check --file=fit.txt --output=markdown
 
 # Read from stdin
 cat fit.txt | uv run fit-check --paste

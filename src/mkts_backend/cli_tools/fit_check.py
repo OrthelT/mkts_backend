@@ -17,6 +17,7 @@ from mkts_backend.config.logging_config import configure_logging
 from mkts_backend.config import DatabaseConfig
 from mkts_backend.config.market_context import MarketContext
 from mkts_backend.utils.eft_parser import parse_eft_file, parse_eft_string, FitParseResult
+from mkts_backend.utils.jita import fetch_jita_prices, get_overpriced_items
 from mkts_backend.cli_tools.rich_display import (
     console,
     create_fit_status_table,
@@ -26,6 +27,7 @@ from mkts_backend.cli_tools.rich_display import (
     print_missing_for_target,
     print_multibuy_export,
     print_markdown_export,
+    print_overpriced_items,
 )
 
 logger = configure_logging(__name__)
@@ -42,6 +44,7 @@ class FitCheckResult:
     min_fits: float
     target: Optional[int]
     market_name: str
+    total_jita_fit_cost: float = 0.0
 
     @property
     def missing_for_target(self) -> List[Dict]:
@@ -57,6 +60,11 @@ class FitCheckResult:
             for item in self.market_data
             if item["fits"] < self.target
         ]
+
+    @property
+    def overpriced_items(self) -> List[Dict]:
+        """Get list of items priced above 120% of Jita price."""
+        return get_overpriced_items(self.market_data, threshold=1.2)
 
     def to_csv(self, file_path: str) -> str:
         """Export fit status table to CSV file."""
@@ -350,6 +358,9 @@ def get_fit_market_status(
     # Get marketstats data
     marketstats_data = _get_marketstats_data(type_ids, market_ctx)
 
+    # Fetch Jita prices for all items
+    jita_prices = fetch_jita_prices(type_ids)
+
     # Build result list
     market_data = []
     for type_id, fit_qty in item_quantities.items():
@@ -385,6 +396,10 @@ def get_fit_market_status(
         # Calculate fit cost
         fit_price = (price * fit_qty) if price else 0
 
+        # Get Jita price and calculate Jita fit cost
+        jita_price = jita_prices.get(type_id)
+        jita_fit_price = (jita_price * fit_qty) if jita_price else 0
+
         # Determine if this is a ship
         is_ship = _is_ship(type_id, category_id, market_ctx)
 
@@ -399,6 +414,8 @@ def get_fit_market_status(
             "avg_price": avg_price,
             "is_fallback": is_fallback,
             "is_ship": is_ship,
+            "jita_price": jita_price,
+            "jita_fit_price": jita_fit_price,
         })
 
     # Sort: ships first, then by fits available (lowest first to highlight bottlenecks)
@@ -406,6 +423,7 @@ def get_fit_market_status(
 
     # Calculate totals
     total_fit_cost = sum(item.get("fit_price", 0) for item in market_data)
+    total_jita_fit_cost = sum(item.get("jita_fit_price", 0) for item in market_data)
     min_fits = min((item["fits"] for item in market_data), default=0)
 
     return FitCheckResult(
@@ -417,6 +435,7 @@ def get_fit_market_status(
         min_fits=min_fits,
         target=target,
         market_name=market_name,
+        total_jita_fit_cost=total_jita_fit_cost,
     )
 
 
@@ -467,6 +486,7 @@ def display_fit_status(
         total_fits=result.min_fits,
         target=result.target,
         width=table_width,
+        total_jita_fit_cost=result.total_jita_fit_cost,
     )
 
     console.print()
@@ -489,6 +509,10 @@ def display_fit_status(
     # Print missing modules for target
     if result.target is not None and result.missing_for_target:
         print_missing_for_target(result.missing_for_target, result.target)
+
+    # Print items priced above 120% of Jita
+    if result.overpriced_items:
+        print_overpriced_items(result.overpriced_items)
 
     if show_legend:
         print_legend()

@@ -63,6 +63,7 @@ def create_fit_status_table(
     total_fit_cost: float,
     market_name: str = "primary",
     target: Optional[int] = None,
+    show_jita: bool = True,
 ) -> Table:
     """
     Create a Rich table displaying fit market status.
@@ -75,6 +76,7 @@ def create_fit_status_table(
         total_fit_cost: Total cost of the fit
         market_name: Name of the market being queried
         target: Optional target quantity for qty_needed calculation
+        show_jita: Whether to show Jita price columns
 
     Returns:
         A Rich Table object ready for display
@@ -97,6 +99,9 @@ def create_fit_status_table(
         table.add_column("Qty Needed", justify="right", width=10)
     table.add_column("Price", justify="right", width=14)
     table.add_column("Fit Cost", justify="right", width=14)
+    if show_jita:
+        table.add_column("Jita Price", justify="right", width=14)
+        table.add_column("Jita Fit", justify="right", width=14)
     table.add_column("Source", justify="center", width=8)
 
     for item in market_data:
@@ -109,6 +114,8 @@ def create_fit_status_table(
         fit_price = item.get("fit_price", 0)
         is_fallback = item.get("is_fallback", False)
         is_ship = item.get("is_ship", False)
+        jita_price = item.get("jita_price")
+        jita_fit_price = item.get("jita_fit_price", 0)
 
         # Color coding based on availability
         if fits >= 10:
@@ -124,36 +131,35 @@ def create_fit_status_table(
         # Style ship row differently (bold cyan name)
         name_display = f"[bold cyan]{type_name}[/bold cyan]" if is_ship else type_name
 
-        # Calculate qty_needed if target is set
+        # Build the row data
+        row_data = [
+            str(type_id),
+            name_display,
+            format_quantity(market_stock),
+            str(fit_qty),
+            f"[{fits_style}]{format_fits(fits)}[/{fits_style}]",
+        ]
+
+        # Add qty_needed if target is set
         if target is not None:
             qty_needed = max(0, int((target - fits) * fit_qty)) if fits < target else 0
             qty_needed_str = format_quantity(qty_needed) if qty_needed > 0 else "-"
             qty_needed_style = "red" if qty_needed > 0 else "dim"
+            row_data.append(f"[{qty_needed_style}]{qty_needed_str}[/{qty_needed_style}]")
 
-            table.add_row(
-                str(type_id),
-                name_display,
-                format_quantity(market_stock),
-                str(fit_qty),
-                f"[{fits_style}]{format_fits(fits)}[/{fits_style}]",
-                f"[{qty_needed_style}]{qty_needed_str}[/{qty_needed_style}]",
-                format_isk(price, include_suffix=False),
-                format_isk(fit_price, include_suffix=False),
-                source_indicator,
-                end_section=is_ship,  # Add divider after ship row
-            )
-        else:
-            table.add_row(
-                str(type_id),
-                name_display,
-                format_quantity(market_stock),
-                str(fit_qty),
-                f"[{fits_style}]{format_fits(fits)}[/{fits_style}]",
-                format_isk(price, include_suffix=False),
-                format_isk(fit_price, include_suffix=False),
-                source_indicator,
-                end_section=is_ship,  # Add divider after ship row
-            )
+        # Add price columns
+        row_data.append(format_isk(price, include_suffix=False))
+        row_data.append(format_isk(fit_price, include_suffix=False))
+
+        # Add Jita columns if enabled
+        if show_jita:
+            row_data.append(format_isk(jita_price, include_suffix=False))
+            row_data.append(format_isk(jita_fit_price, include_suffix=False))
+
+        # Add source indicator
+        row_data.append(source_indicator)
+
+        table.add_row(*row_data, end_section=is_ship)
 
     return table
 
@@ -167,6 +173,7 @@ def print_fit_header(
     total_fits: Optional[float] = None,
     target: Optional[int] = None,
     width: Optional[int] = None,
+    total_jita_fit_cost: Optional[float] = None,
 ) -> None:
     """
     Print a formatted header for fit status display.
@@ -180,6 +187,7 @@ def print_fit_header(
         total_fits: Total complete fits available (minimum of fits column)
         target: Target quantity from doctrine_fits
         width: Optional width to constrain the header panel
+        total_jita_fit_cost: Total Jita cost of the fit
     """
     header_text = Text()
     header_text.append("Ship: ", style="bold white")
@@ -192,6 +200,12 @@ def print_fit_header(
     header_text.append("\n")
     header_text.append("Total Fit Cost: ", style="bold white")
     header_text.append(format_isk(total_fit_cost), style="bold yellow")
+
+    # Add Jita fit cost if available
+    if total_jita_fit_cost is not None and total_jita_fit_cost > 0:
+        header_text.append("\n")
+        header_text.append("Jita Fit Cost: ", style="bold white")
+        header_text.append(format_isk(total_jita_fit_cost), style="bold cyan")
 
     # Add total fits available
     if total_fits is not None:
@@ -329,3 +343,24 @@ def print_markdown_export(markdown_text: str) -> None:
     # Print plain text without any Rich formatting for clean copy-paste
     print(markdown_text)
     console.print()
+
+
+def print_overpriced_items(overpriced_items: List[Dict]) -> None:
+    """
+    Print a list of items priced above 120% of Jita price.
+
+    Args:
+        overpriced_items: List of dicts with type_name, local_price, jita_price, percent_above_jita
+    """
+    if not overpriced_items:
+        return
+
+    console.print()
+    console.print("[bold yellow]Items priced above 120% of Jita:[/bold yellow]")
+    for item in overpriced_items:
+        percent = item.get("percent_above_jita", 0)
+        console.print(
+            f"  • {item['type_name']}: [yellow]{percent:.0f}%[/yellow] above Jita "
+            f"({format_isk(item['local_price'])} vs {format_isk(item['jita_price'])})",
+            style="white"
+        )

@@ -285,7 +285,7 @@ def print_missing_for_target(missing_items: List[Dict], target: int) -> None:
 
 def print_multibuy_export(multibuy_text: str) -> None:
     """
-    Print the multi-buy export text in a panel for easy copying.
+    Print the multi-buy export text as plain text for easy copying.
 
     Args:
         multibuy_text: Multi-buy format text to display
@@ -294,11 +294,28 @@ def print_multibuy_export(multibuy_text: str) -> None:
         return
 
     console.print()
-    panel = Panel(
-        multibuy_text,
-        title="[bold]Eve Multi-buy / jEveAssets Stockpile Format[/bold]",
-        subtitle="[dim]Copy and paste into game or tool[/dim]",
-        border_style="cyan",
-        padding=(1, 2),
-    )
-    console.print(panel)
+    console.print("[bold cyan]Eve Multi-buy / jEveAssets Stockpile Format[/bold cyan]")
+    console.print("[dim]Copy and paste into game or tool:[/dim]")
+    console.print()
+    # Print plain text without any Rich formatting for clean copy-paste
+    print(multibuy_text)
+    console.print()
+
+
+def print_markdown_export(markdown_text: str) -> None:
+    """
+    Print the markdown export text as plain text for easy copying to Discord.
+
+    Args:
+        markdown_text: Markdown format text to display
+    """
+    if not markdown_text:
+        return
+
+    console.print()
+    console.print("[bold cyan]Discord Markdown Format[/bold cyan]")
+    console.print("[dim]Copy and paste into Discord:[/dim]")
+    console.print()
+    # Print plain text without any Rich formatting for clean copy-paste
+    print(markdown_text)
+    console.print()

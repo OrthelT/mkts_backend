@@ -25,6 +25,7 @@ from mkts_backend.cli_tools.rich_display import (
     print_legend,
     print_missing_for_target,
     print_multibuy_export,
+    print_markdown_export,
 )
 
 logger = configure_logging(__name__)
@@ -94,6 +95,23 @@ class FitCheckResult:
                 lines.append(f"{item['type_name']} {item['qty_needed']}")
         return "\n".join(lines)
 
+    def to_markdown(self) -> str:
+        """Generate Discord-friendly markdown format for items below target."""
+        if self.target is None:
+            return ""
+        lines = [
+            f"# {self.fit_name}",
+            f"Target (**{self.target:,}**); Fits (**{int(self.min_fits)}**)",
+            "",
+        ]
+        for item in self.missing_for_target:
+            if item["qty_needed"] > 0:
+                lines.append(
+                    f"- **{item['type_name']}**: {item['qty_needed']:,} needed "
+                    f"(current: {item['fits']:.1f} fits)"
+                )
+        return "\n".join(lines)
+
 
 def _get_target_for_fit(
     fit_name: str,
@@ -161,7 +179,7 @@ def _get_marketstats_data(
         for type_id in type_ids:
             query = text("""
                 SELECT type_id, type_name, price, min_price, total_volume_remain,
-                       avg_price, avg_volume, days_remaining, last_update
+                       avg_price, avg_volume, days_remaining, last_update, category_id
                 FROM marketstats
                 WHERE type_id = :type_id
             """)
@@ -170,6 +188,47 @@ def _get_marketstats_data(
                 results[type_id] = dict(row._mapping)
 
     return results
+
+
+def _is_ship(type_id: int, category_id: Optional[int] = None, market_ctx: Optional[MarketContext] = None) -> bool:
+    """
+    Determine if a type_id is a ship.
+
+    Checks in order:
+    1. If category_id is provided and equals 6 (Ship category)
+    2. If type_id exists in ship_targets table
+    3. Lookup categoryID in sde.db inv_info table
+
+    Args:
+        type_id: The type ID to check
+        category_id: Optional category_id from marketstats
+        market_ctx: Market context for database selection
+
+    Returns:
+        True if the item is a ship, False otherwise
+    """
+    # Check 1: Direct category_id check
+    if category_id == 6:
+        return True
+
+    # Check 2: Look up in ship_targets table
+    db_alias = market_ctx.database_alias if market_ctx else "wcmkt"
+    db = DatabaseConfig(db_alias)
+    with db.engine.connect() as conn:
+        query = text("SELECT 1 FROM ship_targets WHERE ship_id = :type_id LIMIT 1")
+        result = conn.execute(query, {"type_id": type_id}).fetchone()
+        if result:
+            return True
+
+    # Check 3: Look up in SDE inv_info table
+    sde_db = DatabaseConfig("sde")
+    with sde_db.engine.connect() as conn:
+        query = text("SELECT categoryID FROM inv_info WHERE typeID = :type_id")
+        result = conn.execute(query, {"type_id": type_id}).fetchone()
+        if result and result[0] == 6:
+            return True
+
+    return False
 
 
 def _get_fallback_data(
@@ -294,6 +353,7 @@ def get_fit_market_status(
     # Build result list
     market_data = []
     for type_id, fit_qty in item_quantities.items():
+        category_id = None
         if type_id in marketstats_data:
             stats = marketstats_data[type_id]
             market_stock = stats.get("total_volume_remain", 0) or 0
@@ -301,6 +361,7 @@ def get_fit_market_status(
             avg_price = stats.get("avg_price")
             is_fallback = False
             type_name = stats.get("type_name", item_names.get(type_id, ""))
+            category_id = stats.get("category_id")
         else:
             # Try fallback from marketorders
             fallback = _get_fallback_data(type_id, market_ctx)
@@ -324,6 +385,9 @@ def get_fit_market_status(
         # Calculate fit cost
         fit_price = (price * fit_qty) if price else 0
 
+        # Determine if this is a ship
+        is_ship = _is_ship(type_id, category_id, market_ctx)
+
         market_data.append({
             "type_id": type_id,
             "type_name": type_name,
@@ -334,10 +398,11 @@ def get_fit_market_status(
             "fit_price": fit_price,
             "avg_price": avg_price,
             "is_fallback": is_fallback,
+            "is_ship": is_ship,
         })
 
-    # Sort by fits available (lowest first to highlight bottlenecks)
-    market_data.sort(key=lambda x: (x["fits"], x["type_name"]))
+    # Sort: ships first, then by fits available (lowest first to highlight bottlenecks)
+    market_data.sort(key=lambda x: (not x["is_ship"], x["fits"], x["type_name"]))
 
     # Calculate totals
     total_fit_cost = sum(item.get("fit_price", 0) for item in market_data)
@@ -360,8 +425,7 @@ def display_fit_status(
     market_ctx: Optional[MarketContext] = None,
     show_legend: bool = True,
     target: Optional[int] = None,
-    export_csv: Optional[str] = None,
-    show_multibuy: bool = False,
+    output_format: Optional[str] = None,
 ) -> FitCheckResult:
     """
     Display market status for a parsed fit using Rich formatting.
@@ -371,8 +435,7 @@ def display_fit_status(
         market_ctx: Market context for database selection
         show_legend: Whether to show the legend
         target: Optional target quantity override
-        export_csv: Path to export CSV file (if provided)
-        show_multibuy: Whether to show multi-buy export text
+        output_format: Export format - 'csv', 'multibuy', or 'markdown' (optional)
 
     Returns:
         FitCheckResult object with market data
@@ -424,17 +487,19 @@ def display_fit_status(
     if show_legend:
         print_legend()
 
-    # Handle exports
-    if export_csv:
-        csv_path = result.to_csv(export_csv)
-        console.print(f"\n[green]CSV exported to:[/green] {csv_path}")
-
-    if show_multibuy:
-        multibuy_text = result.to_multibuy()
-        if multibuy_text:
-            print_multibuy_export(multibuy_text)
-        else:
-            console.print("\n[yellow]No items below target - nothing to export for multi-buy[/yellow]")
+    # Handle output format exports
+    if output_format:
+        if result.target is None:
+            console.print("\n[yellow]No target set - export requires --target[/yellow]")
+        elif not result.missing_for_target:
+            console.print("\n[yellow]No items below target - nothing to export[/yellow]")
+        elif output_format == "csv":
+            csv_path = result.to_csv(f"{result.fit_name.replace(' ', '_')}_missing.csv")
+            console.print(f"\n[green]CSV exported to:[/green] {csv_path}")
+        elif output_format == "multibuy":
+            print_multibuy_export(result.to_multibuy())
+        elif output_format == "markdown":
+            print_markdown_export(result.to_markdown())
 
     return result
 
@@ -445,8 +510,7 @@ def fit_check_command(
     market_alias: str = "primary",
     show_legend: bool = True,
     target: Optional[int] = None,
-    export_csv: Optional[str] = None,
-    show_multibuy: bool = False,
+    output_format: Optional[str] = None,
 ) -> bool:
     """
     Execute the fit-check command.
@@ -457,8 +521,7 @@ def fit_check_command(
         market_alias: Market alias (primary, deployment)
         show_legend: Whether to show the legend
         target: Optional target quantity override
-        export_csv: Path to export CSV file
-        show_multibuy: Whether to show multi-buy export text
+        output_format: Export format - 'csv', 'multibuy', or 'markdown' (optional)
 
     Returns:
         True if successful, False otherwise
@@ -503,8 +566,7 @@ def fit_check_command(
         market_ctx,
         show_legend=show_legend,
         target=target,
-        export_csv=export_csv,
-        show_multibuy=show_multibuy,
+        output_format=output_format,
     )
 
     return True

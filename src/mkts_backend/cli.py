@@ -107,8 +107,7 @@ OPTIONS:
     --paste              Read EFT fit from stdin instead of file
     --market=<alias>     Market to check: primary, deployment (default: primary)
     --target=<N>         Override target quantity (default: from doctrine_fits)
-    --export-csv=<path>  Export fit status table to CSV file
-    --multibuy           Show Eve Multi-buy/jEveAssets stockpile format
+    --output=<format>    Export format: csv, multibuy, or markdown
     --help               Show this help message
 
 OUTPUT:
@@ -130,15 +129,10 @@ OUTPUT:
       - Fit Cost     Price × Fit Qty
       - Source       ✓ = marketstats, * = fallback data
 
-EXPORT FORMATS:
-    CSV (--export-csv):
-        Exports all columns including qty_needed (if target set) to a CSV file.
-
-    Multi-buy (--multibuy):
-        Displays items below target in Eve Multi-buy format:
-            ItemName qty_needed
-        One item per line, item name and quantity separated by single space.
-        Can be copied directly into Eve's multi-buy window or jEveAssets.
+EXPORT FORMATS (--output):
+    csv       Exports items below target to a CSV file (auto-named from fit)
+    multibuy  Eve Multi-buy/jEveAssets stockpile format (ItemName qty)
+    markdown  Discord-friendly markdown with bold formatting
 
 EXAMPLES:
     # Basic fit check
@@ -148,14 +142,13 @@ EXAMPLES:
     mkts-backend fit-check --file=fits/hfi.txt --market=deployment
 
     # Override target to 50 and show multi-buy list
-    mkts-backend fit-check --file=fits/hfi.txt --target=50 --multibuy
+    mkts-backend fit-check --file=fits/hfi.txt --target=50 --output=multibuy
 
     # Export to CSV for spreadsheet analysis
-    mkts-backend fit-check --file=fits/hfi.txt --export-csv=hfi_status.csv
+    mkts-backend fit-check --file=fits/hfi.txt --target=100 --output=csv
 
-    # Full analysis with all options
-    mkts-backend fit-check --file=fits/hfi.txt --market=primary --target=100 \\
-        --export-csv=results.csv --multibuy
+    # Export markdown for Discord
+    mkts-backend fit-check --file=fits/hfi.txt --target=300 --output=markdown
 
     # Paste fit directly (end with two blank lines or Ctrl+D)
     mkts-backend fit-check --paste --market=primary
@@ -570,8 +563,7 @@ def parse_args(args: list[str])->dict | None:
         file_path = None
         paste_mode = "--paste" in args
         target = None
-        export_csv = None
-        show_multibuy = "--multibuy" in args
+        output_format = None
 
         for arg in args:
             if arg.startswith("--file="):
@@ -582,8 +574,11 @@ def parse_args(args: list[str])->dict | None:
                 except ValueError:
                     print("Error: --target must be an integer")
                     return None
-            elif arg.startswith("--export-csv="):
-                export_csv = arg.split("=", 1)[1]
+            elif arg.startswith("--output="):
+                output_format = arg.split("=", 1)[1].lower()
+                if output_format not in ("csv", "multibuy", "markdown"):
+                    print(f"Error: --output must be one of: csv, multibuy, markdown")
+                    return None
 
         if not file_path and not paste_mode:
             print("Error: --file=<path> is required for fit-check command (or use --paste)")
@@ -614,8 +609,7 @@ def parse_args(args: list[str])->dict | None:
             market_alias=market_alias,
             show_legend=True,
             target=target,
-            export_csv=export_csv,
-            show_multibuy=show_multibuy,
+            output_format=output_format,
         )
         exit(0 if success else 1)
 

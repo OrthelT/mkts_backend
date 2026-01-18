@@ -282,21 +282,27 @@ class TestGetFitMarketStatus:
 
         with patch('mkts_backend.cli_tools.fit_check._get_marketstats_data') as mock_stats:
             with patch('mkts_backend.cli_tools.fit_check._get_target_for_fit') as mock_target:
-                mock_target.return_value = None
-                mock_stats.return_value = {
-                    100: {"type_name": "Test Module", "price": 1000000, "avg_price": 1100000, "total_volume_remain": 100},
-                    200: {"type_name": "Test Ship", "price": 50000000, "avg_price": 55000000, "total_volume_remain": 10},
-                }
+                with patch('mkts_backend.cli_tools.fit_check._is_ship') as mock_is_ship:
+                    mock_target.return_value = None
+                    mock_stats.return_value = {
+                        100: {"type_name": "Test Module", "price": 1000000, "avg_price": 1100000, "total_volume_remain": 100},
+                        200: {"type_name": "Test Ship", "price": 50000000, "avg_price": 55000000, "total_volume_remain": 10},
+                    }
+                    # Ship type_id 200 is a ship, module 100 is not
+                    mock_is_ship.side_effect = lambda tid, cat, ctx: tid == 200
 
-                result = get_fit_market_status(parse_result, market_ctx=None)
+                    result = get_fit_market_status(parse_result, market_ctx=None)
 
-                # Find the module entry
-                module_entry = next(e for e in result.market_data if e["type_id"] == 100)
-                assert module_entry["fits"] == 50.0  # 100 stock / 2 qty
+                    # Find the module entry
+                    module_entry = next(e for e in result.market_data if e["type_id"] == 100)
+                    assert module_entry["fits"] == 50.0  # 100 stock / 2 qty
 
-                # Find the ship entry
-                ship_entry = next(e for e in result.market_data if e["type_id"] == 200)
-                assert ship_entry["fits"] == 10.0  # 10 stock / 1 qty
+                    # Find the ship entry
+                    ship_entry = next(e for e in result.market_data if e["type_id"] == 200)
+                    assert ship_entry["fits"] == 10.0  # 10 stock / 1 qty
+
+                    # Verify ship is first in the sorted list
+                    assert result.market_data[0]["type_id"] == 200
 
     def test_calculates_fit_price(self):
         """Test that fit price is calculated correctly."""
@@ -315,17 +321,19 @@ class TestGetFitMarketStatus:
 
         with patch('mkts_backend.cli_tools.fit_check._get_marketstats_data') as mock_stats:
             with patch('mkts_backend.cli_tools.fit_check._get_target_for_fit') as mock_target:
-                mock_target.return_value = None
-                mock_stats.return_value = {
-                    100: {"type_name": "Test Module", "price": 1000000, "avg_price": 1100000, "total_volume_remain": 100},
-                    200: {"type_name": "Test Ship", "price": 50000000, "avg_price": 55000000, "total_volume_remain": 10},
-                }
+                with patch('mkts_backend.cli_tools.fit_check._is_ship') as mock_is_ship:
+                    mock_target.return_value = None
+                    mock_stats.return_value = {
+                        100: {"type_name": "Test Module", "price": 1000000, "avg_price": 1100000, "total_volume_remain": 100},
+                        200: {"type_name": "Test Ship", "price": 50000000, "avg_price": 55000000, "total_volume_remain": 10},
+                    }
+                    mock_is_ship.side_effect = lambda tid, cat, ctx: tid == 200
 
-                result = get_fit_market_status(parse_result, market_ctx=None)
+                    result = get_fit_market_status(parse_result, market_ctx=None)
 
-                # Find the module entry
-                module_entry = next(e for e in result.market_data if e["type_id"] == 100)
-                assert module_entry["fit_price"] == 5000000  # 5 * 1000000
+                    # Find the module entry
+                    module_entry = next(e for e in result.market_data if e["type_id"] == 100)
+                    assert module_entry["fit_price"] == 5000000  # 5 * 1000000
 
 
 class TestFitCheckResult:

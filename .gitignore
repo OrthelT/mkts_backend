@@ -17,7 +17,6 @@ market_orders.sqlite
 CLAUDE.md
 archive/
 db_cleanup.py
-hfi.txt
 *.db
 *.db-info
 *.db-*
@@ -47,8 +46,6 @@ archive/
 dev.py
 src/mkts_backend/utils/local_dev/
 fit_schemas.md
-new_zealot993.txt
-*.txt
 archive/
 *.bak
 rebuild_database.py

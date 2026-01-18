@@ -1,0 +1,43 @@
+[Hurricane Fleet Issue, WC HFI 2025]
+Damage Control II
+Power Diagnostic System II
+Gyrostabilizer II
+Gyrostabilizer II
+Tracking Enhancer II
+Nanofiber Internal Structure II
+
+Large Shield Extender II
+Large Shield Extender II
+Multispectrum Shield Hardener II
+50MN Cold-Gas Enduring Microwarpdrive
+
+Rapid Light Missile Launcher II
+720mm Howitzer Artillery II
+720mm Howitzer Artillery II
+720mm Howitzer Artillery II
+720mm Howitzer Artillery II
+720mm Howitzer Artillery II
+720mm Howitzer Artillery II
+
+Medium EM Shield Reinforcer II
+Medium Core Defense Field Extender I
+Medium Core Defense Field Extender I
+
+
+
+Valkyrie II x5
+
+Caldari Navy Scourge Light Missile x100
+Republic Fleet Phased Plasma M x800
+Tremor M x800
+Republic Fleet Carbonized Lead M x800
+Republic Fleet EMP M x800
+Republic Fleet Depleted Uranium M x920
+Republic Fleet Fusion M x920
+Republic Fleet Titanium Sabot M x800
+Scourge Precision Light Missile x20
+Republic Fleet Nuclear M x800
+Nanite Repair Paste x100
+Quake M x800
+
+

@@ -1,0 +1,49 @@
+[Maelstrom, FRT Maelstrom]
+
+Damage Control II
+Gyrostabilizer II
+Gyrostabilizer II
+Gyrostabilizer II
+Tracking Enhancer II
+
+500MN Y-T8 Compact Microwarpdrive
+Large Shield Extender II
+EM Shield Hardener II
+Large Shield Extender II
+Multispectrum Shield Hardener II
+Large Shield Extender II
+Medium F-RX Compact Capacitor Booster
+
+Heavy Gremlin Compact Energy Neutralizer
+1400mm Howitzer Artillery II
+1400mm Howitzer Artillery II
+1400mm Howitzer Artillery II
+1400mm Howitzer Artillery II
+1400mm Howitzer Artillery II
+1400mm Howitzer Artillery II
+
+Large Thermal Shield Reinforcer II
+Large Core Defense Field Extender I
+Large Core Defense Field Extender I
+
+
+Warrior II x5
+Hornet EC-300 x5
+Valkyrie SW-600 x5
+
+
+Quake L x400
+Tremor L x400
+Navy Cap Booster 800 x26
+Nanite Repair Paste x100
+Republic Fleet Depleted Uranium L x400
+Republic Fleet EMP L x400
+Republic Fleet Fusion L x400
+Republic Fleet Nuclear L x400
+Republic Fleet Phased Plasma L x400
+Republic Fleet Proton L x250
+Republic Fleet Titanium Sabot L x400
+Inherent Implants 'Squire' Power Grid Management EG-602 x1
+Nanofiber Internal Structure II x2
+Power Diagnostic System II x1
+'Notos' Compact Large Proton Smartbomb x1

@@ -535,5 +535,126 @@ def update_existing_fit(fit_id: int, fit_file: str, fit_metadata_file: str, remo
 def update_fit(fit_id: int, fit_file: str, fit_metadata_file: str, remote: bool = False, clear_existing: bool = True):
     update_fit_workflow(fit_id, fit_file, fit_metadata_file, remote=remote, clear_existing=clear_existing)
 
+
+def display_fit_market_status(parse_result: FitParseResult, db_alias: str = "wcmktprod"):
+    """
+    Display market status from wcmktprod.db for items in a parsed fit.
+
+    Args:
+        parse_result: FitParseResult from parse_eft_fit_file
+        db_alias: Database alias to query (default: "wcmktprod")
+    """
+    from collections import defaultdict
+
+    # Get database connection
+    market_db = DatabaseConfig(db_alias)
+
+    # Collect unique type_ids and their quantities
+    item_quantities = defaultdict(int)
+    for item in parse_result.items:
+        type_id = item["type_id"]
+        quantity = item["quantity"]
+        item_quantities[type_id] += quantity
+
+    if not item_quantities:
+        print(f"\nNo items found in fit: {parse_result.fit_name}")
+        return
+
+    # Query market stats for all items
+    market_data = []
+
+    with market_db.engine.connect() as market_conn:
+        with _sde_db.engine.connect() as sde_conn:
+            for type_id, needed_qty in item_quantities.items():
+                # Get market stats first
+                stats_query = text("""
+                    SELECT type_name, price, min_price, total_volume_remain,
+                           avg_price, days_remaining, last_update
+                    FROM marketstats
+                    WHERE type_id = :type_id
+                """)
+                stats_result = market_conn.execute(stats_query, {"type_id": type_id}).fetchone()
+
+                if stats_result:
+                    # Item found in market stats
+                    stats_dict = dict(stats_result._mapping)
+                    stats_dict["type_id"] = type_id
+                    stats_dict["needed_qty"] = needed_qty
+                    stats_dict["available"] = stats_dict["total_volume_remain"] >= needed_qty
+                    market_data.append(stats_dict)
+                else:
+                    # Item not in market stats - get type name from SDE
+                    type_name_query = text("SELECT typeName FROM inv_info WHERE typeID = :type_id")
+                    type_name_result = sde_conn.execute(type_name_query, {"type_id": type_id}).fetchone()
+                    type_name = type_name_result[0] if type_name_result else f"Unknown (ID: {type_id})"
+
+                    market_data.append({
+                        "type_id": type_id,
+                        "type_name": type_name,
+                        "price": None,
+                        "min_price": None,
+                        "total_volume_remain": 0,
+                        "avg_price": None,
+                        "days_remaining": None,
+                        "last_update": None,
+                        "needed_qty": needed_qty,
+                        "available": False,
+                    })
+
+    # Display results
+    print(f"\n{'='*80}")
+    print(f"Market Status for Fit: {parse_result.fit_name}")
+    print(f"Ship: {parse_result.ship_name}")
+    print(f"{'='*80}\n")
+
+    # Sort by availability (available first), then by type name
+    market_data.sort(key=lambda x: (not x["available"], x["type_name"]))
+
+    # Calculate column widths
+    max_name_len = max(len(item["type_name"]) for item in market_data) if market_data else 20
+    max_name_len = max(max_name_len, len("Item Name"))
+
+    # Print table header
+    header = f"{'Item Name':<{max_name_len}} | {'Needed':>8} | {'Available':>12} | {'Status':>12} | {'Price (ISK)':>15} | {'Days':>8}"
+    print(header)
+    print("-" * len(header))
+
+    # Print table rows
+    for item in market_data:
+        status = "✓ Available" if item["available"] else "✗ Insufficient"
+        price_str = f"{item['price']:,.2f}" if item["price"] is not None else "N/A"
+        volume_str = f"{item['total_volume_remain']:,}" if item["total_volume_remain"] is not None else "0"
+        days_str = f"{item['days_remaining']:.1f}" if item["days_remaining"] is not None else "N/A"
+
+        row = f"{item['type_name']:<{max_name_len}} | {item['needed_qty']:>8} | {volume_str:>12} | {status:>12} | {price_str:>15} | {days_str:>8}"
+        print(row)
+
+    # Summary
+    available_count = sum(1 for item in market_data if item["available"])
+    total_count = len(market_data)
+    missing_count = total_count - available_count
+
+    print(f"\nSummary: {available_count}/{total_count} items available on market")
+    if missing_count > 0:
+        missing_items = [item["type_name"] for item in market_data if not item["available"]]
+        print(f"Missing items: {', '.join(missing_items[:10])}")
+        if len(missing_items) > 10:
+            print(f"  ... and {len(missing_items) - 10} more")
+
+    # Calculate total cost
+    total_cost = 0
+    for item in market_data:
+        if item["price"] is not None:
+            total_cost += item["price"] * item["needed_qty"]
+
+    if total_cost > 0:
+        print(f"\nEstimated Total Cost: {total_cost:,.2f} ISK")
+
+    print(f"\n{'='*80}\n")
+
+
 if __name__ == "__main__":
+    # rni = "data/rni.txt"
+    # maelstrom = "data/maelstrom.txt"
+    # update_fit_workflow(901, rni, "data/rni.txt", remote=False, clear_existing=True, dry_run=True, target_alias="wcmkt")
     pass

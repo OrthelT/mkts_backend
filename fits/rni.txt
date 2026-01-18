@@ -1,0 +1,53 @@
+[Raven Navy Issue, FRT RNI ]
+
+Damage Control II
+Ballistic Control System II
+Ballistic Control System II
+Ballistic Control System II
+Signal Amplifier II
+
+Large Shield Extender II
+Large Shield Extender II
+EM Shield Hardener II
+500MN Quad LiF Restrained Microwarpdrive
+Heavy Capacitor Booster II
+Large Shield Extender II
+Multispectrum Shield Hardener II
+
+Cruise Missile Launcher II
+Cruise Missile Launcher II
+Cruise Missile Launcher II
+Cruise Missile Launcher II
+Cruise Missile Launcher II
+Cruise Missile Launcher II
+Cruise Missile Launcher II
+Cruise Missile Launcher II
+
+Large Thermal Shield Reinforcer II
+Large Core Defense Field Extender I
+Large Core Defense Field Extender I
+
+
+Warrior II x5
+Caldari Navy Warden x2
+Hornet EC-300 x5
+
+
+Inferno Fury Cruise Missile x500
+Mjolnir Fury Cruise Missile x500
+Mjolnir Precision Cruise Missile x500
+Nova Fury Cruise Missile x500
+Scourge Fury Cruise Missile x500
+Scourge Precision Cruise Missile x1000
+Navy Cap Booster 800 x16
+Caldari Navy Inferno Cruise Missile x1000
+Caldari Navy Mjolnir Cruise Missile x1000
+Caldari Navy Nova Cruise Missile x1000
+Caldari Navy Scourge Cruise Missile x1000
+Nanite Repair Paste x100
+Scan Resolution Script x1
+Targeting Range Script x1
+Agency 'Pyrolancea' DB3 Dose I x1
+Missile Guidance Enhancer II x1
+Sensor Booster II x1
+Multispectrum Shield Hardener II x1

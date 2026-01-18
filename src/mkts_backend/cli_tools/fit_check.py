@@ -443,20 +443,7 @@ def display_fit_status(
     # Get market data with target lookup
     result = get_fit_market_status(parse_result, market_ctx, target)
 
-    # Print header with target info
-    print_fit_header(
-        fit_name=result.fit_name,
-        ship_name=result.ship_name,
-        ship_type_id=result.ship_type_id,
-        market_name=result.market_name,
-        total_fit_cost=result.total_fit_cost,
-        total_fits=result.min_fits,
-        target=result.target,
-    )
-
-    console.print()
-
-    # Create and print table with qty_needed column
+    # Create table first to measure its width
     table = create_fit_status_table(
         fit_name=result.fit_name,
         ship_name=result.ship_name,
@@ -466,6 +453,25 @@ def display_fit_status(
         market_name=result.market_name,
         target=result.target,
     )
+
+    # Measure table width for header alignment
+    table_width = console.measure(table).maximum
+
+    # Print header with matching width
+    print_fit_header(
+        fit_name=result.fit_name,
+        ship_name=result.ship_name,
+        ship_type_id=result.ship_type_id,
+        market_name=result.market_name,
+        total_fit_cost=result.total_fit_cost,
+        total_fits=result.min_fits,
+        target=result.target,
+        width=table_width,
+    )
+
+    console.print()
+
+    # Print the table
     console.print(table)
 
     # Print summary

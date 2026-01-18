@@ -160,6 +160,7 @@ def print_fit_header(
     total_fit_cost: float,
     total_fits: Optional[float] = None,
     target: Optional[int] = None,
+    width: Optional[int] = None,
 ) -> None:
     """
     Print a formatted header for fit status display.
@@ -172,6 +173,7 @@ def print_fit_header(
         total_fit_cost: Total cost of the fit
         total_fits: Total complete fits available (minimum of fits column)
         target: Target quantity from doctrine_fits
+        width: Optional width to constrain the header panel
     """
     header_text = Text()
     header_text.append("Ship: ", style="bold white")
@@ -203,6 +205,8 @@ def print_fit_header(
         title=f"[bold]{fit_name}[/bold]",
         border_style="blue",
         padding=(0, 2),
+        width=width,
+        expand=False,
     )
     console.print(panel)
 

@@ -34,25 +34,25 @@ def format_isk(value: Optional[float], include_suffix: bool = True) -> str:
     if value >= 1_000_000_000:
         return f"{value / 1_000_000_000:,.2f}B{suffix}"
     elif value >= 1_000_000:
-        return f"{value / 1_000_000:,.2f}M{suffix}"
+        return f"{value / 1_000_000:,.1f}M{suffix}"
     elif value >= 1_000:
-        return f"{value / 1_000:,.2f}K{suffix}"
+        return f"{value / 1_000:,.1f}K{suffix}"
     else:
-        return f"{value:,.2f}{suffix}"
+        return f"{value:,.0f}{suffix}"
 
 
 def format_quantity(value: Optional[int]) -> str:
     """Format a quantity with comma separators."""
     if value is None:
         return "0"
-    return f"{value:,}"
+    return f"{value:,.0f}"
 
 
 def format_fits(value: Optional[float]) -> str:
-    """Format number of fits with one decimal place."""
+    """Format number of fits with 0 decimal place."""
     if value is None or value < 0:
         return "N/A"
-    return f"{value:,.1f}"
+    return f"{value:,.0f}"
 
 
 def create_fit_status_table(
@@ -261,7 +261,7 @@ def print_fit_summary(
 
     console.print(f"[{status_style}]Status: {status_msg}[/{status_style}]")
     console.print(f"Items: [cyan]{available_count}[/cyan]/[white]{total_count}[/white] available")
-    console.print(f"Complete fits possible: [bold yellow]{format_fits(min_fits)}[/bold yellow]")
+    console.print(f"Complete fits possible: [bold yellow]{int(format_fits(min_fits))}[/bold yellow]")
 
     if missing_items:
         console.print()
@@ -302,7 +302,7 @@ def print_missing_for_target(missing_items: List[Dict], target: int) -> None:
         if item["qty_needed"] > 0:
             console.print(
                 f"  • {item['type_name']}: [red]{format_quantity(item['qty_needed'])}[/red] needed "
-                f"(current: {item['fits']:.1f} fits)",
+                f"(current: {item['fits']:.0f} fits)",
                 style="white"
             )
 
@@ -359,8 +359,18 @@ def print_overpriced_items(overpriced_items: List[Dict]) -> None:
     console.print("[bold yellow]Items priced above 120% of Jita:[/bold yellow]")
     for item in overpriced_items:
         percent = item.get("percent_above_jita", 0)
+        local_price = format_isk(item['local_price'])
+        jita_price = format_isk(item['jita_price'])
+
         console.print(
             f"  • {item['type_name']}: [yellow]{percent:.0f}%[/yellow] above Jita "
-            f"({format_isk(item['local_price'])} vs {format_isk(item['jita_price'])})",
+            f"({split_suffix_format(local_price,'cyan')} vs {split_suffix_format(jita_price,'cyan')})",
             style="white"
         )
+
+def split_suffix_format(item: str, color: str)->str:
+    split_item = item.split(" ")
+    value = split_item[0]
+    suffix = split_item[1]
+    formatted_item = f"[{color}]{value}[/{color}] {suffix}"
+    return formatted_item

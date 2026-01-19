@@ -22,6 +22,15 @@ uv run mkts-backend --market=deployment  # Uses deployment market config
 **Check database tables:**
 ```bash
 uv run mkts-backend --check_tables
+uv run mkts-backend --check_tables --deployment  # Check deployment market tables
+```
+
+**Sync and validate databases:**
+```bash
+uv run mkts-backend sync              # Sync primary market database with Turso
+uv run mkts-backend sync --deployment # Sync deployment market database
+uv run mkts-backend validate          # Validate primary market database sync status
+uv run mkts-backend validate --market=deployment  # Validate deployment market
 ```
 
 **Check market availability for a ship fit:**
@@ -204,31 +213,107 @@ TURSO_FITTING_TOKEN=<fitting_db_token>
 
 ### fit-check Command
 
-The fit-check command displays market availability and pricing for ship fittings from EFT-formatted files.
+The fit-check command displays market availability and pricing for ship fittings from EFT-formatted files or from pre-calculated doctrine data.
 
 **Basic Usage:**
 ```bash
-# Check fit availability against primary market
+# Check fit availability against primary market from EFT file
 uv run fit-check --file=path/to/fit.txt
 
-# Check against specific market
+# Check fit by ID from doctrine_fits/doctrines tables (pre-calculated data)
+uv run fit-check --fit-id=42
+
+# Check fit_id against specific market
+uv run fit-check --fit-id=42 --market=deployment
+
+# Check against specific market with EFT file
 uv run fit-check --file=fit.txt --market=deployment
 
 # Override target quantity
 uv run fit-check --file=fit.txt --target=50
 
 # Export to CSV
-uv run fit-check --file=fit.txt --output=csv
+uv run fit-check --fit-id=42 --output=csv
 
 # Show multibuy format for restocking
 uv run fit-check --file=fit.txt --output=multibuy
 
 # Export markdown for Discord
-uv run fit-check --file=fit.txt --output=markdown
+uv run fit-check --fit-id=42 --output=markdown
 
 # Combine options
 uv run fit-check --file=fit.txt --market=deployment --target=100 --output=csv
 ```
+
+### update-fit Command
+
+The update-fit command processes EFT fit files and updates doctrine tables across multiple databases. It supports both file-based and interactive metadata input, with flexible market targeting.
+
+**Basic Usage:**
+```bash
+# Update fit with metadata file (traditional workflow)
+uv run mkts-backend update-fit --fit-file=fits/hfi.txt --meta-file=fits/hfi_meta.json
+
+# Update fit by ID with interactive prompts
+uv run mkts-backend update-fit --fit-file=fits/hfi.txt --fit-id=313 --interactive
+
+# Update fit for deployment market
+uv run mkts-backend update-fit --fit-file=fits/hfi.txt --fit-id=313 --interactive --deployment
+
+# Update fit for both markets
+uv run mkts-backend update-fit --fit-file=fits/hfi.txt --meta-file=meta.json --both
+
+# Update fit with ship_targets table update
+uv run mkts-backend update-fit --fit-file=fits/hfi.txt --fit-id=313 --interactive --update-targets
+
+# Preview changes without saving (dry run)
+uv run mkts-backend update-fit --fit-file=fits/hfi.txt --fit-id=313 --interactive --dry-run
+```
+
+**Command Options:**
+- `--fit-file=<path>`: Path to EFT fit file (required)
+- `--fit-id=<id>`: Fit ID to update (required if no --meta-file)
+- `--meta-file=<path>`: Path to metadata JSON file (optional with --fit-id)
+- `--interactive`: Prompt for metadata interactively (when no --meta-file)
+- `--market=<alias>`: Target market (primary, deployment, both)
+- `--primary`: Shorthand for --market=primary
+- `--deployment`: Shorthand for --market=deployment
+- `--both`: Update both primary and deployment markets
+- `--update-targets`: Update ship_targets table (default: skip)
+- `--remote`: Use remote database (default: local)
+- `--no-clear`: Keep existing items (default: clear and replace)
+- `--dry-run`: Preview changes without saving
+
+**Metadata File Format (JSON):**
+```json
+{
+  "fit_id": 313,
+  "name": "Hurricane Fleet Issue - Arty",
+  "description": "Standard doctrine fit",
+  "doctrine_id": 42,
+  "target": 300
+}
+```
+
+**Database Tables Updated:**
+- **wcfitting.db:**
+  - `fittings_doctrine` - doctrine records (auto-created if missing)
+  - `fittings_fitting` - fit shell records
+  - `fittings_fittingitem` - fit items
+  - `fittings_doctrine_fittings` - doctrine-fit links
+  - `watch_doctrines` - watched doctrines (auto-added for new doctrines)
+
+- **wcmktprod.db / wcmktnorth2.db (based on --market flag):**
+  - `doctrine_fits` - fit metadata with market_flag
+  - `doctrine_map` - doctrine-fit links
+  - `watchlist` - items to track
+  - `ship_targets` (optional with --update-targets)
+  - `doctrines` (optional with --update-targets)
+
+**Input Modes:**
+- `--file=<path>`: Parse an EFT-formatted fit file and query live market data
+- `--fit-id=<id>`: Look up fit by ID from `doctrine_fits` table and display pre-calculated market data from `doctrines` table
+- `--paste`: Read EFT fit from stdin
 
 **Display Features:**
 - **Header Section**: Shows fit name, ship name, ship type ID, total fit cost, fits available (bottleneck), and target quantity
@@ -270,16 +355,99 @@ uv run fit-check --file=fit.txt --market=deployment --target=100 --output=csv
   ```
 
 **Database Integration:**
-- Queries `marketstats` table for items on watchlist (uses pre-calculated pricing)
-- Falls back to `marketorders` table for non-watchlist items (calculates 5th percentile on-the-fly)
-- Looks up targets from `doctrine_fits` table
+- With `--file` or `--paste`:
+  - Queries `marketstats` table for items on watchlist (uses pre-calculated pricing)
+  - Falls back to `marketorders` table for non-watchlist items (calculates 5th percentile on-the-fly)
+  - Looks up targets from `doctrine_fits` table
+- With `--fit-id`:
+  - Looks up fit metadata from `doctrine_fits` table (fit_name, ship_name, target, etc.)
+  - Retrieves pre-calculated market data from `doctrines` table (fits_on_mkt, total_stock, price)
+  - Uses cached data from the last backend run for faster results
 - Uses SDE database for type name resolution when needed
+- Fetches Jita prices for comparison in both modes
 
 **Implementation Details:**
 - Location: `/home/orthel/workspace/github/mkts_backend/src/mkts_backend/cli_tools/fit_check.py`
 - Uses Rich library for beautiful console output
 - Handles missing items gracefully with fallback pricing
-- Supports both file input and stdin (via `--paste` flag)
+- Supports file input (`--file`), stdin (`--paste`), and doctrine lookup (`--fit-id`)
+
+### update-fit Subcommands
+
+The `update-fit` command supports multiple subcommands for managing fits and doctrines:
+
+#### Available Subcommands:
+- `add` - Add a NEW fit from an EFT file and assign to doctrine(s)
+- `update` - Update an existing fit's items from an EFT file
+- `assign-market` - Change the market assignment for an existing fit
+- `list-fits` - List all fits in the doctrine tracking system
+- `list-doctrines` - List all available doctrines
+- `create-doctrine` - Create a new doctrine (group of fits)
+- `doctrine-add-fit` - Add existing fit(s) to a doctrine (supports multiple)
+- `doctrine-remove-fit` - Remove fit(s) from a doctrine (supports multiple)
+
+#### doctrine-add-fit Subcommand
+
+Add existing fits that are already in the fittings database to a doctrine for tracking.
+
+```bash
+# Interactive mode (recommended) - prompts per-fit for targets
+uv run mkts-backend update-fit doctrine-add-fit
+
+# Non-interactive with fit ID
+uv run mkts-backend update-fit doctrine-add-fit --doctrine-id=42 --fit-id=313
+
+# Add multiple fits at once (comma-separated)
+uv run mkts-backend update-fit doctrine-add-fit --doctrine-id=42 --fit-ids=313,314,315
+
+# Specify default target and market (target applies to new fits only)
+uv run mkts-backend update-fit doctrine-add-fit --doctrine-id=42 --fit-id=313 --target=300 --market=primary
+
+# Preserve existing targets (don't prompt or update targets)
+uv run mkts-backend update-fit doctrine-add-fit --doctrine-id=42 --fit-ids=313,314,315 --skip-targets
+```
+
+**Features:**
+- Interactive prompts guide you through doctrine and fit selection
+- **Per-fit target setting**: Each fit can have a different target quantity (e.g., 300 Muninns, 50 Huginns)
+- Shows existing targets for fits that already have them
+- `--skip-targets` preserves existing targets and skips prompts
+- Supports adding multiple fits at once (comma-separated IDs)
+- Validates fit IDs exist in fittings database
+- Skips fits already in the doctrine
+- Sets up tracking in both fittings and market databases
+- Links fits to doctrines in `fittings_doctrine_fittings` table
+- Adds entries to `doctrine_fits`, `doctrine_map`, and `doctrines` tables
+
+#### doctrine-remove-fit Subcommand
+
+Remove fits from a doctrine (reverse operation of `doctrine-add-fit`). This unlinks fits from a doctrine but does NOT delete the fit itself.
+
+```bash
+# Interactive mode (recommended)
+uv run mkts-backend update-fit doctrine-remove-fit
+
+# Non-interactive with fit ID
+uv run mkts-backend update-fit doctrine-remove-fit --doctrine-id=42 --fit-id=313
+
+# Remove multiple fits at once (comma-separated)
+uv run mkts-backend update-fit doctrine-remove-fit --doctrine-id=42 --fit-ids=313,314,315
+
+# Use remote database
+uv run mkts-backend update-fit doctrine-remove-fit --doctrine-id=42 --fit-id=313 --remote
+```
+
+**Features:**
+- Interactive prompts display current fits in the doctrine
+- Supports removing multiple fits at once (comma-separated IDs)
+- Validates fit IDs are actually in the doctrine
+- Removes tracking from both fittings and market databases
+- Removes entries from `fittings_doctrine_fittings`, `doctrine_fits`, `doctrine_map`, and `doctrines` tables
+- Safe operation: the fit itself remains in the fittings database
+
+**Databases Affected:**
+- `wcfitting.db`: Removes link in `fittings_doctrine_fittings`
+- `wcmktprod.db` or `wcmktnorth2.db` (based on market): Removes entries from `doctrine_fits`, `doctrine_map`, and `doctrines`
 
 ---
 

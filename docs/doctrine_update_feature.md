@@ -34,9 +34,44 @@ There is a great deal of existing code from my past incomplete attempts to imple
 - Plan the code that will be required.
 - Plan a refactor of existing code to centralize and streamline the implementation of this functionality.
 
-## Usage (implemented)
-- Run the CLI to update a fit from EFT text + metadata:  
-  `mkts-backend update-fit --fit-file=new_zealot993.txt --meta-file=new_zealot_metadata.json`
-- Defaults to local databases; add `--remote` to target production.  
-- Use `--no-clear` to keep existing `fittings_fittingitem` rows; `--dry-run` to preview parsed items without writing.
-- To target the north market DB (`wcmktnorth2.db`), add `--target=wcmktnorth` (or `--north`) to the update-fit command; other flags behave the same.
+## Current Implementation Status
+
+### Usage (Fully Implemented)
+
+The `update-fit` command now supports multiple workflows and market targeting options:
+
+**Basic Workflows:**
+```bash
+# Traditional workflow with metadata file
+mkts-backend update-fit --fit-file=new_zealot993.txt --meta-file=new_zealot_metadata.json
+
+# Interactive workflow (prompts for metadata)
+mkts-backend update-fit --fit-file=new_zealot993.txt --fit-id=313 --interactive
+
+# Market-specific updates
+mkts-backend update-fit --fit-file=fit.txt --fit-id=313 --deployment  # Deployment market only
+mkts-backend update-fit --fit-file=fit.txt --fit-id=313 --both        # Both markets
+
+# With ship_targets table update
+mkts-backend update-fit --fit-file=fit.txt --fit-id=313 --interactive --update-targets
+```
+
+**Key Features:**
+- `--fit-id=<id>`: Specify fit ID directly (no longer requires metadata file)
+- `--interactive`: Prompts for metadata interactively if no metadata file provided
+- `--market=<alias>`: Target specific market (primary, deployment, both)
+- `--primary`, `--deployment`, `--both`: Shorthand market flags
+- `--update-targets`: Optional ship_targets table update (defaults to skip)
+- `--remote`: Target production databases
+- `--no-clear`: Keep existing fittings_fittingitem rows
+- `--dry-run`: Preview changes without writing to database
+
+**Automatic Database Management:**
+- Auto-creates doctrines in `fittings_doctrine` if they don't exist
+- Auto-adds new doctrines to `watch_doctrines`
+- Handles FK constraints by disabling constraints during upsert operations
+- Updates `doctrine_fits` table with `market_flag` to track which markets use each fit
+
+**Database Tables Updated:**
+- **wcfitting.db**: `fittings_doctrine`, `fittings_fitting`, `fittings_fittingitem`, `fittings_doctrine_fittings`, `watch_doctrines`
+- **Market DBs** (wcmktprod.db / wcmktnorth2.db): `doctrine_fits`, `doctrine_map`, `watchlist`, `ship_targets` (optional), `doctrines` (optional)

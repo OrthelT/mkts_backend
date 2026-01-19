@@ -34,6 +34,19 @@ logger = configure_logging(__name__)
 
 
 @dataclass
+class DoctrineFitInfo:
+    """Metadata for a fit from the doctrine_fits table."""
+    fit_id: int
+    fit_name: str
+    ship_type_id: int
+    ship_name: str
+    target: int
+    doctrine_name: str
+    doctrine_id: int
+    market_flag: Optional[str] = None
+
+
+@dataclass
 class FitCheckResult:
     """Result of a fit check operation with market data and export utilities."""
     fit_name: str
@@ -163,6 +176,98 @@ def _get_target_for_fit(
                 return result[0]
 
     return None
+
+
+def _get_doctrine_fit_info(
+    fit_id: int,
+    market_ctx: Optional[MarketContext] = None,
+) -> Optional[DoctrineFitInfo]:
+    """
+    Look up fit metadata from doctrine_fits table by fit_id.
+
+    Args:
+        fit_id: The fit ID to look up
+        market_ctx: Market context for database selection
+
+    Returns:
+        DoctrineFitInfo if found, None otherwise
+    """
+    db_alias = market_ctx.database_alias if market_ctx else "wcmkt"
+    db = DatabaseConfig(db_alias)
+
+    with db.engine.connect() as conn:
+        query = text("""
+            SELECT fit_id, fit_name, ship_type_id, ship_name, target,
+                   doctrine_name, doctrine_id
+            FROM doctrine_fits
+            WHERE fit_id = :fit_id
+            LIMIT 1
+        """)
+        result = conn.execute(query, {"fit_id": fit_id}).fetchone()
+        if result:
+            return DoctrineFitInfo(
+                fit_id=result.fit_id,
+                fit_name=result.fit_name,
+                ship_type_id=result.ship_type_id,
+                ship_name=result.ship_name,
+                target=result.target,
+                doctrine_name=result.doctrine_name,
+                doctrine_id=result.doctrine_id,
+            )
+
+    return None
+
+
+def _get_doctrines_market_data(
+    fit_id: int,
+    market_ctx: Optional[MarketContext] = None,
+) -> List[Dict]:
+    """
+    Fetch market data from doctrines table for a given fit_id.
+
+    Args:
+        fit_id: The fit ID to query
+        market_ctx: Market context for database selection
+
+    Returns:
+        List of market data dicts compatible with display functions
+    """
+    db_alias = market_ctx.database_alias if market_ctx else "wcmkt"
+    db = DatabaseConfig(db_alias)
+
+    market_data = []
+    with db.engine.connect() as conn:
+        query = text("""
+            SELECT fit_id, ship_id, ship_name, hulls, type_id, type_name,
+                   fit_qty, fits_on_mkt, total_stock, price, avg_vol, days,
+                   group_id, group_name, category_id, category_name
+            FROM doctrines
+            WHERE fit_id = :fit_id
+            ORDER BY category_id ASC, fits_on_mkt ASC
+        """)
+        rows = conn.execute(query, {"fit_id": fit_id}).fetchall()
+
+        for row in rows:
+            is_ship = row.category_id == 6 if row.category_id else False
+            fit_price = (row.price * row.fit_qty) if row.price and row.fit_qty else 0
+
+            market_data.append({
+                "type_id": row.type_id,
+                "type_name": row.type_name or "Unknown",
+                "market_stock": row.total_stock or 0,
+                "fit_qty": row.fit_qty or 1,
+                "fits": row.fits_on_mkt or 0,
+                "price": row.price,
+                "fit_price": fit_price,
+                "avg_price": None,  # Not stored in doctrines table
+                "is_fallback": False,  # Pre-calculated data
+                "is_ship": is_ship,
+                "category_id": row.category_id,
+                "jita_price": None,  # Will be populated later
+                "jita_fit_price": 0,
+            })
+
+    return market_data
 
 
 def _get_marketstats_data(
@@ -439,28 +544,100 @@ def get_fit_market_status(
     )
 
 
-def display_fit_status(
-    parse_result: FitParseResult,
+def get_fit_market_status_by_id(
+    fit_id: int,
+    market_ctx: Optional[MarketContext] = None,
+    target: Optional[int] = None,
+) -> Optional[FitCheckResult]:
+    """
+    Get market status for a fit using pre-calculated data from the doctrines table.
+
+    This function retrieves cached market data that was calculated during the
+    main backend data collection workflow, rather than querying live market data.
+
+    Args:
+        fit_id: The fit_id to look up in doctrine_fits/doctrines tables
+        market_ctx: Market context for database selection
+        target: Optional target quantity override. If None, uses value from doctrine_fits.
+
+    Returns:
+        FitCheckResult with market data from doctrines table, or None if fit not found
+    """
+    market_name = market_ctx.name if market_ctx else "primary"
+
+    # Get fit metadata from doctrine_fits
+    fit_info = _get_doctrine_fit_info(fit_id, market_ctx)
+    if not fit_info:
+        return None
+
+    # Use provided target or fall back to doctrine_fits target
+    effective_target = target if target is not None else fit_info.target
+
+    # Get market data from doctrines table
+    market_data = _get_doctrines_market_data(fit_id, market_ctx)
+    if not market_data:
+        return None
+
+    # Fetch Jita prices for comparison
+    type_ids = [item["type_id"] for item in market_data]
+    jita_prices = fetch_jita_prices(type_ids)
+
+    # Populate Jita prices in market data
+    for item in market_data:
+        type_id = item["type_id"]
+        jita_price = jita_prices.get(type_id)
+        item["jita_price"] = jita_price
+        item["jita_fit_price"] = (jita_price * item["fit_qty"]) if jita_price else 0
+
+    # Sort: ships first, then by fits available (lowest first to highlight bottlenecks)
+    market_data.sort(key=lambda x: (not x["is_ship"], x["fits"], x["type_name"]))
+
+    # Calculate totals
+    total_fit_cost = sum(item.get("fit_price", 0) for item in market_data)
+    total_jita_fit_cost = sum(item.get("jita_fit_price", 0) for item in market_data)
+    min_fits = min((item["fits"] for item in market_data), default=0)
+
+    return FitCheckResult(
+        fit_name=fit_info.fit_name,
+        ship_name=fit_info.ship_name,
+        ship_type_id=fit_info.ship_type_id,
+        market_data=market_data,
+        total_fit_cost=total_fit_cost,
+        min_fits=min_fits,
+        target=effective_target,
+        market_name=market_name,
+        total_jita_fit_cost=total_jita_fit_cost,
+    )
+
+
+def display_fit_status_by_id(
+    fit_id: int,
     market_ctx: Optional[MarketContext] = None,
     show_legend: bool = True,
     target: Optional[int] = None,
     output_format: Optional[str] = None,
-) -> FitCheckResult:
+    show_jita: bool = True,
+) -> Optional[FitCheckResult]:
     """
-    Display market status for a parsed fit using Rich formatting.
+    Display market status for a fit by fit_id using pre-calculated doctrines data.
 
     Args:
-        parse_result: Parsed EFT fit result
+        fit_id: The fit_id to look up
         market_ctx: Market context for database selection
         show_legend: Whether to show the legend
         target: Optional target quantity override
         output_format: Export format - 'csv', 'multibuy', or 'markdown' (optional)
+        show_jita: Whether to show Jita price comparison columns
 
     Returns:
-        FitCheckResult object with market data
+        FitCheckResult object with market data, or None if fit not found
     """
-    # Get market data with target lookup
-    result = get_fit_market_status(parse_result, market_ctx, target)
+    # Get market data from doctrines table
+    result = get_fit_market_status_by_id(fit_id, market_ctx, target)
+
+    if not result:
+        console.print(f"[red]Error: No fit found with fit_id={fit_id}[/red]")
+        return None
 
     # Create table first to measure its width
     table = create_fit_status_table(
@@ -471,6 +648,7 @@ def display_fit_status(
         total_fit_cost=result.total_fit_cost,
         market_name=result.market_name,
         target=result.target,
+        show_jita=show_jita,
     )
 
     # Measure table width for header alignment
@@ -486,7 +664,7 @@ def display_fit_status(
         total_fits=result.min_fits,
         target=result.target,
         width=table_width,
-        total_jita_fit_cost=result.total_jita_fit_cost,
+        total_jita_fit_cost=result.total_jita_fit_cost if show_jita else None,
     )
 
     console.print()
@@ -511,7 +689,105 @@ def display_fit_status(
         print_missing_for_target(result.missing_for_target, result.target)
 
     # Print items priced above 120% of Jita
-    if result.overpriced_items:
+    if show_jita and result.overpriced_items:
+        print_overpriced_items(result.overpriced_items)
+
+    if show_legend:
+        print_legend()
+
+    # Handle output format exports
+    if output_format:
+        if result.target is None:
+            console.print("\n[yellow]No target set - export requires --target[/yellow]")
+        elif not result.missing_for_target:
+            console.print("\n[yellow]No items below target - nothing to export[/yellow]")
+        elif output_format == "csv":
+            csv_path = result.to_csv(f"{result.fit_name.replace(' ', '_')}_missing.csv")
+            console.print(f"\n[green]CSV exported to:[/green] {csv_path}")
+        elif output_format == "multibuy":
+            print_multibuy_export(result.to_multibuy())
+        elif output_format == "markdown":
+            print_markdown_export(result.to_markdown())
+
+    return result
+
+
+def display_fit_status(
+    parse_result: FitParseResult,
+    market_ctx: Optional[MarketContext] = None,
+    show_legend: bool = True,
+    target: Optional[int] = None,
+    output_format: Optional[str] = None,
+    show_jita: bool = True,
+) -> FitCheckResult:
+    """
+    Display market status for a parsed fit using Rich formatting.
+
+    Args:
+        parse_result: Parsed EFT fit result
+        market_ctx: Market context for database selection
+        show_legend: Whether to show the legend
+        target: Optional target quantity override
+        output_format: Export format - 'csv', 'multibuy', or 'markdown' (optional)
+        show_jita: Whether to show Jita price comparison columns
+
+    Returns:
+        FitCheckResult object with market data
+    """
+    # Get market data with target lookup
+    result = get_fit_market_status(parse_result, market_ctx, target)
+
+    # Create table first to measure its width
+    table = create_fit_status_table(
+        fit_name=result.fit_name,
+        ship_name=result.ship_name,
+        ship_type_id=result.ship_type_id,
+        market_data=result.market_data,
+        total_fit_cost=result.total_fit_cost,
+        market_name=result.market_name,
+        target=result.target,
+        show_jita=show_jita,
+    )
+
+    # Measure table width for header alignment
+    table_width = console.measure(table).maximum
+
+    # Print header with matching width
+    print_fit_header(
+        fit_name=result.fit_name,
+        ship_name=result.ship_name,
+        ship_type_id=result.ship_type_id,
+        market_name=result.market_name,
+        total_fit_cost=result.total_fit_cost,
+        total_fits=result.min_fits,
+        target=result.target,
+        width=table_width,
+        total_jita_fit_cost=result.total_jita_fit_cost if show_jita else None,
+    )
+
+    console.print()
+
+    # Print the table
+    console.print(table)
+
+    # Print summary
+    available_count = sum(1 for item in result.market_data if item["fits"] >= 1)
+    total_count = len(result.market_data)
+    missing_items = [item["type_name"] for item in result.market_data if item["fits"] < 1]
+
+    print_fit_summary(
+        available_count=available_count,
+        total_count=total_count,
+        min_fits=result.min_fits,
+        missing_items=missing_items,
+    )
+
+    # Print missing modules for target
+    if result.target is not None and result.missing_for_target:
+        print_missing_for_target(result.missing_for_target, result.target)
+
+    # Print items priced above 120% of Jita
+    if show_jita and result.overpriced_items:
         print_overpriced_items(result.overpriced_items)
 
     if show_legend:
@@ -537,10 +813,12 @@ def display_fit_status(
 def fit_check_command(
     file_path: Optional[str] = None,
     eft_text: Optional[str] = None,
+    fit_id: Optional[int] = None,
     market_alias: str = "primary",
     show_legend: bool = True,
     target: Optional[int] = None,
     output_format: Optional[str] = None,
+    show_jita: bool = True,
 ) -> bool:
     """
     Execute the fit-check command.
@@ -548,10 +826,12 @@ def fit_check_command(
     Args:
         file_path: Path to EFT fit file
         eft_text: Raw EFT text (alternative to file)
+        fit_id: Fit ID to look up from doctrine_fits/doctrines tables
         market_alias: Market alias (primary, deployment)
         show_legend: Whether to show the legend
         target: Optional target quantity override
         output_format: Export format - 'csv', 'multibuy', or 'markdown' (optional)
+        show_jita: Whether to show Jita price comparison columns
 
     Returns:
         True if successful, False otherwise
@@ -564,14 +844,26 @@ def fit_check_command(
         console.print(f"Available markets: {', '.join(MarketContext.list_available())}")
         return False
 
-    # Parse fit
+    # Handle fit_id mode - use pre-calculated data from doctrines table
+    if fit_id is not None:
+        result = display_fit_status_by_id(
+            fit_id,
+            market_ctx,
+            show_legend=show_legend,
+            target=target,
+            output_format=output_format,
+            show_jita=show_jita,
+        )
+        return result is not None
+
+    # Parse fit from file or text
     try:
         if file_path:
             parse_result = parse_eft_file(file_path)
         elif eft_text:
             parse_result = parse_eft_string(eft_text)
         else:
-            console.print("[red]Error: Either --file or --paste must be specified[/red]")
+            console.print("[red]Error: Either --file, --paste, or --fit_id must be specified[/red]")
             return False
     except FileNotFoundError:
         console.print(f"[red]Error: File not found: {file_path}[/red]")
@@ -597,6 +889,7 @@ def fit_check_command(
         show_legend=show_legend,
         target=target,
         output_format=output_format,
+        show_jita=show_jita,
     )
 
     return True

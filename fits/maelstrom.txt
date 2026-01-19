@@ -1,4 +1,5 @@
-[Maelstrom, FRT Maelstrom]
+
+[Maelstrom, WC-EN Shield DPS Maelstrom v1.0]
 
 Damage Control II
 Gyrostabilizer II
@@ -27,6 +28,9 @@ Large Core Defense Field Extender I
 Large Core Defense Field Extender I
 
 
+
+
+
 Warrior II x5
 Hornet EC-300 x5
 Valkyrie SW-600 x5
@@ -46,3 +50,5 @@ Republic Fleet Titanium Sabot L x400
 Nanofiber Internal Structure II x2
 'Notos' Compact Large Proton Smartbomb x1
 Tracking Enhancer II x1
+Multispectrum Shield Hardener II x1
+

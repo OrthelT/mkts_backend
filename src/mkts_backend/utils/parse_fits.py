@@ -272,6 +272,95 @@ def process_fit(fit_file: str, fit_id: int):
     return fit, ship_name, fit_name
 
 
+def create_doctrine(
+    doctrine_id: int,
+    name: str,
+    description: str = "",
+    icon_url: str = "",
+    remote: bool = False
+) -> bool:
+    """
+    Create a new doctrine in fittings_doctrine table.
+
+    Args:
+        doctrine_id: The doctrine ID to create
+        name: Name of the doctrine
+        description: Description of the doctrine
+        icon_url: Optional icon URL
+        remote: Whether to use remote database
+
+    Returns:
+        True if created successfully, False if doctrine already exists
+    """
+    from datetime import datetime, timezone
+
+    db = DatabaseConfig("fittings")
+    engine = db.remote_engine if remote else db.engine
+
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+
+    with engine.connect() as conn:
+        # Check if doctrine already exists
+        existing = conn.execute(
+            text("SELECT 1 FROM fittings_doctrine WHERE id = :doctrine_id"),
+            {"doctrine_id": doctrine_id},
+        ).fetchone()
+
+        if existing:
+            logger.info(f"Doctrine {doctrine_id} already exists")
+            return False
+
+        # Insert new doctrine
+        conn.execute(
+            text("""
+                INSERT INTO fittings_doctrine (id, name, icon_url, description, created, last_updated)
+                VALUES (:id, :name, :icon_url, :description, :created, :last_updated)
+            """),
+            {
+                "id": doctrine_id,
+                "name": name,
+                "icon_url": icon_url,
+                "description": description,
+                "created": now,
+                "last_updated": now,
+            },
+        )
+        conn.commit()
+
+    engine.dispose()
+    logger.info(f"Created doctrine {doctrine_id}: {name}")
+    return True
+
+
+def doctrine_exists(doctrine_id: int, remote: bool = False) -> bool:
+    """Check if a doctrine exists in fittings_doctrine."""
+    db = DatabaseConfig("fittings")
+    engine = db.remote_engine if remote else db.engine
+
+    with engine.connect() as conn:
+        result = conn.execute(
+            text("SELECT 1 FROM fittings_doctrine WHERE id = :doctrine_id"),
+            {"doctrine_id": doctrine_id},
+        ).fetchone()
+
+    engine.dispose()
+    return result is not None
+
+
+def get_next_doctrine_id(remote: bool = False) -> int:
+    """Get the next available doctrine ID."""
+    db = DatabaseConfig("fittings")
+    engine = db.remote_engine if remote else db.engine
+
+    with engine.connect() as conn:
+        result = conn.execute(
+            text("SELECT COALESCE(MAX(id), 0) + 1 AS next_id FROM fittings_doctrine")
+        ).scalar_one()
+
+    engine.dispose()
+    return result
+
+
 def add_doctrine_to_watch(doctrine_id: int, remote: bool = False) -> None:
     """
     Add a doctrine from fittings_doctrine to watch_doctrines table.
@@ -390,12 +479,18 @@ def parse_fit_metadata(fit_metadata_file: str) -> FitMetadata:
 def upsert_fittings_fitting(metadata: FitMetadata, ship_type_id: int, remote: bool = False) -> None:
     """
     Upsert the shell record in fittings_fitting.
+
+    Note: Disables FK constraints because ship_type_id may not exist in fittings_type
+    (types are sourced from SDE, not fittings database).
     """
     engine = _get_engine("fittings", remote)
     now = datetime.now().astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
     created = now
     last_updated = metadata.last_updated or now
     with engine.connect() as conn:
+        # Disable FK constraints - ship_type_id references fittings_type which may not have this type
+        conn.execute(text("PRAGMA foreign_keys = OFF"))
+
         stmt = text(
             """
             INSERT INTO fittings_fitting (id, description, name, ship_type_type_id, ship_type_id, created, last_updated)
@@ -421,6 +516,9 @@ def upsert_fittings_fitting(metadata: FitMetadata, ship_type_id: int, remote: bo
             },
         )
         conn.commit()
+
+        # Re-enable FK constraints
+        conn.execute(text("PRAGMA foreign_keys = ON"))
     logger.info(
         f"Upserted fittings_fitting for fit_id {metadata.fit_id}: {metadata.name} (ship_type_id={ship_type_id})"
     )
@@ -429,6 +527,18 @@ def upsert_fittings_fitting(metadata: FitMetadata, ship_type_id: int, remote: bo
 def ensure_doctrine_link(doctrine_id: int, fit_id: int, remote: bool = False) -> None:
     engine = _get_engine("fittings", remote)
     with engine.connect() as conn:
+        # Check if doctrine exists in fittings_doctrine
+        doctrine_exists = conn.execute(
+            text("SELECT 1 FROM fittings_doctrine WHERE id = :doctrine_id"),
+            {"doctrine_id": doctrine_id},
+        ).fetchone()
+        if not doctrine_exists:
+            logger.warning(
+                f"Doctrine {doctrine_id} not found in fittings_doctrine. "
+                f"Skipping doctrine link but continuing with market DB updates."
+            )
+            return
+
         exists = conn.execute(
             text(
                 "SELECT 1 FROM fittings_doctrine_fittings WHERE doctrine_id = :doctrine_id AND fitting_id = :fit_id"
@@ -437,6 +547,9 @@ def ensure_doctrine_link(doctrine_id: int, fit_id: int, remote: bool = False) ->
         ).fetchone()
         if exists:
             return
+
+        # Disable FK constraints for this insert (doctrine may exist in source but not synced locally)
+        conn.execute(text("PRAGMA foreign_keys = OFF"))
         next_id = conn.execute(
             text("SELECT COALESCE(MAX(id), 0) + 1 AS next_id FROM fittings_doctrine_fittings")
         ).scalar_one()
@@ -447,17 +560,52 @@ def ensure_doctrine_link(doctrine_id: int, fit_id: int, remote: bool = False) ->
             {"id": next_id, "doctrine_id": doctrine_id, "fit_id": fit_id},
         )
         conn.commit()
+        conn.execute(text("PRAGMA foreign_keys = ON"))
     logger.info(f"Linked doctrine_id {doctrine_id} to fit_id {fit_id} in fittings_doctrine_fittings")
+
+
+def remove_doctrine_link(doctrine_id: int, fit_id: int, remote: bool = False) -> bool:
+    """
+    Remove the link between a doctrine and a fit in fittings_doctrine_fittings.
+
+    Args:
+        doctrine_id: The doctrine ID
+        fit_id: The fit ID to unlink
+        remote: Whether to use remote database
+
+    Returns:
+        True if a row was deleted, False if no matching row found
+    """
+    engine = _get_engine("fittings", remote)
+    with engine.connect() as conn:
+        result = conn.execute(
+            text(
+                "DELETE FROM fittings_doctrine_fittings WHERE doctrine_id = :doctrine_id AND fitting_id = :fit_id"
+            ),
+            {"doctrine_id": doctrine_id, "fit_id": fit_id},
+        )
+        conn.commit()
+        rows_affected = result.rowcount
+    engine.dispose()
+
+    if rows_affected > 0:
+        logger.info(f"Removed link between doctrine_id {doctrine_id} and fit_id {fit_id} from fittings_doctrine_fittings")
+        return True
+    else:
+        logger.warning(f"No fittings_doctrine_fittings row found for doctrine_id={doctrine_id}, fit_id={fit_id}")
+        return False
 
 
 def update_fit_workflow(
     fit_id: int,
     fit_file: str,
-    fit_metadata_file: str,
+    fit_metadata_file: Optional[str] = None,
     remote: bool = False,
     clear_existing: bool = True,
     dry_run: bool = False,
     target_alias: str = "wcmkt",
+    update_targets: bool = False,
+    metadata_override: Optional[Dict] = None,
 ):
     """
     End-to-end update for a fit:
@@ -465,8 +613,26 @@ def update_fit_workflow(
     - Upsert fittings_fitting and fittings_fittingitem
     - Ensure doctrine link in fittings_doctrine_fittings
     - Propagate to wcmktprod doctrine tables and watchlist
+
+    Args:
+        fit_id: The fit ID to update
+        fit_file: Path to EFT fit file
+        fit_metadata_file: Path to metadata JSON file (optional if metadata_override provided)
+        remote: Use remote database
+        clear_existing: Clear existing fit items before inserting
+        dry_run: Preview changes without saving
+        target_alias: Target database alias (wcmkt or wcmktnorth)
+        update_targets: If True, update ship_targets table (default: False)
+        metadata_override: Dict with metadata fields (overrides file if provided)
     """
-    metadata = parse_fit_metadata(fit_metadata_file)
+    # Get metadata from override dict or file
+    if metadata_override:
+        metadata = FitMetadata(**metadata_override)
+    elif fit_metadata_file:
+        metadata = parse_fit_metadata(fit_metadata_file)
+    else:
+        raise ValueError("Either fit_metadata_file or metadata_override must be provided")
+
     sde_engine = _get_engine("sde", False)
 
     try:
@@ -494,14 +660,27 @@ def update_fit_workflow(
     upsert_fittings_fitting(metadata, ship_type_id, remote=remote)
     insert_fit_items_to_db(parse_result.items, fit_id=fit_id, clear_existing=clear_existing, remote=remote)
     for doctrine_id in metadata.doctrine_ids:
+        # Auto-create doctrine if it doesn't exist
+        if not doctrine_exists(doctrine_id, remote=remote):
+            logger.info(f"Doctrine {doctrine_id} doesn't exist, creating it with name '{metadata.name}'")
+            create_doctrine(
+                doctrine_id=doctrine_id,
+                name=metadata.name,
+                description=metadata.description,
+                remote=remote,
+            )
+            # Also add to watch_doctrines for tracking
+            add_doctrine_to_watch(doctrine_id, remote=remote)
+
         ensure_doctrine_link(doctrine_id, fit_id, remote=remote)
 
         doctrine_fit = DoctrineFit(doctrine_id=doctrine_id, fit_id=fit_id, target=metadata.target)
 
-        # Propagate to market/production dbs
+        # Propagate to market/production dbs (wcmktprod.db or wcmktnorth2.db)
         upsert_doctrine_fits(doctrine_fit, remote=remote, db_alias=target_alias)
         upsert_doctrine_map(doctrine_fit.doctrine_id, doctrine_fit.fit_id, remote=remote, db_alias=target_alias)
 
+    # Always update ship_targets - this tracks target quantities for each fit
     upsert_ship_target(
         fit_id=fit_id,
         fit_name=parse_result.fit_name,
@@ -511,6 +690,10 @@ def update_fit_workflow(
         remote=remote,
         db_alias=target_alias,
     )
+    logger.info(f"Updated ship_targets for fit_id={fit_id}")
+
+    # Always refresh doctrines table - this contains item-level market data
+    # that the frontend requires for displaying fit market availability
     refresh_doctrines_for_fit(
         fit_id=fit_id,
         ship_id=ship_type_id,
@@ -518,13 +701,15 @@ def update_fit_workflow(
         remote=remote,
         db_alias=target_alias,
     )
+    logger.info(f"Refreshed doctrines table for fit_id={fit_id}")
 
     # Add missing items to watchlist in wcmkt
     type_ids = {item["type_id"] for item in parse_result.items}
     type_ids.add(ship_type_id)
     add_missing_items_to_watchlist(list(type_ids), remote=remote, db_alias=target_alias)
     logger.info(
-        f"Completed fit update for fit_id={fit_id}, doctrine_ids={metadata.doctrine_ids} (remote={remote})"
+        f"Completed fit update for fit_id={fit_id}, doctrine_ids={metadata.doctrine_ids} "
+        f"(remote={remote}, update_targets={update_targets})"
     )
 
 

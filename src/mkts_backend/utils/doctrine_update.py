@@ -262,6 +262,32 @@ def get_fit_market_flag(fit_id: int, remote: bool = False, db_alias: str = "wcmk
     return None
 
 
+def get_fit_target(fit_id: int, remote: bool = False, db_alias: str = "wcmkt") -> int | None:
+    """
+    Get the existing target for a fit from doctrine_fits.
+
+    Args:
+        fit_id: The fit ID to query
+        remote: Whether to use remote database
+        db_alias: Database alias to use
+
+    Returns:
+        The target value, or None if fit not found
+    """
+    engine = _get_engine(db_alias, remote)
+    with engine.connect() as conn:
+        result = conn.execute(
+            text("SELECT target FROM doctrine_fits WHERE fit_id = :fit_id LIMIT 1"),
+            {"fit_id": fit_id},
+        ).fetchone()
+
+    engine.dispose()
+
+    if result:
+        return result[0]
+    return None
+
+
 def upsert_doctrine_map(doctrine_id: int, fit_id: int, remote: bool = False, db_alias: str = "wcmkt") -> None:
     engine = _get_engine(db_alias, remote)
     try:
@@ -284,6 +310,108 @@ def upsert_doctrine_map(doctrine_id: int, fit_id: int, remote: bool = False, db_
             logger.info(f"Upserted doctrine_map entry doctrine_id={doctrine_id}, fit_id={fit_id}")
     finally:
         engine.dispose()
+
+
+def remove_doctrine_fits(
+    doctrine_id: int,
+    fit_id: int,
+    remote: bool = False,
+    db_alias: str = "wcmkt"
+) -> bool:
+    """
+    Remove a fit from the doctrine_fits table.
+
+    Args:
+        doctrine_id: The doctrine ID
+        fit_id: The fit ID to remove
+        remote: Whether to use remote database
+        db_alias: Database alias to use
+
+    Returns:
+        True if a row was deleted, False if no matching row found
+    """
+    engine = _get_engine(db_alias, remote)
+    with engine.connect() as conn:
+        result = conn.execute(
+            text("DELETE FROM doctrine_fits WHERE fit_id = :fit_id AND doctrine_id = :doctrine_id"),
+            {"fit_id": fit_id, "doctrine_id": doctrine_id},
+        )
+        conn.commit()
+        rows_affected = result.rowcount
+    engine.dispose()
+
+    if rows_affected > 0:
+        logger.info(f"Removed fit_id {fit_id} from doctrine_id {doctrine_id} in doctrine_fits ({rows_affected} rows)")
+        return True
+    else:
+        logger.warning(f"No doctrine_fits row found for fit_id={fit_id}, doctrine_id={doctrine_id}")
+        return False
+
+
+def remove_doctrine_map(
+    doctrine_id: int,
+    fit_id: int,
+    remote: bool = False,
+    db_alias: str = "wcmkt"
+) -> bool:
+    """
+    Remove a fit-doctrine mapping from the doctrine_map table.
+
+    Args:
+        doctrine_id: The doctrine ID
+        fit_id: The fit ID (fitting_id in doctrine_map)
+        remote: Whether to use remote database
+        db_alias: Database alias to use
+
+    Returns:
+        True if a row was deleted, False if no matching row found
+    """
+    engine = _get_engine(db_alias, remote)
+    with engine.connect() as conn:
+        result = conn.execute(
+            text("DELETE FROM doctrine_map WHERE doctrine_id = :doctrine_id AND fitting_id = :fit_id"),
+            {"doctrine_id": doctrine_id, "fit_id": fit_id},
+        )
+        conn.commit()
+        rows_affected = result.rowcount
+    engine.dispose()
+
+    if rows_affected > 0:
+        logger.info(f"Removed doctrine_map entry for doctrine_id={doctrine_id}, fit_id={fit_id}")
+        return True
+    else:
+        logger.warning(f"No doctrine_map row found for doctrine_id={doctrine_id}, fit_id={fit_id}")
+        return False
+
+
+def remove_doctrines_for_fit(
+    fit_id: int,
+    remote: bool = False,
+    db_alias: str = "wcmkt"
+) -> int:
+    """
+    Remove all doctrines table rows for a specific fit.
+
+    Args:
+        fit_id: The fit ID to remove rows for
+        remote: Whether to use remote database
+        db_alias: Database alias to use
+
+    Returns:
+        Number of rows deleted
+    """
+    engine = _get_engine(db_alias, remote)
+    with engine.connect() as conn:
+        result = conn.execute(
+            text("DELETE FROM doctrines WHERE fit_id = :fit_id"),
+            {"fit_id": fit_id},
+        )
+        conn.commit()
+        rows_affected = result.rowcount
+    engine.dispose()
+
+    logger.info(f"Removed {rows_affected} rows from doctrines table for fit_id {fit_id}")
+    return rows_affected
 
 @dataclass
 class DoctrineComponent:

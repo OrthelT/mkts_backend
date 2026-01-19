@@ -158,6 +158,8 @@ class DatabaseConfig:
         # Record db state before and after sync to monitor WAL frame generation
         raw_info = self.read_db_info()
         start_info = json.loads(raw_info) if raw_info else None
+        
+        logger.info(f"Start sync for {self.alias} at {self.path}")
         if start_info is not None:
             logger.info(f"Start info: {start_info}")
         else:
@@ -173,6 +175,7 @@ class DatabaseConfig:
         conn.close()
 
         end_time = perf_counter()
+        
         logger.info(f"Sync time: {end_time - start_time:.1f} seconds")
         logger.info(f"Sync time: {(end_time - start_time)/60:.1f} minutes")
         logger.info(f"Sync end time: {datetime.now()}")

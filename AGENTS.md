@@ -372,6 +372,83 @@ uv run mkts-backend update-fit --fit-file=fits/hfi.txt --fit-id=313 --interactiv
 - Handles missing items gracefully with fallback pricing
 - Supports file input (`--file`), stdin (`--paste`), and doctrine lookup (`--fit-id`)
 
+### update-fit Subcommands
+
+The `update-fit` command supports multiple subcommands for managing fits and doctrines:
+
+#### Available Subcommands:
+- `add` - Add a NEW fit from an EFT file and assign to doctrine(s)
+- `update` - Update an existing fit's items from an EFT file
+- `assign-market` - Change the market assignment for an existing fit
+- `list-fits` - List all fits in the doctrine tracking system
+- `list-doctrines` - List all available doctrines
+- `create-doctrine` - Create a new doctrine (group of fits)
+- `doctrine-add-fit` - Add existing fit(s) to a doctrine (supports multiple)
+- `doctrine-remove-fit` - Remove fit(s) from a doctrine (supports multiple)
+
+#### doctrine-add-fit Subcommand
+
+Add existing fits that are already in the fittings database to a doctrine for tracking.
+
+```bash
+# Interactive mode (recommended) - prompts per-fit for targets
+uv run mkts-backend update-fit doctrine-add-fit
+
+# Non-interactive with fit ID
+uv run mkts-backend update-fit doctrine-add-fit --doctrine-id=42 --fit-id=313
+
+# Add multiple fits at once (comma-separated)
+uv run mkts-backend update-fit doctrine-add-fit --doctrine-id=42 --fit-ids=313,314,315
+
+# Specify default target and market (target applies to new fits only)
+uv run mkts-backend update-fit doctrine-add-fit --doctrine-id=42 --fit-id=313 --target=300 --market=primary
+
+# Preserve existing targets (don't prompt or update targets)
+uv run mkts-backend update-fit doctrine-add-fit --doctrine-id=42 --fit-ids=313,314,315 --skip-targets
+```
+
+**Features:**
+- Interactive prompts guide you through doctrine and fit selection
+- **Per-fit target setting**: Each fit can have a different target quantity (e.g., 300 Muninns, 50 Huginns)
+- Shows existing targets for fits that already have them
+- `--skip-targets` preserves existing targets and skips prompts
+- Supports adding multiple fits at once (comma-separated IDs)
+- Validates fit IDs exist in fittings database
+- Skips fits already in the doctrine
+- Sets up tracking in both fittings and market databases
+- Links fits to doctrines in `fittings_doctrine_fittings` table
+- Adds entries to `doctrine_fits`, `doctrine_map`, and `doctrines` tables
+
+#### doctrine-remove-fit Subcommand
+
+Remove fits from a doctrine (reverse operation of `doctrine-add-fit`). This unlinks fits from a doctrine but does NOT delete the fit itself.
+
+```bash
+# Interactive mode (recommended)
+uv run mkts-backend update-fit doctrine-remove-fit
+
+# Non-interactive with fit ID
+uv run mkts-backend update-fit doctrine-remove-fit --doctrine-id=42 --fit-id=313
+
+# Remove multiple fits at once (comma-separated)
+uv run mkts-backend update-fit doctrine-remove-fit --doctrine-id=42 --fit-ids=313,314,315
+
+# Use remote database
+uv run mkts-backend update-fit doctrine-remove-fit --doctrine-id=42 --fit-id=313 --remote
+```
+
+**Features:**
+- Interactive prompts display current fits in the doctrine
+- Supports removing multiple fits at once (comma-separated IDs)
+- Validates fit IDs are actually in the doctrine
+- Removes tracking from both fittings and market databases
+- Removes entries from `fittings_doctrine_fittings`, `doctrine_fits`, `doctrine_map`, and `doctrines` tables
+- Safe operation: the fit itself remains in the fittings database
+
+**Databases Affected:**
+- `wcfitting.db`: Removes link in `fittings_doctrine_fittings`
+- `wcmktprod.db` or `wcmktnorth2.db` (based on market): Removes entries from `doctrine_fits`, `doctrine_map`, and `doctrines`
+
 ---
 
 ## User Implementation Guide

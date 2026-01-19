@@ -137,6 +137,24 @@ uv run mkts-backend update-fit --fit-file=fits/hfi.txt --meta-file=meta.json --b
 uv run mkts-backend update-fit --fit-file=fits/hfi.txt --fit-id=313 --interactive --dry-run
 ```
 
+**Available Subcommands:**
+- `add` - Add a NEW fit from an EFT file
+- `update` - Update an existing fit's items
+- `assign-market` - Change market assignment
+- `list-fits` - List all fits in tracking system
+- `list-doctrines` - List all available doctrines
+- `create-doctrine` - Create a new doctrine
+- `doctrine-add-fit` - Add existing fit(s) to a doctrine
+- `doctrine-remove-fit` - Remove fit(s) from a doctrine
+
+```bash
+# Add existing fits to a doctrine (supports multiple)
+uv run mkts-backend update-fit doctrine-add-fit --doctrine-id=42 --fit-ids=313,314,315
+
+# Remove fits from a doctrine (reverse of doctrine-add-fit)
+uv run mkts-backend update-fit doctrine-remove-fit --doctrine-id=42 --fit-id=313
+```
+
 **Input Modes:**
 - `--file=<path>`: Parse an EFT-formatted fit file and query live market data
 - `--fit-id=<id>`: Look up fit by ID from doctrine_fits table and display pre-calculated market data from doctrines table

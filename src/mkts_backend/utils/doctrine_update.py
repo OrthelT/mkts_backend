@@ -262,6 +262,32 @@ def get_fit_market_flag(fit_id: int, remote: bool = False, db_alias: str = "wcmk
     return None
 
 
+def get_fit_target(fit_id: int, remote: bool = False, db_alias: str = "wcmkt") -> int | None:
+    """
+    Get the existing target for a fit from doctrine_fits.
+
+    Args:
+        fit_id: The fit ID to query
+        remote: Whether to use remote database
+        db_alias: Database alias to use
+
+    Returns:
+        The target value, or None if fit not found
+    """
+    engine = _get_engine(db_alias, remote)
+    with engine.connect() as conn:
+        result = conn.execute(
+            text("SELECT target FROM doctrine_fits WHERE fit_id = :fit_id LIMIT 1"),
+            {"fit_id": fit_id},
+        ).fetchone()
+
+    engine.dispose()
+
+    if result:
+        return result[0]
+    return None
+
+
 def upsert_doctrine_map(doctrine_id: int, fit_id: int, remote: bool = False, db_alias: str = "wcmkt") -> None:
     engine = _get_engine(db_alias, remote)
     try:

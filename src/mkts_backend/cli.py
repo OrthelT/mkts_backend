@@ -210,8 +210,10 @@ OPTIONS:
     --dry-run            Preview changes without saving
     --remote             Use remote database
     --local-only         Use local database only
-    --target=<alias>     Target database: wcmkt, wcmktnorth
-    --north              Shorthand for --target=wcmktnorth
+    --db-alias=<alias>   Target database: wcmkt, wcmktnorth
+    --north              Shorthand for --db-alias=wcmktnorth
+    --target=<qty>       Default target quantity for new fits (default: 100)
+    --skip-targets       Preserve existing targets, skip target prompts
     --help               Show this help message
 
 EXAMPLES:
@@ -228,10 +230,16 @@ EXAMPLES:
     # Add fit with metadata file
     mkts-backend fit-update add --file=fits/hfi.txt --meta-file=fits/hfi_meta.json
 
-    # Add existing fit(s) to a doctrine (interactive, supports multiple)
+    # Add existing fit(s) to a doctrine (interactive, per-fit targets)
     mkts-backend fit-update doctrine-add-fit
     mkts-backend fit-update doctrine-add-fit --fit-id=123
     mkts-backend fit-update doctrine-add-fit --fit-id=123,456,789
+
+    # Add fits without changing existing targets
+    mkts-backend fit-update doctrine-add-fit --fit-id=123,456 --skip-targets
+
+    # Add fits with a specific default target
+    mkts-backend fit-update doctrine-add-fit --fit-id=123 --target=300
 
     # Update existing fit's items
     mkts-backend fit-update update --fit-id=123 --file=fits/updated.txt --meta-file=meta.json
@@ -244,7 +252,10 @@ WORKFLOW:
     2. Add a new fit:         fit-update add --file=<eft> --interactive
        (you can create a doctrine inline during this step)
     3. Add existing fits:     fit-update doctrine-add-fit
-       (prompts for multiple fit IDs, validates and skips duplicates)
+       (prompts per-fit for targets, validates and skips duplicates)
+
+NOTE: Targets are set per-fit, not per-doctrine. Use --skip-targets to preserve
+existing targets when re-adding fits to doctrines.
 """)
 
 
@@ -891,11 +902,13 @@ def parse_args(args: list[str])->dict | None:
         file_path = None
         meta_file = None
         fit_id = None
-        target_alias = "wcmkt"
+        db_alias = "wcmkt"  # Database alias
+        target_qty = 100    # Default target quantity for new fits
         interactive = "--interactive" in args
         remote = "--remote" in args
         local_only = "--local-only" in args
         dry_run = "--dry-run" in args
+        skip_targets = "--skip-targets" in args
 
         fit_ids_str = None
         for arg in args:
@@ -906,9 +919,12 @@ def parse_args(args: list[str])->dict | None:
             elif arg.startswith("--fit-id="):
                 fit_ids_str = arg.split("=", 1)[1]
             elif arg.startswith("--target="):
-                target_alias = arg.split("=", 1)[1]
+                # Target quantity for doctrine-add-fit
+                target_qty = int(arg.split("=", 1)[1])
+            elif arg.startswith("--db-alias="):
+                db_alias = arg.split("=", 1)[1]
             elif arg == "--north":
-                target_alias = "wcmktnorth"
+                db_alias = "wcmktnorth"
 
         # Parse fit_id(s) - supports comma-separated for doctrine-add-fit
         if fit_ids_str:
@@ -934,7 +950,9 @@ def parse_args(args: list[str])->dict | None:
             local_only=local_only,
             dry_run=dry_run,
             interactive=interactive,
-            target_alias=target_alias,
+            target_alias=db_alias,
+            target=target_qty,
+            skip_targets=skip_targets,
         )
         exit(0 if success else 1)
 

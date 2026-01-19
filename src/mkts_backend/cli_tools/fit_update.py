@@ -26,6 +26,7 @@ from mkts_backend.utils.eft_parser import parse_eft_file, FitParseResult
 from mkts_backend.utils.doctrine_update import (
     update_fit_market_flag,
     get_fit_market_flag,
+    get_fit_target,
     upsert_doctrine_fits,
     upsert_doctrine_map,
     refresh_doctrines_for_fit,
@@ -142,7 +143,7 @@ def display_fits_table(fits: List[dict]) -> None:
 
 
 def display_doctrines_table(doctrines: List[dict]) -> None:
-    """Display doctrines in a Rich table."""
+    """Display doctrines in a Rich table (filters out deprecated 'zz' prefixed doctrines)."""
     table = Table(
         title="[bold cyan]Available Doctrines[/bold cyan]",
         box=box.ROUNDED,
@@ -152,14 +153,14 @@ def display_doctrines_table(doctrines: List[dict]) -> None:
 
     table.add_column("ID", style="dim", justify="right", width=6)
     table.add_column("Name", style="white", min_width=30)
-    table.add_column("Description", style="dim", min_width=40)
 
-    for doctrine in doctrines:
-        desc = doctrine["description"][:50] + "..." if len(doctrine["description"]) > 50 else doctrine["description"]
+    # Filter out deprecated doctrines (names starting with "zz")
+    active_doctrines = [d for d in doctrines if not d["name"].lower().startswith("zz")]
+
+    for doctrine in active_doctrines:
         table.add_row(
             str(doctrine["id"]),
             doctrine["name"],
-            desc,
         )
 
     console.print(table)
@@ -439,11 +440,13 @@ def list_fits_command(db_alias: str = "wcmkt", remote: bool = False) -> None:
 
 
 def list_doctrines_command(remote: bool = False) -> None:
-    """List all available doctrines."""
+    """List all available doctrines (excludes deprecated 'zz' prefixed)."""
     doctrines = get_available_doctrines(remote=remote)
-    if doctrines:
-        display_doctrines_table(doctrines)
-        console.print(f"\n[dim]Total: {len(doctrines)} doctrines[/dim]")
+    # Filter out deprecated doctrines for count
+    active_doctrines = [d for d in doctrines if not d["name"].lower().startswith("zz")]
+    if active_doctrines:
+        display_doctrines_table(doctrines)  # display_doctrines_table does its own filtering
+        console.print(f"\n[dim]Total: {len(active_doctrines)} doctrines[/dim]")
     else:
         console.print("[yellow]No doctrines found[/yellow]")
 
@@ -618,6 +621,7 @@ def doctrine_add_fit_command(
     remote: bool = False,
     interactive: bool = True,
     db_alias: str = "wcmkt",
+    skip_targets: bool = False,
 ) -> bool:
     """
     Add existing fit(s) to a doctrine.
@@ -628,20 +632,25 @@ def doctrine_add_fit_command(
     Args:
         doctrine_id: Doctrine to add the fit(s) to
         fit_ids: List of fit IDs to add (or single ID will be wrapped)
-        target: Target quantity for market tracking
+        target: Default target quantity for new fits without existing targets
         market_flag: Market assignment (primary, deployment, both)
         remote: Use remote database
         interactive: Use interactive prompts
         db_alias: Target market database
+        skip_targets: If True, preserve existing targets and skip target prompts
 
     Returns:
         True if at least one fit was successfully added
     """
+    # Dictionary to hold per-fit targets
+    fit_targets: dict[int, int] = {}
+
     if interactive:
         console.print(Panel(
             "[bold]Add fit(s) to a doctrine[/bold]\n\n"
             "Link existing fits to a doctrine for tracking.\n"
             "You can add multiple fits at once (comma-separated IDs).\n"
+            "Targets are set per-fit (different ships may need different quantities).\n"
             "Fits already in the doctrine will be skipped.",
             title="[bold cyan]Doctrine Add Fit[/bold cyan]",
             border_style="blue",
@@ -710,34 +719,58 @@ def doctrine_add_fit_command(
             console.print("[red]No valid fits to add[/red]")
             return False
 
-        # Display valid fits
+        # Display valid fits with existing targets
         console.print(f"\n[green]Valid fits to add ({len(valid_fits)}):[/green]")
         fit_table = Table(box=box.SIMPLE)
         fit_table.add_column("Fit ID", style="dim")
         fit_table.add_column("Fit Name", style="white")
         fit_table.add_column("Ship", style="cyan")
+        fit_table.add_column("Existing Target", style="yellow", justify="right")
+
+        # Look up existing targets for each fit
         for fit in valid_fits:
-            fit_table.add_row(str(fit["fit_id"]), fit["fit_name"], fit["ship_name"])
+            existing_target = get_fit_target(fit["fit_id"], remote=remote, db_alias=db_alias)
+            fit["existing_target"] = existing_target
+            target_display = str(existing_target) if existing_target is not None else "[dim]none[/dim]"
+            fit_table.add_row(str(fit["fit_id"]), fit["fit_name"], fit["ship_name"], target_display)
         console.print(fit_table)
 
-        # Get target quantity (applies to all fits)
-        target = IntPrompt.ask("\n[bold]Target quantity[/bold] (for all fits)", default=target)
-
-        # Get market assignment
+        # Get market assignment first (applies to all fits)
         market_choices = ["primary", "deployment", "both"]
         market_flag = Prompt.ask(
-            "[bold]Market assignment[/bold]",
+            "\n[bold]Market assignment[/bold]",
             choices=market_choices,
             default=market_flag
         )
 
-        # Confirm
+        # Per-fit target collection
+        if skip_targets:
+            console.print("\n[dim]Skipping target prompts (--skip-targets). Existing targets will be preserved.[/dim]")
+            for fit in valid_fits:
+                # Use existing target or fall back to default
+                fit_targets[fit["fit_id"]] = fit["existing_target"] if fit["existing_target"] is not None else target
+        else:
+            console.print("\n[bold]Set target for each fit[/bold] (press Enter to keep existing or use default):")
+            for fit in valid_fits:
+                existing = fit["existing_target"]
+                default_val = existing if existing is not None else target
+                fit_target = IntPrompt.ask(
+                    f"  {fit['fit_name']} ({fit['ship_name']})",
+                    default=default_val
+                )
+                fit_targets[fit["fit_id"]] = fit_target
+
+        # Confirm with per-fit targets
         console.print()
+        targets_summary = "\n".join(
+            f"  • {fit['fit_name']}: {fit_targets[fit['fit_id']]}"
+            for fit in valid_fits
+        )
         console.print(Panel(
             f"[bold]Doctrine:[/bold] {doctrine_info['name']} (ID: {doctrine_id})\n"
             f"[bold]Fits to add:[/bold] {len(valid_fits)}\n"
-            f"[bold]Target:[/bold] {target}\n"
-            f"[bold]Market:[/bold] {market_flag}",
+            f"[bold]Market:[/bold] {market_flag}\n"
+            f"[bold]Targets:[/bold]\n{targets_summary}",
             title="[bold green]Add Fits Summary[/bold green]",
             border_style="green",
         ))
@@ -790,12 +823,24 @@ def doctrine_add_fit_command(
             console.print("[red]No valid fits to add[/red]")
             return False
 
+        # Non-interactive: look up existing targets and apply skip_targets logic
+        for fit in valid_fits:
+            existing_target = get_fit_target(fit["fit_id"], remote=remote, db_alias=db_alias)
+            fit["existing_target"] = existing_target
+            if skip_targets and existing_target is not None:
+                # Preserve existing target
+                fit_targets[fit["fit_id"]] = existing_target
+            else:
+                # Use provided target or default
+                fit_targets[fit["fit_id"]] = target
+
     # Process all valid fits
     success_count = 0
     fail_count = 0
 
     for fit_info in valid_fits:
         fit_id = fit_info["fit_id"]
+        fit_target = fit_targets.get(fit_id, target)  # Get per-fit target
         try:
             # Link in fittings database
             ensure_doctrine_link(doctrine_id, fit_id, remote=remote)
@@ -804,7 +849,7 @@ def doctrine_add_fit_command(
             doctrine_fit = DoctrineFit(
                 doctrine_id=doctrine_id,
                 fit_id=fit_id,
-                target=target,
+                target=fit_target,
             )
             upsert_doctrine_fits(
                 doctrine_fit=doctrine_fit,
@@ -825,7 +870,7 @@ def doctrine_add_fit_command(
                 db_alias=db_alias,
             )
 
-            console.print(f"[green]✓ Added fit {fit_id}: {doctrine_fit.fit_name}[/green]")
+            console.print(f"[green]✓ Added fit {fit_id}: {doctrine_fit.fit_name} (target: {fit_target})[/green]")
             success_count += 1
 
         except Exception as e:
@@ -1071,6 +1116,8 @@ def fit_update_command(
     dry_run: bool = False,
     interactive: bool = False,
     target_alias: str = "wcmkt",
+    target: int = 100,
+    skip_targets: bool = False,
 ) -> bool:
     """
     Main entry point for fit-update commands.
@@ -1097,6 +1144,8 @@ def fit_update_command(
         dry_run: Preview without committing
         interactive: Use interactive prompts
         target_alias: Target database alias
+        target: Default target quantity for new fits (used by doctrine-add-fit)
+        skip_targets: Preserve existing targets, skip target prompts (doctrine-add-fit)
 
     Returns:
         True if command succeeded
@@ -1218,10 +1267,12 @@ def fit_update_command(
         return doctrine_add_fit_command(
             doctrine_id=None,  # Will prompt in interactive mode
             fit_ids=fit_ids_list,
+            target=target,
             market_flag=market_flag,
             remote=use_remote,
             interactive=interactive or True,  # Default to interactive
             db_alias=target_alias,
+            skip_targets=skip_targets,
         )
 
     elif subcommand == "doctrine-remove-fit":

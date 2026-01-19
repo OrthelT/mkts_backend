@@ -361,6 +361,6 @@ def print_overpriced_items(overpriced_items: List[Dict]) -> None:
         percent = item.get("percent_above_jita", 0)
         console.print(
             f"  • {item['type_name']}: [yellow]{percent:.0f}%[/yellow] above Jita "
-            f"({format_isk(item['local_price'])} vs {format_isk(item['jita_price'])})",
+            f"([cyan]{format_isk(item['local_price'])}[/cyan] vs [cyan]{format_isk(item['jita_price'])}[/cyan])",
             style="white"
         )

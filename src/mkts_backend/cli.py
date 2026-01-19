@@ -93,6 +93,7 @@ fit-check - Display market availability for items in an EFT-formatted ship fit
 USAGE:
     mkts-backend fit-check --file=<path> [options]
     mkts-backend fit-check --paste [options]
+    mkts-backend fit-check --fit-id=<id> [options]
 
 DESCRIPTION:
     Analyzes an EFT (Eve Fitting Tool) formatted ship fit and displays market
@@ -102,13 +103,22 @@ DESCRIPTION:
     If the fit exists in the doctrine_fits table, the target quantity is
     automatically loaded and used to calculate items needed.
 
+    When using --fit-id, the command retrieves pre-calculated market data from
+    the doctrines table instead of querying live market data. This is useful
+    for quickly checking the status of fits that have already been processed
+    by the main backend workflow.
+
 OPTIONS:
-    --file=<path>        Path to EFT fit file (required unless using --paste)
+    --file=<path>        Path to EFT fit file
     --paste              Read EFT fit from stdin instead of file
+    --fit-id=<id>        Look up fit by ID from doctrine_fits/doctrines tables
+                         (uses pre-calculated market data)
     --market=<alias>     Market to check: primary, deployment (default: primary)
     --target=<N>         Override target quantity (default: from doctrine_fits)
     --output=<format>    Export format: csv, multibuy, or markdown
     --help               Show this help message
+
+    Note: One of --file, --paste, or --fit-id is required.
 
 OUTPUT:
     Header displays:
@@ -127,7 +137,7 @@ OUTPUT:
       - Qty Needed   Items needed to reach target (only if target set)
       - Price        Current 5th percentile price
       - Fit Cost     Price × Fit Qty
-      - Source       ✓ = marketstats, * = fallback data
+      - Source       ✓ = marketstats/doctrines, * = fallback data
 
 EXPORT FORMATS (--output):
     csv       Exports items below target to a CSV file (auto-named from fit)
@@ -135,20 +145,26 @@ EXPORT FORMATS (--output):
     markdown  Discord-friendly markdown with bold formatting
 
 EXAMPLES:
-    # Basic fit check
+    # Basic fit check from EFT file
     mkts-backend fit-check --file=fits/hurricane_fleet.txt
 
-    # Check against deployment market
+    # Check fit by ID from doctrines table
+    mkts-backend fit-check --fit-id=42
+
+    # Check fit by ID against deployment market
+    mkts-backend fit-check --fit-id=42 --market=deployment
+
+    # Check against deployment market with EFT file
     mkts-backend fit-check --file=fits/hfi.txt --market=deployment
 
     # Override target to 50 and show multi-buy list
     mkts-backend fit-check --file=fits/hfi.txt --target=50 --output=multibuy
 
     # Export to CSV for spreadsheet analysis
-    mkts-backend fit-check --file=fits/hfi.txt --target=100 --output=csv
+    mkts-backend fit-check --fit-id=42 --output=csv
 
     # Export markdown for Discord
-    mkts-backend fit-check --file=fits/hfi.txt --target=300 --output=markdown
+    mkts-backend fit-check --fit-id=42 --output=markdown
 
     # Paste fit directly (end with two blank lines or Ctrl+D)
     mkts-backend fit-check --paste --market=primary
@@ -564,10 +580,17 @@ def parse_args(args: list[str])->dict | None:
         paste_mode = "--paste" in args
         target = None
         output_format = None
+        fit_id = None
 
         for arg in args:
             if arg.startswith("--file="):
                 file_path = arg.split("=", 1)[1]
+            elif arg.startswith("--fit-id=") or arg.startswith("--fit_id="):
+                try:
+                    fit_id = int(arg.split("=", 1)[1])
+                except ValueError:
+                    print("Error: --fit-id must be an integer")
+                    return None
             elif arg.startswith("--target="):
                 try:
                     target = int(arg.split("=", 1)[1])
@@ -580,8 +603,8 @@ def parse_args(args: list[str])->dict | None:
                     print(f"Error: --output must be one of: csv, multibuy, markdown")
                     return None
 
-        if not file_path and not paste_mode:
-            print("Error: --file=<path> is required for fit-check command (or use --paste)")
+        if not file_path and not paste_mode and fit_id is None:
+            print("Error: --file=<path>, --paste, or --fit-id=<id> is required for fit-check command")
             print("Use 'mkts-backend fit-check --help' for usage information.")
             return None
 
@@ -606,6 +629,7 @@ def parse_args(args: list[str])->dict | None:
         success = fit_check_command(
             file_path=file_path,
             eft_text=eft_text,
+            fit_id=fit_id,
             market_alias=market_alias,
             show_legend=True,
             target=target,

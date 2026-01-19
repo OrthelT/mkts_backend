@@ -85,30 +85,41 @@ uv run mkts-backend --market=deployment --history
 
 ### fit-check - Check Market Availability for Ship Fittings
 
-Display market availability and pricing for ship fits from EFT-formatted files.
+Display market availability and pricing for ship fits from EFT-formatted files or from pre-calculated doctrine data.
 
 ```bash
-# Basic usage - check fit availability
+# Basic usage - check fit availability from EFT file
 uv run fit-check --file=path/to/fit.txt
 
-# Check against specific market
+# Check fit by ID from doctrine_fits/doctrines tables (uses pre-calculated data)
+uv run fit-check --fit-id=42
+
+# Check fit_id against specific market
+uv run fit-check --fit-id=42 --market=deployment
+
+# Check against specific market with EFT file
 uv run fit-check --file=fit.txt --market=deployment
 
 # Override target quantity
 uv run fit-check --file=fit.txt --target=50
 
 # Export results to CSV
-uv run fit-check --file=fit.txt --output=csv
+uv run fit-check --fit-id=42 --output=csv
 
 # Show multibuy format for restocking items below target
 uv run fit-check --file=fit.txt --output=multibuy
 
 # Export markdown for Discord sharing
-uv run fit-check --file=fit.txt --output=markdown
+uv run fit-check --fit-id=42 --output=markdown
 
 # Read from stdin
 cat fit.txt | uv run fit-check --paste
 ```
+
+**Input Modes:**
+- `--file=<path>`: Parse an EFT-formatted fit file and query live market data
+- `--fit-id=<id>`: Look up fit by ID from doctrine_fits table and display pre-calculated market data from doctrines table
+- `--paste`: Read EFT fit from stdin
 
 **Features:**
 - Displays complete fit breakdown with market availability
@@ -117,7 +128,8 @@ cat fit.txt | uv run fit-check --paste
 - Calculates quantity needed to reach target
 - Exports to CSV for spreadsheet analysis
 - Generates Eve Multi-buy format for easy restocking
-- Falls back to live market data for items not on watchlist
+- Falls back to live market data for items not on watchlist (when using --file)
+- Fast lookups using pre-calculated doctrine data (when using --fit-id)
 
 ## Architecture
 

@@ -4,10 +4,13 @@ This document tracks the development of doctrine management tools for the mkts_b
 
 ## Fit Check ✓ IMPLEMENTED
 
-A command-line interface that displays market availability for ship fittings from EFT-formatted files.
+A command-line interface that displays market availability for ship fittings from EFT-formatted files or from pre-calculated doctrine data.
 
 ### Features Implemented:
-- **Input Methods**: Accepts EFT-formatted .txt files via `--file` parameter or stdin via `--paste`
+- **Input Methods**:
+  - `--file=<path>`: Parse EFT-formatted .txt files and query live market data
+  - `--fit-id=<id>`: Look up fit by ID from doctrine_fits table and display pre-calculated market data from doctrines table
+  - `--paste`: Read EFT fit from stdin
 - **Market Selection**: Takes market as argument (`--market=primary` or `--market=deployment`)
 - **Rich Table Display**: Uses Rich library for beautiful console output with the following columns:
   - `type_id`: Item type ID
@@ -17,12 +20,13 @@ A command-line interface that displays market availability for ship fittings fro
   - `fits`: Number of complete fits available (market_stock / fit_qty)
   - `price`: Market price (5th percentile from marketstats)
   - `fit_cost`: Cost for this item in one fit (fit_qty × price)
-  - `avg_price`: 30-day average price
+  - `avg_price`: 30-day average price (only available in --file mode)
   - `qty_needed`: Quantity needed to meet target (only shown when target available)
 - **Header Information**: Displays fit name, ship name, ship type ID, total fit cost, fits available (bottleneck), and target quantity
 - **Target Integration**: Automatically looks up target quantities from `doctrine_fits` table
 - **Target Override**: `--target=N` parameter to override database target
-- **Fallback Pricing**: For items not on watchlist, queries `marketorders` table and calculates 5th percentile pricing
+- **Jita Price Comparison**: Displays Jita prices and highlights items priced >120% above Jita
+- **Fallback Pricing**: For items not on watchlist (--file mode only), queries `marketorders` table and calculates 5th percentile pricing
 - **Missing Items Report**: Shows items below target with quantity needed
 - **Export Options** (`--output=<format>`):
   - `csv`: Export table to CSV file (auto-named from fit)
@@ -31,33 +35,45 @@ A command-line interface that displays market availability for ship fittings fro
 
 ### CLI Usage:
 ```bash
-# Basic usage
+# Basic usage - from EFT file
 fit-check --file=<path>
 
-# With market selection
+# Check by fit_id (uses pre-calculated doctrine data)
+fit-check --fit-id=42
+
+# With market selection (works with both modes)
 fit-check --file=<path> --market=deployment
+fit-check --fit-id=42 --market=deployment
 
 # Override target quantity
 fit-check --file=<path> --target=50
+fit-check --fit-id=42 --target=50
 
 # Export to CSV
-fit-check --file=<path> --output=csv
+fit-check --fit-id=42 --output=csv
 
 # Show multibuy format for restocking
 fit-check --file=<path> --output=multibuy
 
 # Export markdown for Discord
-fit-check --file=<path> --output=markdown
+fit-check --fit-id=42 --output=markdown
 
 # Read from stdin
 cat fit.txt | fit-check --paste
 ```
 
 ### Database Integration:
-- Queries `marketstats` table for watchlist items
-- Falls back to `marketorders` for non-watchlist items
-- Looks up targets from `doctrine_fits` table by fit_name or ship_type_id
-- Uses SDE database for type name resolution 
+- **With `--file` or `--paste`**:
+  - Queries `marketstats` table for watchlist items (uses pre-calculated pricing)
+  - Falls back to `marketorders` for non-watchlist items (calculates 5th percentile on-the-fly)
+  - Looks up targets from `doctrine_fits` table by fit_name or ship_type_id
+  - Uses SDE database for type name resolution
+  - Fetches Jita prices for comparison
+- **With `--fit-id`**:
+  - Looks up fit metadata from `doctrine_fits` table (fit_name, ship_name, target, etc.)
+  - Retrieves pre-calculated market data from `doctrines` table (fits_on_mkt, total_stock, price)
+  - Uses cached data from the last backend run for faster results
+  - Fetches Jita prices for comparison 
 
 ## Fit Update Tool
 Extend the update_fit_workflow() in parse_fits.py with an interactive interface that:

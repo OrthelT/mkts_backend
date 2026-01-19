@@ -204,31 +204,42 @@ TURSO_FITTING_TOKEN=<fitting_db_token>
 
 ### fit-check Command
 
-The fit-check command displays market availability and pricing for ship fittings from EFT-formatted files.
+The fit-check command displays market availability and pricing for ship fittings from EFT-formatted files or from pre-calculated doctrine data.
 
 **Basic Usage:**
 ```bash
-# Check fit availability against primary market
+# Check fit availability against primary market from EFT file
 uv run fit-check --file=path/to/fit.txt
 
-# Check against specific market
+# Check fit by ID from doctrine_fits/doctrines tables (pre-calculated data)
+uv run fit-check --fit-id=42
+
+# Check fit_id against specific market
+uv run fit-check --fit-id=42 --market=deployment
+
+# Check against specific market with EFT file
 uv run fit-check --file=fit.txt --market=deployment
 
 # Override target quantity
 uv run fit-check --file=fit.txt --target=50
 
 # Export to CSV
-uv run fit-check --file=fit.txt --output=csv
+uv run fit-check --fit-id=42 --output=csv
 
 # Show multibuy format for restocking
 uv run fit-check --file=fit.txt --output=multibuy
 
 # Export markdown for Discord
-uv run fit-check --file=fit.txt --output=markdown
+uv run fit-check --fit-id=42 --output=markdown
 
 # Combine options
 uv run fit-check --file=fit.txt --market=deployment --target=100 --output=csv
 ```
+
+**Input Modes:**
+- `--file=<path>`: Parse an EFT-formatted fit file and query live market data
+- `--fit-id=<id>`: Look up fit by ID from `doctrine_fits` table and display pre-calculated market data from `doctrines` table
+- `--paste`: Read EFT fit from stdin
 
 **Display Features:**
 - **Header Section**: Shows fit name, ship name, ship type ID, total fit cost, fits available (bottleneck), and target quantity
@@ -270,16 +281,22 @@ uv run fit-check --file=fit.txt --market=deployment --target=100 --output=csv
   ```
 
 **Database Integration:**
-- Queries `marketstats` table for items on watchlist (uses pre-calculated pricing)
-- Falls back to `marketorders` table for non-watchlist items (calculates 5th percentile on-the-fly)
-- Looks up targets from `doctrine_fits` table
+- With `--file` or `--paste`:
+  - Queries `marketstats` table for items on watchlist (uses pre-calculated pricing)
+  - Falls back to `marketorders` table for non-watchlist items (calculates 5th percentile on-the-fly)
+  - Looks up targets from `doctrine_fits` table
+- With `--fit-id`:
+  - Looks up fit metadata from `doctrine_fits` table (fit_name, ship_name, target, etc.)
+  - Retrieves pre-calculated market data from `doctrines` table (fits_on_mkt, total_stock, price)
+  - Uses cached data from the last backend run for faster results
 - Uses SDE database for type name resolution when needed
+- Fetches Jita prices for comparison in both modes
 
 **Implementation Details:**
 - Location: `/home/orthel/workspace/github/mkts_backend/src/mkts_backend/cli_tools/fit_check.py`
 - Uses Rich library for beautiful console output
 - Handles missing items gracefully with fallback pricing
-- Supports both file input and stdin (via `--paste` flag)
+- Supports file input (`--file`), stdin (`--paste`), and doctrine lookup (`--fit-id`)
 
 ---
 

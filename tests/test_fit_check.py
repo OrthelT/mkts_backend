@@ -239,10 +239,10 @@ Large Shield Extender II
             assert result == False
 
     def test_fit_check_command_no_input(self):
-        """Test fit-check with neither file nor paste."""
+        """Test fit-check with neither file, paste, nor fit_id."""
         from mkts_backend.cli_tools.fit_check import fit_check_command
 
-        result = fit_check_command(file_path=None, eft_text=None)
+        result = fit_check_command(file_path=None, eft_text=None, fit_id=None)
         assert result == False
 
     def test_fit_check_command_invalid_market(self, temp_fit_file):
@@ -475,3 +475,197 @@ class TestFitCheckResult:
             rows = list(reader)
 
         assert "qty_needed" not in rows[0].keys()
+
+
+class TestFitCheckByFitId:
+    """Tests for fit-check by fit_id functionality."""
+
+    @pytest.fixture
+    def temp_doctrine_db(self, tmp_path):
+        """Create a temporary database with doctrine_fits and doctrines tables."""
+        db_path = tmp_path / "wcmktprod.db"
+        conn = sqlite3.connect(str(db_path))
+
+        # Create doctrine_fits table
+        conn.execute("""
+            CREATE TABLE doctrine_fits (
+                id INTEGER PRIMARY KEY,
+                doctrine_name TEXT,
+                fit_name TEXT,
+                ship_type_id INTEGER,
+                doctrine_id INTEGER,
+                fit_id INTEGER,
+                ship_name TEXT,
+                target INTEGER
+            )
+        """)
+
+        # Insert test doctrine fit
+        conn.execute("""
+            INSERT INTO doctrine_fits VALUES
+            (1, 'Test Doctrine', 'Hurricane Fleet Issue Armor', 33157, 1, 42, 'Hurricane Fleet Issue', 100)
+        """)
+
+        # Create doctrines table
+        conn.execute("""
+            CREATE TABLE doctrines (
+                id INTEGER PRIMARY KEY,
+                fit_id INTEGER,
+                ship_id INTEGER,
+                ship_name TEXT,
+                hulls INTEGER,
+                type_id INTEGER,
+                type_name TEXT,
+                fit_qty INTEGER,
+                fits_on_mkt REAL,
+                total_stock INTEGER,
+                price REAL,
+                avg_vol REAL,
+                days REAL,
+                group_id INTEGER,
+                group_name TEXT,
+                category_id INTEGER,
+                category_name TEXT,
+                timestamp TEXT
+            )
+        """)
+
+        # Insert test doctrine items
+        conn.execute("""
+            INSERT INTO doctrines (fit_id, ship_id, ship_name, hulls, type_id, type_name, fit_qty,
+                                   fits_on_mkt, total_stock, price, avg_vol, days, group_id, group_name,
+                                   category_id, category_name)
+            VALUES
+            (42, 33157, 'Hurricane Fleet Issue', 50, 33157, 'Hurricane Fleet Issue', 1, 50.0, 50, 250000000, 10.0, 30.0, 6, 'Battlecruiser', 6, 'Ship'),
+            (42, 33157, 'Hurricane Fleet Issue', 50, 2048, 'Damage Control II', 1, 100.0, 100, 1500000, 50.0, 45.0, 7, 'Damage Control', 7, 'Module'),
+            (42, 33157, 'Hurricane Fleet Issue', 50, 519, 'Gyrostabilizer II', 3, 33.3, 100, 2000000, 30.0, 40.0, 8, 'Gyrostabilizer', 7, 'Module')
+        """)
+
+        conn.commit()
+        conn.close()
+
+        return db_path
+
+    def test_get_doctrine_fit_info(self, temp_doctrine_db):
+        """Test fetching fit info by fit_id."""
+        from mkts_backend.cli_tools.fit_check import _get_doctrine_fit_info
+
+        with patch('mkts_backend.cli_tools.fit_check.DatabaseConfig') as mock_db_config:
+            mock_instance = MagicMock()
+            mock_db_config.return_value = mock_instance
+
+            from sqlalchemy import create_engine
+            mock_instance.engine = create_engine(f"sqlite:///{temp_doctrine_db}")
+
+            result = _get_doctrine_fit_info(42, market_ctx=None)
+
+            assert result is not None
+            assert result.fit_id == 42
+            assert result.fit_name == "Hurricane Fleet Issue Armor"
+            assert result.ship_type_id == 33157
+            assert result.target == 100
+
+    def test_get_doctrine_fit_info_not_found(self, temp_doctrine_db):
+        """Test fetching non-existent fit_id returns None."""
+        from mkts_backend.cli_tools.fit_check import _get_doctrine_fit_info
+
+        with patch('mkts_backend.cli_tools.fit_check.DatabaseConfig') as mock_db_config:
+            mock_instance = MagicMock()
+            mock_db_config.return_value = mock_instance
+
+            from sqlalchemy import create_engine
+            mock_instance.engine = create_engine(f"sqlite:///{temp_doctrine_db}")
+
+            result = _get_doctrine_fit_info(9999, market_ctx=None)
+
+            assert result is None
+
+    def test_get_doctrines_market_data(self, temp_doctrine_db):
+        """Test fetching market data from doctrines table."""
+        from mkts_backend.cli_tools.fit_check import _get_doctrines_market_data
+
+        with patch('mkts_backend.cli_tools.fit_check.DatabaseConfig') as mock_db_config:
+            mock_instance = MagicMock()
+            mock_db_config.return_value = mock_instance
+
+            from sqlalchemy import create_engine
+            mock_instance.engine = create_engine(f"sqlite:///{temp_doctrine_db}")
+
+            result = _get_doctrines_market_data(42, market_ctx=None)
+
+            assert len(result) == 3
+            # Check ship entry
+            ship_entry = next(e for e in result if e["type_id"] == 33157)
+            assert ship_entry["fits"] == 50.0
+            assert ship_entry["is_ship"] == True
+            assert ship_entry["market_stock"] == 50
+            # Check module entry
+            module_entry = next(e for e in result if e["type_id"] == 2048)
+            assert module_entry["fits"] == 100.0
+            assert module_entry["is_ship"] == False
+
+    def test_get_doctrines_market_data_not_found(self, temp_doctrine_db):
+        """Test fetching market data for non-existent fit_id returns empty list."""
+        from mkts_backend.cli_tools.fit_check import _get_doctrines_market_data
+
+        with patch('mkts_backend.cli_tools.fit_check.DatabaseConfig') as mock_db_config:
+            mock_instance = MagicMock()
+            mock_db_config.return_value = mock_instance
+
+            from sqlalchemy import create_engine
+            mock_instance.engine = create_engine(f"sqlite:///{temp_doctrine_db}")
+
+            result = _get_doctrines_market_data(9999, market_ctx=None)
+
+            assert result == []
+
+    def test_fit_check_command_with_fit_id(self, temp_doctrine_db):
+        """Test fit-check command with fit_id argument."""
+        from mkts_backend.cli_tools.fit_check import fit_check_command
+
+        with patch('mkts_backend.cli_tools.fit_check.DatabaseConfig') as mock_db_config:
+            with patch('mkts_backend.cli_tools.fit_check.MarketContext') as mock_ctx:
+                with patch('mkts_backend.cli_tools.fit_check.fetch_jita_prices') as mock_jita:
+                    mock_instance = MagicMock()
+                    mock_db_config.return_value = mock_instance
+
+                    from sqlalchemy import create_engine
+                    mock_instance.engine = create_engine(f"sqlite:///{temp_doctrine_db}")
+
+                    mock_ctx.from_settings.return_value = MagicMock(
+                        name="Test Market",
+                        database_alias="wcmkt"
+                    )
+
+                    mock_jita.return_value = {}
+
+                    result = fit_check_command(
+                        fit_id=42,
+                        market_alias="primary"
+                    )
+
+                    assert result == True
+
+    def test_fit_check_command_with_invalid_fit_id(self, temp_doctrine_db):
+        """Test fit-check command with non-existent fit_id."""
+        from mkts_backend.cli_tools.fit_check import fit_check_command
+
+        with patch('mkts_backend.cli_tools.fit_check.DatabaseConfig') as mock_db_config:
+            with patch('mkts_backend.cli_tools.fit_check.MarketContext') as mock_ctx:
+                mock_instance = MagicMock()
+                mock_db_config.return_value = mock_instance
+
+                from sqlalchemy import create_engine
+                mock_instance.engine = create_engine(f"sqlite:///{temp_doctrine_db}")
+
+                mock_ctx.from_settings.return_value = MagicMock(
+                    name="Test Market",
+                    database_alias="wcmkt"
+                )
+
+                result = fit_check_command(
+                    fit_id=9999,
+                    market_alias="primary"
+                )
+
+                assert result == False

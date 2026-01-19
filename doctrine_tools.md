@@ -75,19 +75,59 @@ cat fit.txt | fit-check --paste
   - Uses cached data from the last backend run for faster results
   - Fetches Jita prices for comparison 
 
-## Fit Update Tool
-Extend the update_fit_workflow() in parse_fits.py with an interactive interface that:
-- allows a user to add a new fit from an EFT formatted txt file or by pasting text in the cli (if possible). Reuse the functionality from Fit Check. It should update all appropriate database tables with the new fit information.
-- allows the user to create a new doctrine and choosing the fits that will be used with it interactively.
-- allows the user to input the fitting metadata in an interactive interface in the CLI or read it from a fit_metadata file. 
-- allows the user to update an existing fit from an EFT formatted fitting or interactively change elements of a fit. 
-- allows the user to assign the market that a new or existing fit will be assigned to. 
-- confirms the changes before committing them to the database.
-- there should be dry-run and local-only options for testing. 
+## Update-Fit Command ✓ IMPLEMENTED
 
-## Doctrine Market Assignment
-- Add functionality to configure which markets a doctrine will be tracked in: primary, secondary, or both.
-- This can be implemented with a simple flag in the doctrine_fits that can be read by the front end when determining which fits to display. 
+The `update-fit` command provides comprehensive fit management with interactive and file-based workflows.
+
+### Features Implemented:
+
+**Input Options:**
+- `--fit-file=<path>`: Path to EFT fit file (required)
+- `--fit-id=<id>`: Fit ID to update (required if no --meta-file)
+- `--meta-file=<path>`: Path to metadata JSON file (optional with --fit-id)
+- `--interactive`: Prompt for metadata interactively (when no --meta-file)
+
+**Market Targeting:**
+- `--market=<alias>`: Target market (primary, deployment, both)
+- `--primary`: Shorthand for --market=primary
+- `--deployment`: Shorthand for --market=deployment
+- `--both`: Update both primary and deployment markets
+
+**Database Options:**
+- `--remote`: Use remote database (default: local)
+- `--no-clear`: Keep existing items (default: clear and replace)
+- `--update-targets`: Update ship_targets table (default: skip)
+- `--dry-run`: Preview changes without saving
+
+**Automatic Features:**
+- Auto-creates doctrines in `fittings_doctrine` if they don't exist
+- Auto-adds new doctrines to `watch_doctrines`
+- Handles FK constraints during upsert operations
+- Updates `doctrine_fits` with `market_flag` for market assignment
+
+### Usage Examples:
+```bash
+# Update fit with metadata file
+mkts-backend update-fit --fit-file=fits/hfi.txt --meta-file=fits/hfi_meta.json
+
+# Update fit with interactive prompts
+mkts-backend update-fit --fit-file=fits/hfi.txt --fit-id=313 --interactive
+
+# Update for deployment market
+mkts-backend update-fit --fit-file=fits/hfi.txt --fit-id=313 --deployment
+
+# Update for both markets with ship targets
+mkts-backend update-fit --fit-file=fits/hfi.txt --meta-file=meta.json --both --update-targets
+
+# Preview changes (dry run)
+mkts-backend update-fit --fit-file=fits/hfi.txt --fit-id=313 --interactive --dry-run
+```
+
+## Doctrine Market Assignment ✓ IMPLEMENTED
+- Implemented via `market_flag` column in `doctrine_fits` table
+- Values: "primary", "deployment", or "both"
+- Set via `--market`, `--primary`, `--deployment`, or `--both` flags
+- Frontend can read this flag to determine which fits to display for each market 
 
 ## Project Plan and Rules
 - First, create a plan that divides the implementation into several phases. Extend this file with your plan, and use it to track progress.

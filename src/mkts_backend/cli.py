@@ -233,28 +233,151 @@ def display_update_fit_help():
 update-fit - Process an EFT fit file and metadata to update doctrine tables
 
 USAGE:
-    mkts-backend update-fit --fit-file=<path> --meta-file=<path> [options]
+    mkts-backend update-fit --fit-file=<path> [options]
 
 OPTIONS:
     --fit-file=<path>    Path to EFT fit file (required)
-    --meta-file=<path>   Path to metadata JSON file (required)
+    --fit-id=<id>        Fit ID to update (required if no --meta-file)
+    --meta-file=<path>   Path to metadata JSON file (optional with --fit-id)
+    --interactive        Prompt for metadata interactively (when no --meta-file)
+
+    Market Selection (default: primary):
+    --market=<alias>     Target market: primary, deployment, both
+    --primary            Shorthand for --market=primary
+    --deployment         Shorthand for --market=deployment
+    --both               Update both primary and deployment markets
+
+    Database Options:
     --remote             Use remote database (default: local)
     --no-clear           Keep existing items (default: clear and replace)
+    --update-targets     Update ship_targets table (default: skip)
     --dry-run            Preview changes without saving
-    --target=<alias>     Target database: wcmkt, wcmktnorth
-    --north              Shorthand for --target=wcmktnorth
     --help               Show this help message
 
+METADATA FILE FORMAT (JSON):
+    {
+      "fit_id": 313,
+      "name": "Hurricane Fleet Issue - Arty",
+      "description": "Standard doctrine fit",
+      "doctrine_id": 42,        // or [42, 43] for multiple doctrines
+      "target": 300
+    }
+
 EXAMPLES:
-    # Update fit locally (preview)
-    mkts-backend update-fit --fit-file=fits/hfi.txt --meta-file=fits/hfi_meta.json --dry-run
+    # Update fit with metadata file (original workflow)
+    mkts-backend update-fit --fit-file=fits/hfi.txt --meta-file=fits/hfi_meta.json
 
-    # Update fit to remote database
-    mkts-backend update-fit --fit-file=fits/hfi.txt --meta-file=fits/hfi_meta.json --remote
+    # Update fit by ID with interactive prompts
+    mkts-backend update-fit --fit-file=fits/hfi.txt --fit-id=313 --interactive
 
-    # Update fit to north database
-    mkts-backend update-fit --fit-file=fits/hfi.txt --meta-file=fits/hfi_meta.json --north
+    # Update fit for deployment market
+    mkts-backend update-fit --fit-file=fits/hfi.txt --fit-id=313 --deployment
+
+    # Update fit for both markets with ship targets
+    mkts-backend update-fit --fit-file=fits/hfi.txt --meta-file=meta.json --both --update-targets
+
+    # Preview changes (dry run)
+    mkts-backend update-fit --fit-file=fits/hfi.txt --fit-id=313 --interactive --dry-run
 """)
+
+def collect_fit_metadata_interactive(fit_id: int, fit_file: str, remote: bool = False) -> dict:
+    """
+    Interactively collect metadata for a fit update.
+
+    Args:
+        fit_id: The fit ID being updated
+        fit_file: Path to the EFT fit file (used to extract ship/fit name)
+        remote: Whether to use remote database for doctrine checks
+
+    Returns:
+        Dictionary with metadata fields matching FitMetadata expectations
+    """
+    from mkts_backend.utils.parse_fits import doctrine_exists, create_doctrine, get_next_doctrine_id
+
+    print(f"\n--- Interactive Metadata Collection for fit_id={fit_id} ---\n")
+
+    # Try to extract ship and fit name from the EFT file
+    ship_name = ""
+    fit_name = ""
+    try:
+        with open(fit_file, 'r', encoding='utf-8') as f:
+            first_line = f.readline().strip()
+            if first_line.startswith("[") and first_line.endswith("]"):
+                clean_name = first_line.strip('[]')
+                parts = clean_name.split(',')
+                ship_name = parts[0].strip()
+                fit_name = parts[1].strip() if len(parts) > 1 else ""
+                print(f"Detected from fit file: {ship_name}, {fit_name}")
+    except Exception as e:
+        print(f"Could not parse fit file header: {e}")
+
+    # Prompt for fit name (with default from file)
+    default_name = fit_name if fit_name else f"{ship_name} Fit"
+    name_input = input(f"Fit name [{default_name}]: ").strip()
+    name = name_input if name_input else default_name
+
+    # Prompt for description
+    default_desc = f"{name} doctrine fit"
+    desc_input = input(f"Description [{default_desc}]: ").strip()
+    description = desc_input if desc_input else default_desc
+
+    # Prompt for doctrine ID(s)
+    next_id = get_next_doctrine_id(remote=remote)
+    print(f"(Next available doctrine ID: {next_id})")
+    doctrine_input = input("Doctrine ID(s) (comma-separated for multiple, or 'new' to create): ").strip()
+
+    if not doctrine_input:
+        raise ValueError("Doctrine ID is required")
+
+    doctrine_ids = []
+    if doctrine_input.lower() == 'new':
+        # Create a new doctrine
+        print(f"\n--- Creating New Doctrine (ID: {next_id}) ---")
+        doctrine_name = input(f"Doctrine name [{name}]: ").strip() or name
+        doctrine_desc = input(f"Doctrine description []: ").strip()
+        create_doctrine(next_id, doctrine_name, doctrine_desc, remote=remote)
+        print(f"Created doctrine {next_id}: {doctrine_name}")
+        doctrine_ids = [next_id]
+    else:
+        doctrine_ids = [int(d.strip()) for d in doctrine_input.split(',') if d.strip()]
+        if not doctrine_ids:
+            raise ValueError("At least one valid doctrine ID is required")
+
+        # Check each doctrine exists, offer to create if not
+        for doc_id in doctrine_ids:
+            if not doctrine_exists(doc_id, remote=remote):
+                print(f"\nDoctrine {doc_id} does not exist in fittings_doctrine.")
+                create_it = input(f"Create doctrine {doc_id}? (y/n) [n]: ").strip().lower()
+                if create_it == 'y':
+                    doctrine_name = input(f"Doctrine name [{name}]: ").strip() or name
+                    doctrine_desc = input(f"Doctrine description []: ").strip()
+                    create_doctrine(doc_id, doctrine_name, doctrine_desc, remote=remote)
+                    print(f"Created doctrine {doc_id}: {doctrine_name}")
+                else:
+                    print(f"Warning: Doctrine {doc_id} will be skipped during linking")
+
+    doctrine_id = doctrine_ids if len(doctrine_ids) > 1 else doctrine_ids[0]
+
+    # Prompt for target quantity
+    target_input = input("Target quantity [100]: ").strip()
+    target = int(target_input) if target_input else 100
+
+    print(f"\nMetadata collected:")
+    print(f"  fit_id: {fit_id}")
+    print(f"  name: {name}")
+    print(f"  description: {description}")
+    print(f"  doctrine_id: {doctrine_id}")
+    print(f"  target: {target}")
+    print()
+
+    return {
+        "fit_id": fit_id,
+        "name": name,
+        "description": description,
+        "doctrine_id": doctrine_id,
+        "target": target,
+    }
+
 
 def process_add_watchlist(type_ids_str: str, remote: bool = False):
     """
@@ -528,52 +651,126 @@ def parse_args(args: list[str])->dict | None:
             display_update_fit_help()
             exit(0)
 
+        # Parse arguments
         fit_file = None
         meta_file = None
-        target_alias = "wcmkt"
+        fit_id = None
+        interactive = "--interactive" in args
+        update_targets = "--update-targets" in args
+
+        # Parse market selection (default: primary)
+        # Supports: --market=primary/deployment/both, --primary, --deployment, --both
+        target_markets = ["primary"]  # default
         for arg in args:
             if arg.startswith("--fit-file="):
                 fit_file = arg.split("=", 1)[1]
-            if arg.startswith("--meta-file="):
+            elif arg.startswith("--meta-file="):
                 meta_file = arg.split("=", 1)[1]
-            if arg.startswith("--target="):
-                target_alias = arg.split("=", 1)[1]
-            if arg == "--north":
-                target_alias = "wcmktnorth"
+            elif arg.startswith("--fit-id="):
+                try:
+                    fit_id = int(arg.split("=", 1)[1])
+                except ValueError:
+                    print("Error: --fit-id must be an integer")
+                    return None
+            elif arg.startswith("--market="):
+                market_val = arg.split("=", 1)[1].lower()
+                if market_val == "both":
+                    target_markets = ["primary", "deployment"]
+                elif market_val in ("primary", "deployment"):
+                    target_markets = [market_val]
+                else:
+                    print(f"Error: --market must be one of: primary, deployment, both")
+                    return None
+            elif arg == "--both":
+                target_markets = ["primary", "deployment"]
+            elif arg == "--deployment":
+                target_markets = ["deployment"]
+            elif arg == "--primary":
+                target_markets = ["primary"]
 
-        if not fit_file or not meta_file:
-            print("Error: --fit-file and --meta-file are required for update-fit")
+        # Validate required arguments
+        if not fit_file:
+            print("Error: --fit-file is required for update-fit")
             print("Use 'mkts-backend update-fit --help' for usage information.")
             return None
 
-        remote = "--remote" in args  # default to local per user preference
+        # Need either --meta-file OR (--fit-id with --interactive)
+        if not meta_file and fit_id is None:
+            print("Error: Either --meta-file or --fit-id is required")
+            print("Use 'mkts-backend update-fit --help' for usage information.")
+            return None
+
+        if fit_id is not None and not meta_file and not interactive:
+            print("Error: --fit-id requires either --meta-file or --interactive")
+            print("Use 'mkts-backend update-fit --help' for usage information.")
+            return None
+
+        remote = "--remote" in args
         clear_existing = "--no-clear" not in args
         dry_run = "--dry-run" in args
 
-        if target_alias not in {"wcmkt", "wcmktnorth"}:
-            print("Error: --target must be one of: wcmkt, wcmktnorth")
-            return None
-
         try:
-            metadata = parse_fit_metadata(meta_file)
-            result = update_fit_workflow(
-                fit_id=metadata.fit_id,
-                fit_file=fit_file,
-                fit_metadata_file=meta_file,
-                remote=remote,
-                clear_existing=clear_existing,
-                dry_run=dry_run,
-                target_alias=target_alias,
-            )
-            if dry_run:
-                print("Dry run complete")
-                print(f"Ship: {result['ship_name']} ({result['ship_type_id']})")
-                print(f"Items parsed: {len(result['items'])}")
-                if result["missing_items"]:
-                    print(f"Missing type_ids for: {result['missing_items']}")
+            # Get metadata from file or interactive prompt
+            if meta_file:
+                metadata = parse_fit_metadata(meta_file)
+                if fit_id is not None and metadata.fit_id != fit_id:
+                    print(f"Warning: --fit-id={fit_id} overrides fit_id={metadata.fit_id} from metadata file")
+                    # Create new metadata dict with overridden fit_id
+                    metadata_dict = {
+                        "fit_id": fit_id,
+                        "name": metadata.name,
+                        "description": metadata.description,
+                        "doctrine_id": metadata.doctrine_ids if len(metadata.doctrine_ids) > 1 else metadata.doctrine_id,
+                        "target": metadata.target,
+                    }
+                else:
+                    metadata_dict = None  # Use metadata object directly
             else:
-                print(f"Fit update completed for fit_id {metadata.fit_id} (remote={remote})")
-            exit()
+                # Interactive mode - collect metadata from user
+                metadata_dict = collect_fit_metadata_interactive(fit_id, fit_file)
+
+            # Map market aliases to database aliases
+            market_to_db = {
+                "primary": "wcmkt",
+                "deployment": "wcmktnorth",
+            }
+
+            # Process for each target market
+            for target_market in target_markets:
+                target_alias = market_to_db[target_market]
+                print(f"\n--- Processing for {target_market} market ({target_alias}) ---")
+
+                if metadata_dict:
+                    # Create FitMetadata from dict for workflow
+                    from mkts_backend.utils.parse_fits import FitMetadata
+                    metadata_obj = FitMetadata(**metadata_dict)
+                else:
+                    metadata_obj = metadata
+
+                result = update_fit_workflow(
+                    fit_id=metadata_obj.fit_id,
+                    fit_file=fit_file,
+                    fit_metadata_file=meta_file,
+                    remote=remote,
+                    clear_existing=clear_existing,
+                    dry_run=dry_run,
+                    target_alias=target_alias,
+                    update_targets=update_targets,
+                    metadata_override=metadata_dict,
+                )
+
+                if dry_run:
+                    print("Dry run complete")
+                    print(f"Ship: {result['ship_name']} ({result['ship_type_id']})")
+                    print(f"Items parsed: {len(result['items'])}")
+                    if result["missing_items"]:
+                        print(f"Missing type_ids for: {result['missing_items']}")
+                else:
+                    print(f"Fit update completed for fit_id {metadata_obj.fit_id} -> {target_alias} (remote={remote})")
+                    if update_targets:
+                        print(f"  ship_targets updated")
+
+            exit(0)
         except Exception as e:
             logger.error(f"update-fit failed: {e}")
             print(f"Error running update-fit: {e}")

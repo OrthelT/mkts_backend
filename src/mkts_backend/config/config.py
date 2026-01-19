@@ -4,7 +4,7 @@ import pandas as pd
 import pathlib
 from typing import Optional, TYPE_CHECKING
 
-#os.environ.setdefault("RUST_LOG", "debug")
+os.environ.setdefault("RUST_LOG", "debug")
 
 import libsql
 from dotenv import load_dotenv

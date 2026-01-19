@@ -116,6 +116,27 @@ uv run fit-check --fit-id=42 --output=markdown
 cat fit.txt | uv run fit-check --paste
 ```
 
+### update-fit - Update Doctrine Fits
+
+Process EFT fit files and update doctrine tables. Supports interactive metadata input and multi-market targeting.
+
+```bash
+# Update fit with metadata file
+uv run mkts-backend update-fit --fit-file=fits/hfi.txt --meta-file=fits/hfi_meta.json
+
+# Update fit with interactive prompts
+uv run mkts-backend update-fit --fit-file=fits/hfi.txt --fit-id=313 --interactive
+
+# Update for deployment market
+uv run mkts-backend update-fit --fit-file=fits/hfi.txt --fit-id=313 --deployment
+
+# Update for both markets with ship_targets
+uv run mkts-backend update-fit --fit-file=fits/hfi.txt --meta-file=meta.json --both --update-targets
+
+# Preview changes (dry run)
+uv run mkts-backend update-fit --fit-file=fits/hfi.txt --fit-id=313 --interactive --dry-run
+```
+
 **Input Modes:**
 - `--file=<path>`: Parse an EFT-formatted fit file and query live market data
 - `--fit-id=<id>`: Look up fit by ID from doctrine_fits table and display pre-calculated market data from doctrines table

@@ -22,6 +22,15 @@ uv run mkts-backend --market=deployment  # Uses deployment market config
 **Check database tables:**
 ```bash
 uv run mkts-backend --check_tables
+uv run mkts-backend --check_tables --deployment  # Check deployment market tables
+```
+
+**Sync and validate databases:**
+```bash
+uv run mkts-backend sync              # Sync primary market database with Turso
+uv run mkts-backend sync --deployment # Sync deployment market database
+uv run mkts-backend validate          # Validate primary market database sync status
+uv run mkts-backend validate --market=deployment  # Validate deployment market
 ```
 
 **Check market availability for a ship fit:**
@@ -235,6 +244,71 @@ uv run fit-check --fit-id=42 --output=markdown
 # Combine options
 uv run fit-check --file=fit.txt --market=deployment --target=100 --output=csv
 ```
+
+### update-fit Command
+
+The update-fit command processes EFT fit files and updates doctrine tables across multiple databases. It supports both file-based and interactive metadata input, with flexible market targeting.
+
+**Basic Usage:**
+```bash
+# Update fit with metadata file (traditional workflow)
+uv run mkts-backend update-fit --fit-file=fits/hfi.txt --meta-file=fits/hfi_meta.json
+
+# Update fit by ID with interactive prompts
+uv run mkts-backend update-fit --fit-file=fits/hfi.txt --fit-id=313 --interactive
+
+# Update fit for deployment market
+uv run mkts-backend update-fit --fit-file=fits/hfi.txt --fit-id=313 --interactive --deployment
+
+# Update fit for both markets
+uv run mkts-backend update-fit --fit-file=fits/hfi.txt --meta-file=meta.json --both
+
+# Update fit with ship_targets table update
+uv run mkts-backend update-fit --fit-file=fits/hfi.txt --fit-id=313 --interactive --update-targets
+
+# Preview changes without saving (dry run)
+uv run mkts-backend update-fit --fit-file=fits/hfi.txt --fit-id=313 --interactive --dry-run
+```
+
+**Command Options:**
+- `--fit-file=<path>`: Path to EFT fit file (required)
+- `--fit-id=<id>`: Fit ID to update (required if no --meta-file)
+- `--meta-file=<path>`: Path to metadata JSON file (optional with --fit-id)
+- `--interactive`: Prompt for metadata interactively (when no --meta-file)
+- `--market=<alias>`: Target market (primary, deployment, both)
+- `--primary`: Shorthand for --market=primary
+- `--deployment`: Shorthand for --market=deployment
+- `--both`: Update both primary and deployment markets
+- `--update-targets`: Update ship_targets table (default: skip)
+- `--remote`: Use remote database (default: local)
+- `--no-clear`: Keep existing items (default: clear and replace)
+- `--dry-run`: Preview changes without saving
+
+**Metadata File Format (JSON):**
+```json
+{
+  "fit_id": 313,
+  "name": "Hurricane Fleet Issue - Arty",
+  "description": "Standard doctrine fit",
+  "doctrine_id": 42,
+  "target": 300
+}
+```
+
+**Database Tables Updated:**
+- **wcfitting.db:**
+  - `fittings_doctrine` - doctrine records (auto-created if missing)
+  - `fittings_fitting` - fit shell records
+  - `fittings_fittingitem` - fit items
+  - `fittings_doctrine_fittings` - doctrine-fit links
+  - `watch_doctrines` - watched doctrines (auto-added for new doctrines)
+
+- **wcmktprod.db / wcmktnorth2.db (based on --market flag):**
+  - `doctrine_fits` - fit metadata with market_flag
+  - `doctrine_map` - doctrine-fit links
+  - `watchlist` - items to track
+  - `ship_targets` (optional with --update-targets)
+  - `doctrines` (optional with --update-targets)
 
 **Input Modes:**
 - `--file=<path>`: Parse an EFT-formatted fit file and query live market data

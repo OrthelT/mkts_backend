@@ -49,3 +49,6 @@ fit_schemas.md
 archive/
 *.bak
 rebuild_database.py
+utils
+clitools
+config

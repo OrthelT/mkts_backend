@@ -116,6 +116,7 @@ OPTIONS:
     --market=<alias>     Market to check: primary, deployment (default: primary)
     --target=<N>         Override target quantity (default: from doctrine_fits)
     --output=<format>    Export format: csv, multibuy, or markdown
+    --no-jita            Hide Jita price comparison columns
     --help               Show this help message
 
     Note: One of --file, --paste, or --fit-id is required.
@@ -578,6 +579,7 @@ def parse_args(args: list[str])->dict | None:
 
         file_path = None
         paste_mode = "--paste" in args
+        no_jita = "--no-jita" in args
         target = None
         output_format = None
         fit_id = None
@@ -634,6 +636,7 @@ def parse_args(args: list[str])->dict | None:
             show_legend=True,
             target=target,
             output_format=output_format,
+            show_jita=not no_jita,
         )
         exit(0 if success else 1)
 

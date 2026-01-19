@@ -616,6 +616,7 @@ def display_fit_status_by_id(
     show_legend: bool = True,
     target: Optional[int] = None,
     output_format: Optional[str] = None,
+    show_jita: bool = True,
 ) -> Optional[FitCheckResult]:
     """
     Display market status for a fit by fit_id using pre-calculated doctrines data.
@@ -626,6 +627,7 @@ def display_fit_status_by_id(
         show_legend: Whether to show the legend
         target: Optional target quantity override
         output_format: Export format - 'csv', 'multibuy', or 'markdown' (optional)
+        show_jita: Whether to show Jita price comparison columns
 
     Returns:
         FitCheckResult object with market data, or None if fit not found
@@ -646,6 +648,7 @@ def display_fit_status_by_id(
         total_fit_cost=result.total_fit_cost,
         market_name=result.market_name,
         target=result.target,
+        show_jita=show_jita,
     )
 
     # Measure table width for header alignment
@@ -661,7 +664,7 @@ def display_fit_status_by_id(
         total_fits=result.min_fits,
         target=result.target,
         width=table_width,
-        total_jita_fit_cost=result.total_jita_fit_cost,
+        total_jita_fit_cost=result.total_jita_fit_cost if show_jita else None,
     )
 
     console.print()
@@ -686,7 +689,7 @@ def display_fit_status_by_id(
         print_missing_for_target(result.missing_for_target, result.target)
 
     # Print items priced above 120% of Jita
-    if result.overpriced_items:
+    if show_jita and result.overpriced_items:
         print_overpriced_items(result.overpriced_items)
 
     if show_legend:
@@ -715,6 +718,7 @@ def display_fit_status(
     show_legend: bool = True,
     target: Optional[int] = None,
     output_format: Optional[str] = None,
+    show_jita: bool = True,
 ) -> FitCheckResult:
     """
     Display market status for a parsed fit using Rich formatting.
@@ -725,6 +729,7 @@ def display_fit_status(
         show_legend: Whether to show the legend
         target: Optional target quantity override
         output_format: Export format - 'csv', 'multibuy', or 'markdown' (optional)
+        show_jita: Whether to show Jita price comparison columns
 
     Returns:
         FitCheckResult object with market data
@@ -741,6 +746,7 @@ def display_fit_status(
         total_fit_cost=result.total_fit_cost,
         market_name=result.market_name,
         target=result.target,
+        show_jita=show_jita,
     )
 
     # Measure table width for header alignment
@@ -756,7 +762,7 @@ def display_fit_status(
         total_fits=result.min_fits,
         target=result.target,
         width=table_width,
-        total_jita_fit_cost=result.total_jita_fit_cost,
+        total_jita_fit_cost=result.total_jita_fit_cost if show_jita else None,
     )
 
     console.print()
@@ -781,7 +787,7 @@ def display_fit_status(
         print_missing_for_target(result.missing_for_target, result.target)
 
     # Print items priced above 120% of Jita
-    if result.overpriced_items:
+    if show_jita and result.overpriced_items:
         print_overpriced_items(result.overpriced_items)
 
     if show_legend:
@@ -812,6 +818,7 @@ def fit_check_command(
     show_legend: bool = True,
     target: Optional[int] = None,
     output_format: Optional[str] = None,
+    show_jita: bool = True,
 ) -> bool:
     """
     Execute the fit-check command.
@@ -824,6 +831,7 @@ def fit_check_command(
         show_legend: Whether to show the legend
         target: Optional target quantity override
         output_format: Export format - 'csv', 'multibuy', or 'markdown' (optional)
+        show_jita: Whether to show Jita price comparison columns
 
     Returns:
         True if successful, False otherwise
@@ -844,6 +852,7 @@ def fit_check_command(
             show_legend=show_legend,
             target=target,
             output_format=output_format,
+            show_jita=show_jita,
         )
         return result is not None
 
@@ -880,6 +889,7 @@ def fit_check_command(
         show_legend=show_legend,
         target=target,
         output_format=output_format,
+        show_jita=show_jita,
     )
 
     return True

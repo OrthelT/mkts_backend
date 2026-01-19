@@ -200,6 +200,7 @@ SUBCOMMANDS:
     list-doctrines    List all available doctrines
     create-doctrine   Create a new doctrine (group of fits)
     doctrine-add-fit  Add existing fit(s) to a doctrine (supports multiple)
+    doctrine-remove-fit Remove a fit from a doctrine
 
 OPTIONS:
     --file=<path>        Path to EFT fit file (for add/update)
@@ -1051,10 +1052,10 @@ def main(history: bool = False, market_alias: str = "primary"):
     logger.info("Environment validation passed")
 
     init_databases()
-    logger.info("Databases initialized")
+    logger.debug("Databases initialized")
     os.makedirs("data", exist_ok=True)
-    logger.info(f"Data directory created: {os.path.abspath('data')}")
-    logger.info("=" * 80)
+    logger.debug(f"Data directory created: {os.path.abspath('data')}")
+    logger.debug("=" * 80)
 
     # Parse command line arguments
     if len(sys.argv) > 1:
@@ -1069,6 +1070,7 @@ def main(history: bool = False, market_alias: str = "primary"):
     # Create MarketContext for the selected market
     try:
         market_ctx = MarketContext.from_settings(market_alias)
+        logger.info(f"MarketContext: {market_ctx}")
     except ValueError as e:
         logger.error(f"Invalid market: {e}")
         print(f"Error: {e}")
@@ -1092,10 +1094,10 @@ def main(history: bool = False, market_alias: str = "primary"):
     if not validation_test:
         logger.warning(f"{db.alias} database is not up to date. Syncing...")
         db.sync()
-        logger.info("database synced")
+        logger.debug("database synced")
         validation_test = db.validate_sync()
         if validation_test:
-            logger.info("database validated")
+            logger.debug("database validated")
         else:
             logger.error("database validation failed")
             raise Exception(f"database validation failed for {db.alias}")
@@ -1106,7 +1108,7 @@ def main(history: bool = False, market_alias: str = "primary"):
 
     status = process_market_orders(esi, order_type="all", test_mode=False, market_ctx=market_ctx)
     if status:
-        logger.info("Market orders updated")
+        logger.debug("Market orders updated")
     else:
         logger.error("Failed to update market orders")
         exit()
@@ -1115,7 +1117,7 @@ def main(history: bool = False, market_alias: str = "primary"):
 
     watchlist = db.get_watchlist()
     if len(watchlist) > 0:
-        logger.info(f"Watchlist found: {len(watchlist)} items")
+        logger.debug(f"Watchlist found: {len(watchlist)} items")
     else:
         logger.error("No watchlist found. Unable to proceed further.")
         exit()
@@ -1124,22 +1126,22 @@ def main(history: bool = False, market_alias: str = "primary"):
         logger.info("Processing history")
         status = process_history(market_ctx=market_ctx)
         if status:
-            logger.info("History updated")
+            logger.debug("History updated")
         else:
             logger.error("Failed to update history")
     else:
-        logger.info("History mode disabled. Skipping history processing")
+        logger.debug("History mode disabled. Skipping history processing")
 
     status = process_market_stats(market_ctx=market_ctx)
     if status:
-        logger.info("Market stats updated")
+        logger.debug("Market stats updated")
     else:
         logger.error("Failed to update market stats")
         exit()
 
     status = process_doctrine_stats(market_ctx=market_ctx)
     if status:
-        logger.info("Doctrines updated")
+        logger.debug("Doctrines updated")
     else:
         logger.error("Failed to update doctrines")
         exit()

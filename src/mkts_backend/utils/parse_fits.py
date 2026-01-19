@@ -680,25 +680,28 @@ def update_fit_workflow(
         upsert_doctrine_fits(doctrine_fit, remote=remote, db_alias=target_alias)
         upsert_doctrine_map(doctrine_fit.doctrine_id, doctrine_fit.fit_id, remote=remote, db_alias=target_alias)
 
-    # Only update ship_targets if explicitly requested
-    if update_targets:
-        upsert_ship_target(
-            fit_id=fit_id,
-            fit_name=parse_result.fit_name,
-            ship_id=ship_type_id,
-            ship_name=parse_result.ship_name,
-            ship_target=metadata.target,
-            remote=remote,
-            db_alias=target_alias,
-        )
-        refresh_doctrines_for_fit(
-            fit_id=fit_id,
-            ship_id=ship_type_id,
-            ship_name=parse_result.ship_name,
-            remote=remote,
-            db_alias=target_alias,
-        )
-        logger.info(f"Updated ship_targets for fit_id={fit_id}")
+    # Always update ship_targets - this tracks target quantities for each fit
+    upsert_ship_target(
+        fit_id=fit_id,
+        fit_name=parse_result.fit_name,
+        ship_id=ship_type_id,
+        ship_name=parse_result.ship_name,
+        ship_target=metadata.target,
+        remote=remote,
+        db_alias=target_alias,
+    )
+    logger.info(f"Updated ship_targets for fit_id={fit_id}")
+
+    # Always refresh doctrines table - this contains item-level market data
+    # that the frontend requires for displaying fit market availability
+    refresh_doctrines_for_fit(
+        fit_id=fit_id,
+        ship_id=ship_type_id,
+        ship_name=parse_result.ship_name,
+        remote=remote,
+        db_alias=target_alias,
+    )
+    logger.info(f"Refreshed doctrines table for fit_id={fit_id}")
 
     # Add missing items to watchlist in wcmkt
     type_ids = {item["type_id"] for item in parse_result.items}

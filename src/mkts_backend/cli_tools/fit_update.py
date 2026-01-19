@@ -29,6 +29,7 @@ from mkts_backend.utils.doctrine_update import (
     get_fit_target,
     upsert_doctrine_fits,
     upsert_doctrine_map,
+    upsert_ship_target,
     refresh_doctrines_for_fit,
     remove_doctrine_fits,
     remove_doctrine_map,
@@ -200,9 +201,11 @@ def interactive_add_fit(
     console.print(Panel(
         f"[bold]Ship:[/bold] {parse_result.ship_name}\n"
         f"[bold]Fit Name:[/bold] {parse_result.fit_name}\n"
-        f"[bold]Items:[/bold] {len(parse_result.items)}",
+        f"[bold]Items:[/bold] {len(parse_result.items)}\n"
+        f"[bold]Remote:[/bold] {remote}\n",
         title="[bold cyan]Parsed Fit[/bold cyan]",
         border_style="blue",
+        
     ))
 
     if parse_result.has_missing_types:
@@ -860,6 +863,17 @@ def doctrine_add_fit_command(
 
             # Add doctrine map entry
             upsert_doctrine_map(doctrine_id, fit_id, remote=remote, db_alias=db_alias)
+
+            # Update ship_targets table
+            upsert_ship_target(
+                fit_id=fit_id,
+                fit_name=doctrine_fit.fit_name,
+                ship_id=doctrine_fit.ship_type_id,
+                ship_name=doctrine_fit.ship_name,
+                ship_target=fit_target,
+                remote=remote,
+                db_alias=db_alias,
+            )
 
             # Refresh doctrines table with market data
             refresh_doctrines_for_fit(

@@ -564,6 +564,38 @@ def ensure_doctrine_link(doctrine_id: int, fit_id: int, remote: bool = False) ->
     logger.info(f"Linked doctrine_id {doctrine_id} to fit_id {fit_id} in fittings_doctrine_fittings")
 
 
+def remove_doctrine_link(doctrine_id: int, fit_id: int, remote: bool = False) -> bool:
+    """
+    Remove the link between a doctrine and a fit in fittings_doctrine_fittings.
+
+    Args:
+        doctrine_id: The doctrine ID
+        fit_id: The fit ID to unlink
+        remote: Whether to use remote database
+
+    Returns:
+        True if a row was deleted, False if no matching row found
+    """
+    engine = _get_engine("fittings", remote)
+    with engine.connect() as conn:
+        result = conn.execute(
+            text(
+                "DELETE FROM fittings_doctrine_fittings WHERE doctrine_id = :doctrine_id AND fitting_id = :fit_id"
+            ),
+            {"doctrine_id": doctrine_id, "fit_id": fit_id},
+        )
+        conn.commit()
+        rows_affected = result.rowcount
+    engine.dispose()
+
+    if rows_affected > 0:
+        logger.info(f"Removed link between doctrine_id {doctrine_id} and fit_id {fit_id} from fittings_doctrine_fittings")
+        return True
+    else:
+        logger.warning(f"No fittings_doctrine_fittings row found for doctrine_id={doctrine_id}, fit_id={fit_id}")
+        return False
+
+
 def update_fit_workflow(
     fit_id: int,
     fit_file: str,

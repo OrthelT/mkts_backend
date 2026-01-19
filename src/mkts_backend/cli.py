@@ -190,16 +190,21 @@ USAGE:
     mkts-backend fit-update <subcommand> [options]
 
 SUBCOMMANDS:
-    add              Add a new fit to the doctrine system
-    update           Update an existing fit
-    assign-market    Set market flag for a fit
-    list-fits        List all doctrine fits
-    list-doctrines   List all available doctrines
+    Fit Management:
+    add              Add a NEW fit from an EFT file and assign to doctrine(s)
+    update           Update an existing fit's items from an EFT file
+    assign-market    Change the market assignment for an existing fit
+    list-fits        List all fits in the doctrine tracking system
+
+    Doctrine Management:
+    list-doctrines    List all available doctrines
+    create-doctrine   Create a new doctrine (group of fits)
+    doctrine-add-fit  Add existing fit(s) to a doctrine (supports multiple)
 
 OPTIONS:
-    --file=<path>        Path to EFT fit file
+    --file=<path>        Path to EFT fit file (for add/update)
     --meta-file=<path>   Path to metadata JSON file
-    --fit-id=<id>        Fit ID to update or modify
+    --fit-id=<id>        Fit ID to update or modify (can be comma-separated)
     --market=<flag>      Market flag: primary, deployment, both
     --interactive        Use interactive prompts for metadata
     --dry-run            Preview changes without saving
@@ -210,20 +215,36 @@ OPTIONS:
     --help               Show this help message
 
 EXAMPLES:
-    # List all fits
+    # List all fits and doctrines
     mkts-backend fit-update list-fits
+    mkts-backend fit-update list-doctrines
 
-    # Add new fit interactively
+    # Create a new doctrine (group of fits)
+    mkts-backend fit-update create-doctrine
+
+    # Add new fit interactively (prompts for doctrine assignment)
     mkts-backend fit-update add --file=fits/new_fit.txt --interactive
 
     # Add fit with metadata file
     mkts-backend fit-update add --file=fits/hfi.txt --meta-file=fits/hfi_meta.json
 
-    # Update existing fit
-    mkts-backend fit-update update --fit-id=123 --file=fits/updated.txt
+    # Add existing fit(s) to a doctrine (interactive, supports multiple)
+    mkts-backend fit-update doctrine-add-fit
+    mkts-backend fit-update doctrine-add-fit --fit-id=123
+    mkts-backend fit-update doctrine-add-fit --fit-id=123,456,789
+
+    # Update existing fit's items
+    mkts-backend fit-update update --fit-id=123 --file=fits/updated.txt --meta-file=meta.json
 
     # Assign fit to deployment market
     mkts-backend fit-update assign-market --fit-id=123 --market=deployment
+
+WORKFLOW:
+    1. Create a doctrine:     fit-update create-doctrine
+    2. Add a new fit:         fit-update add --file=<eft> --interactive
+       (you can create a doctrine inline during this step)
+    3. Add existing fits:     fit-update doctrine-add-fit
+       (prompts for multiple fit IDs, validates and skips duplicates)
 """)
 
 
@@ -876,21 +897,36 @@ def parse_args(args: list[str])->dict | None:
         local_only = "--local-only" in args
         dry_run = "--dry-run" in args
 
+        fit_ids_str = None
         for arg in args:
             if arg.startswith("--file="):
                 file_path = arg.split("=", 1)[1]
             elif arg.startswith("--meta-file="):
                 meta_file = arg.split("=", 1)[1]
             elif arg.startswith("--fit-id="):
-                fit_id = int(arg.split("=", 1)[1])
+                fit_ids_str = arg.split("=", 1)[1]
             elif arg.startswith("--target="):
                 target_alias = arg.split("=", 1)[1]
             elif arg == "--north":
                 target_alias = "wcmktnorth"
 
+        # Parse fit_id(s) - supports comma-separated for doctrine-add-fit
+        if fit_ids_str:
+            if "," in fit_ids_str:
+                # Multiple fit IDs for doctrine-add-fit
+                fit_id = None  # Will use fit_ids list instead
+                fit_ids = [int(f.strip()) for f in fit_ids_str.split(",") if f.strip()]
+            else:
+                fit_id = int(fit_ids_str)
+                fit_ids = None
+        else:
+            fit_id = None
+            fit_ids = None
+
         success = fit_update_command(
             subcommand=subcommand,
             fit_id=fit_id,
+            fit_ids=fit_ids,  # For doctrine-add-fit with multiple fits
             file_path=file_path,
             meta_file=meta_file,
             market_flag=market_alias,  # Reuse market_alias parsed earlier

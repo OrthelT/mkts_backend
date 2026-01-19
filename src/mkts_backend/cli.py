@@ -39,9 +39,15 @@ from mkts_backend.config.market_context import MarketContext
 settings = load_settings(file_path="src/mkts_backend/config/settings.toml")
 logger = configure_logging(__name__)
 
-def check_tables():
-    tables = ["doctrines", "marketstats", "marketorders", "market_history"]
-    db = DatabaseConfig("wcmkt")
+def check_tables(market_alias: str = "primary"):
+    """Check tables in the database for the specified market."""
+    market_ctx = MarketContext.from_settings(market_alias)
+    db = DatabaseConfig(market_context=market_ctx)
+
+    print(f"Checking tables for market: {market_ctx.name} ({market_ctx.alias})")
+    print(f"Database: {db.alias} ({db.path})")
+    print("=" * 80)
+
     tables = db.get_table_list()
 
     for table in tables:
@@ -63,15 +69,15 @@ def display_cli_help():
   update-fit         Process an EFT fit file and update doctrine tables
   add_watchlist      Add items to watchlist by type IDs
   parse-items        Parse Eve structure data and create CSV with pricing
-  sync               Sync the database
-  validate           Validate the database
+  sync               Sync the database (supports --market/--deployment)
+  validate           Validate the database (supports --market/--deployment)
 
-Global Options:
+Global Options (apply to main workflow and most commands):
   --market=<alias>   Select market (primary, deployment). Default: primary
   --primary          Shorthand for --market=primary
   --deployment       Shorthand for --market=deployment
-  --history          Include history processing
-  --check_tables     Check the tables in the database
+  --history          Include history processing (main workflow)
+  --check_tables     Check the tables in the database (supports --market)
   --validate-env     Validate environment credentials and exit
   --list-markets     List available market configurations
   --help             Show this help message
@@ -80,6 +86,9 @@ Use 'mkts-backend <command> --help' for more information about a command.
 
 Examples:
   mkts-backend --history                      # Run main workflow with history
+  mkts-backend --history --deployment         # Run for deployment market
+  mkts-backend sync --deployment              # Sync deployment database
+  mkts-backend validate --market=deployment   # Validate deployment database
   mkts-backend fit-check --file=fits/hfi.txt  # Check fit availability
   mkts-backend fit-update list-fits           # List all doctrine fits
 """)
@@ -486,7 +495,7 @@ def parse_args(args: list[str])->dict | None:
         exit()
 
     if "--check_tables" in args:
-        check_tables()
+        check_tables(market_alias)
         exit()
 
     # Handle parse-items command
@@ -697,19 +706,26 @@ def parse_args(args: list[str])->dict | None:
         exit(0 if success else 1)
 
     if "sync" in args:
-        db = DatabaseConfig("wcmkt")
+        # Use market_alias parsed from --market/--deployment/--primary flags
+        market_ctx = MarketContext.from_settings(market_alias)
+        db = DatabaseConfig(market_context=market_ctx)
+        print(f"Syncing database for market: {market_ctx.name} ({market_ctx.alias})")
         db.sync()
-        logger.info("Database synced")
+        logger.info(f"Database synced: {db.alias}")
+        print(f"Database synced: {db.alias} ({db.path})")
         exit()
         return None
 
     if "validate" in args:
-        db = DatabaseConfig("wcmkt")
+        # Use market_alias parsed from --market/--deployment/--primary flags
+        market_ctx = MarketContext.from_settings(market_alias)
+        db = DatabaseConfig(market_context=market_ctx)
+        print(f"Validating database for market: {market_ctx.name} ({market_ctx.alias})")
         validation_test = db.validate_sync()
         if validation_test:
-            print("Database validated")
+            print(f"Database validated: {db.alias}")
         else:
-            print("Database is out of date. Run --sync_db to sync the database.")
+            print(f"Database {db.alias} is out of date. Run 'sync' to sync the database.")
         exit()
 
     if "--validate-env" in args:

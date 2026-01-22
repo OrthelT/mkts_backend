@@ -42,3 +42,4 @@ dev = [
 
 [project.scripts]
 mkts-backend = "mkts_backend.cli:main"
+mkts = "mkts_backend.cli:main"

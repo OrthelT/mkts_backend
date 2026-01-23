@@ -80,9 +80,9 @@ def get_fits_list(db_alias: str = "wcmkt", remote: bool = False) -> List[dict]:
         # Check if market_flag column exists
         try:
             result = conn.execute(text("""
-                SELECT fit_id, fit_name, ship_name, doctrine_name, target, market_flag
+                SELECT fit_id, TRIM(fit_name), ship_name, TRIM(doctrine_name), target, market_flag
                 FROM doctrine_fits
-                ORDER BY doctrine_name, fit_name
+                ORDER BY ship_name, doctrine_name, fit_name
             """))
             has_market_flag = True
         except Exception:

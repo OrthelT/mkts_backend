@@ -60,6 +60,14 @@ class FitCheckResult:
     total_jita_fit_cost: float = 0.0
 
     @property
+    def hulls(self) -> int:
+        """Get the number of ship hulls available (fits for the ship item)."""
+        for item in self.market_data:
+            if item.get("is_ship", False):
+                return int(item.get("fits", 0))
+        return 0
+
+    @property
     def missing_for_target(self) -> List[Dict]:
         """Get list of items that are below target with qty_needed."""
         if self.target is None:
@@ -122,7 +130,7 @@ class FitCheckResult:
             return ""
         lines = [
             f"# {self.fit_name}",
-            f"Target (**{self.target:,}**); Fits (**{int(self.min_fits)}**)",
+            f"Target (**{self.target:,}**); Fits (**{int(self.min_fits)}**); Hulls (**{self.hulls}**)",
             "",
         ]
         for item in self.missing_for_target:
@@ -665,6 +673,7 @@ def display_fit_status_by_id(
         target=result.target,
         width=table_width,
         total_jita_fit_cost=result.total_jita_fit_cost if show_jita else None,
+        hulls=result.hulls,
     )
 
     console.print()
@@ -763,6 +772,7 @@ def display_fit_status(
         target=result.target,
         width=table_width,
         total_jita_fit_cost=result.total_jita_fit_cost if show_jita else None,
+        hulls=result.hulls,
     )
 
     console.print()
@@ -808,6 +818,51 @@ def display_fit_status(
             print_markdown_export(result.to_markdown())
 
     return result
+
+
+def display_help():
+    """Display help for the fitcheck command."""
+    print("""
+fitcheck - Display market availability for items in an EFT-formatted ship fit
+
+USAGE:
+    fitcheck --fit=<id> [options]
+    fitcheck --file=<path> [options]
+    fitcheck --paste [options]
+
+DESCRIPTION:
+    Analyzes an EFT (Eve Fitting Tool) formatted ship fit and displays market
+    availability for each item. Shows how many complete fits can be built from
+    current market stock, with color-coded status indicators.
+
+OPTIONS:
+    --fit=<id>           Look up fit by ID from doctrine_fits/doctrines tables
+                         (uses pre-calculated market data)
+    --file=<path>        Path to EFT fit file
+    --paste              Read EFT fit from stdin instead of file
+    --market=<alias>     Market to check: primary, deployment (default: primary)
+    --target=<N>         Override target quantity (default: from doctrine_fits)
+    --output=<format>    Export format: csv, multibuy, or markdown
+    --no-jita            Hide Jita price comparison columns
+    --no-legend          Hide the legend
+    --help, -h           Show this help message
+
+EXAMPLES:
+    # Check fit by ID (most common usage)
+    fitcheck --fit=42
+
+    # Check fit by ID against deployment market
+    fitcheck --fit=42 --market=deployment
+
+    # Check fit from EFT file
+    fitcheck --file=fits/hurricane_fleet.txt
+
+    # Override target and export multi-buy list
+    fitcheck --fit=42 --target=50 --output=multibuy
+
+    # Export markdown for Discord
+    fitcheck --fit=42 --output=markdown
+""")
 
 
 def fit_check_command(
@@ -893,3 +948,103 @@ def fit_check_command(
     )
 
     return True
+
+
+def main():
+    """
+    Standalone CLI entry point for fitcheck command.
+
+    Usage: fitcheck --fit=<id> [options]
+    """
+    import sys
+
+    args = sys.argv[1:]
+
+    # Handle help
+    if not args or "--help" in args or "-h" in args:
+        display_help()
+        sys.exit(0)
+
+    # Parse arguments
+    file_path = None
+    fit_id = None
+    market_alias = "primary"
+    target = None
+    output_format = None
+    show_jita = True
+    show_legend = True
+    paste_mode = False
+
+    for arg in args:
+        if arg.startswith("--fit="):
+            try:
+                fit_id = int(arg.split("=", 1)[1])
+            except ValueError:
+                console.print("[red]Error: --fit must be an integer[/red]")
+                sys.exit(1)
+        elif arg.startswith("--file="):
+            file_path = arg.split("=", 1)[1]
+        elif arg.startswith("--market="):
+            market_alias = arg.split("=", 1)[1]
+        elif arg == "--deployment":
+            market_alias = "deployment"
+        elif arg == "--primary":
+            market_alias = "primary"
+        elif arg.startswith("--target="):
+            try:
+                target = int(arg.split("=", 1)[1])
+            except ValueError:
+                console.print("[red]Error: --target must be an integer[/red]")
+                sys.exit(1)
+        elif arg.startswith("--output="):
+            output_format = arg.split("=", 1)[1].lower()
+            if output_format not in ("csv", "multibuy", "markdown"):
+                console.print("[red]Error: --output must be one of: csv, multibuy, markdown[/red]")
+                sys.exit(1)
+        elif arg == "--no-jita":
+            show_jita = False
+        elif arg == "--no-legend":
+            show_legend = False
+        elif arg == "--paste":
+            paste_mode = True
+
+    # Validate input
+    if not file_path and fit_id is None and not paste_mode:
+        console.print("[red]Error: --fit=<id>, --file=<path>, or --paste is required[/red]")
+        console.print("Use 'fitcheck --help' for usage information.")
+        sys.exit(1)
+
+    # Handle paste mode
+    eft_text = None
+    if paste_mode:
+        print("Paste your EFT fit below (Ctrl+D or blank line to finish):")
+        lines = []
+        try:
+            for line in sys.stdin:
+                if line.strip() == "":
+                    if lines and lines[-1] == "":
+                        break
+                    lines.append("")
+                else:
+                    lines.append(line.rstrip())
+        except EOFError:
+            pass
+        eft_text = "\n".join(lines)
+
+    # Run the command
+    success = fit_check_command(
+        file_path=file_path,
+        eft_text=eft_text,
+        fit_id=fit_id,
+        market_alias=market_alias,
+        show_legend=show_legend,
+        target=target,
+        output_format=output_format,
+        show_jita=show_jita,
+    )
+
+    sys.exit(0 if success else 1)
+
+
+if __name__ == "__main__":
+    main()

@@ -26,7 +26,7 @@ logger = configure_logging(__name__)
 def load_settings(file_path: str = settings_file):
     with open(file_path, "rb") as f:
         settings = tomllib.load(f)
-        logger.info(f"Settings loaded from {file_path}")
+        logger.debug(f"Settings loaded from {file_path}")
     return settings
 
 class DatabaseConfig:

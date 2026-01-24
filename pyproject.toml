@@ -43,3 +43,4 @@ dev = [
 [project.scripts]
 mkts-backend = "mkts_backend.cli:main"
 mkts = "mkts_backend.cli:main"
+fitcheck = "mkts_backend.cli_tools.fit_check:main"

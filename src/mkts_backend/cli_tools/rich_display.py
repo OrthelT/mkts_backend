@@ -174,6 +174,7 @@ def print_fit_header(
     target: Optional[int] = None,
     width: Optional[int] = None,
     total_jita_fit_cost: Optional[float] = None,
+    hulls: Optional[int] = None,
 ) -> None:
     """
     Print a formatted header for fit status display.
@@ -188,6 +189,7 @@ def print_fit_header(
         target: Target quantity from doctrine_fits
         width: Optional width to constrain the header panel
         total_jita_fit_cost: Total Jita cost of the fit
+        hulls: Number of ship hulls available on market
     """
     header_text = Text()
     header_text.append("Ship: ", style="bold white")
@@ -213,6 +215,13 @@ def print_fit_header(
         header_text.append("Fits Available: ", style="bold white")
         fits_style = "green" if total_fits >= 10 else ("yellow" if total_fits >= 1 else "red")
         header_text.append(f"{total_fits:.1f}", style=f"bold {fits_style}")
+
+    # Add hulls available
+    if hulls is not None:
+        header_text.append("\n")
+        header_text.append("Hulls: ", style="bold white")
+        hulls_style = "green" if hulls >= 10 else ("yellow" if hulls >= 1 else "red")
+        header_text.append(f"{hulls}", style=f"bold {hulls_style}")
 
     # Add target if known
     if target is not None:

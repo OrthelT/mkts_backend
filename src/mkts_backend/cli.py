@@ -32,7 +32,7 @@ from mkts_backend.utils.validation import validate_all
 from mkts_backend.utils.parse_fits import update_fit_workflow, parse_fit_metadata
 from mkts_backend.config.config import load_settings, DatabaseConfig
 from mkts_backend.cli_tools.fit_check import fit_check_command
-from mkts_backend.cli_tools.fit_update import fit_update_command
+from mkts_backend.cli_tools.fit_update import fit_update_command, display_update_target_help, update_target_command
 from mkts_backend.config.gsheets_config import GoogleSheetConfig
 from mkts_backend.config.market_context import MarketContext
 
@@ -91,6 +91,7 @@ Examples:
   mkts-backend validate --market=deployment   # Validate deployment database
   mkts-backend fit-check --file=fits/hfi.txt  # Check fit availability
   mkts-backend fit-update list-fits           # List all doctrine fits
+
 """)
 
 
@@ -196,6 +197,9 @@ SUBCOMMANDS:
     assign-market    Change the market assignment for an existing fit
     list-fits        List all fits in the doctrine tracking system
 
+    Target Management:
+    update-target    Update the target quantity for a fit
+
     Doctrine Management:
     list-doctrines    List all available doctrines
     create-doctrine   Create a new doctrine (group of fits)
@@ -248,6 +252,9 @@ EXAMPLES:
     # Assign fit to deployment market
     mkts-backend fit-update assign-market --fit-id=123 --market=deployment
 
+    # Update target for fit
+    mkts-backend fit-update update --fit-id=550 --target=300
+
 WORKFLOW:
     1. Create a doctrine:     fit-update create-doctrine
     2. Add a new fit:         fit-update add --file=<eft> --interactive
@@ -263,55 +270,55 @@ existing targets when re-adding fits to doctrines.
 def display_update_fit_help():
     """Display help for the update-fit subcommand."""
     print("""
-update-fit - Process an EFT fit file and metadata to update doctrine tables
+    update-fit - Process an EFT fit file and metadata to update doctrine tables
 
-USAGE:
-    mkts-backend update-fit --fit-file=<path> [options]
+    USAGE:
+        mkts-backend update-fit --fit-file=<path> [options]
 
-OPTIONS:
-    --fit-file=<path>    Path to EFT fit file (required)
-    --fit-id=<id>        Fit ID to update (required if no --meta-file)
-    --meta-file=<path>   Path to metadata JSON file (optional with --fit-id)
-    --interactive        Prompt for metadata interactively (when no --meta-file)
+    OPTIONS:
+        --fit-file=<path>    Path to EFT fit file (required)
+        --fit-id=<id>        Fit ID to update (required if no --meta-file)
+        --meta-file=<path>   Path to metadata JSON file (optional with --fit-id)
+        --interactive        Prompt for metadata interactively (when no --meta-file)
 
-    Market Selection (default: primary):
-    --market=<alias>     Target market: primary, deployment, both
-    --primary            Shorthand for --market=primary
-    --deployment         Shorthand for --market=deployment
-    --both               Update both primary and deployment markets
+        Market Selection (default: primary):
+        --market=<alias>     Target market: primary, deployment, both
+        --primary            Shorthand for --market=primary
+        --deployment         Shorthand for --market=deployment
+        --both               Update both primary and deployment markets
 
-    Database Options:
-    --remote             Use remote database (default: local)
-    --no-clear           Keep existing items (default: clear and replace)
-    --update-targets     Update ship_targets table (default: skip)
-    --dry-run            Preview changes without saving
-    --help               Show this help message
+        Database Options:
+        --remote             Use remote database (default: local)
+        --no-clear           Keep existing items (default: clear and replace)
+        --update-targets     Update ship_targets table (default: skip)
+        --dry-run            Preview changes without saving
+        --help               Show this help message
 
-METADATA FILE FORMAT (JSON):
-    {
-      "fit_id": 313,
-      "name": "Hurricane Fleet Issue - Arty",
-      "description": "Standard doctrine fit",
-      "doctrine_id": 42,        // or [42, 43] for multiple doctrines
-      "target": 300
-    }
+    METADATA FILE FORMAT (JSON):
+        {
+        "fit_id": 313,
+        "name": "Hurricane Fleet Issue - Arty",
+        "description": "Standard doctrine fit",
+        "doctrine_id": 42,        // or [42, 43] for multiple doctrines
+        "target": 300
+        }
 
-EXAMPLES:
-    # Update fit with metadata file (original workflow)
-    mkts-backend update-fit --fit-file=fits/hfi.txt --meta-file=fits/hfi_meta.json
+    EXAMPLES:
+        # Update fit with metadata file (original workflow)
+        mkts-backend update-fit --fit-file=fits/hfi.txt --meta-file=fits/hfi_meta.json
 
-    # Update fit by ID with interactive prompts
-    mkts-backend update-fit --fit-file=fits/hfi.txt --fit-id=313 --interactive
+        # Update fit by ID with interactive prompts
+        mkts-backend update-fit --fit-file=fits/hfi.txt --fit-id=313 --interactive
 
-    # Update fit for deployment market
-    mkts-backend update-fit --fit-file=fits/hfi.txt --fit-id=313 --deployment
+        # Update fit for deployment market
+        mkts-backend update-fit --fit-file=fits/hfi.txt --fit-id=313 --deployment
 
-    # Update fit for both markets with ship targets
-    mkts-backend update-fit --fit-file=fits/hfi.txt --meta-file=meta.json --both --update-targets
+        # Update fit for both markets with ship targets
+        mkts-backend update-fit --fit-file=fits/hfi.txt --meta-file=meta.json --both --update-targets
 
-    # Preview changes (dry run)
-    mkts-backend update-fit --fit-file=fits/hfi.txt --fit-id=313 --interactive --dry-run
-""")
+        # Preview changes (dry run)
+        mkts-backend update-fit --fit-file=fits/hfi.txt --fit-id=313 --interactive --dry-run
+    """)
 
 def collect_fit_metadata_interactive(fit_id: int, fit_file: str, remote: bool = False) -> dict:
     """
@@ -618,7 +625,7 @@ def parse_args(args: list[str])->dict | None:
     # Handle --help: check for subcommand-specific help first
     if "--help" in args:
         # Check if this is a subcommand help request
-        subcommands_with_help = ["fit-check", "fit-update", "update-fit"]
+        subcommands_with_help = ["fit-check", "fit-update", "update-fit", "update-target"]
         for subcmd in subcommands_with_help:
             if subcmd in args:
                 # Let the subcommand handler show its help
@@ -678,9 +685,48 @@ def parse_args(args: list[str])->dict | None:
             print("Parse items command failed")
         exit()
 
+    if "update-target" in args:
+        # Check for subcommand help
+        if "--help" in args:
+            display_update_target_help()
+            exit(0)
+        fit_id = None
+        target = None
+        market_alias = "primary"
+        remote = False
+        target_alias = "wcmkt"
+        for arg in args:
+            if arg.startswith("--fit-id="):
+                fit_id = int(arg.split("=", 1)[1])
+            elif arg.startswith("--target="):
+                target = int(arg.split("=", 1)[1])
+            elif arg.startswith("--market="):
+                market_alias = arg.split("=", 1)[1]
+            elif arg.startswith("--remote"):
+                remote = True
+            elif arg.startswith("--db-alias="):
+                target_alias = arg.split("=", 1)[1]
+            elif arg.startswith("--north"):
+                target_alias = "wcmktnorth"
+            elif arg.startswith("--primary"):
+                target_alias = "wcmkt"
+            elif arg.startswith("--local-only"):
+                remote = False
+        if not fit_id or not target:
+            print("Error: --fit-id and --target are required for update-target command")
+            print("Use 'mkts-backend update-target --help' for usage information.")
+            return None
+        success = update_target_command(fit_id, target, market_flag=market_alias, remote=remote, db_alias=target_alias)
+        if success:
+            print("Update target command completed successfully")
+        else:
+            print("Update target command failed")
+        exit(0 if success else 1)
+
     if "update-fit" in args:
         # Check for subcommand help
         if "--help" in args:
+
             display_update_fit_help()
             exit(0)
 

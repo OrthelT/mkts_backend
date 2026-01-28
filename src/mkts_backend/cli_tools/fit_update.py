@@ -205,7 +205,7 @@ def interactive_add_fit(
         f"[bold]Remote:[/bold] {remote}\n",
         title="[bold cyan]Parsed Fit[/bold cyan]",
         border_style="blue",
-        
+
     ))
 
     if parse_result.has_missing_types:
@@ -901,6 +901,26 @@ def doctrine_add_fit_command(
 
     return success_count > 0
 
+    """
+    Display help for the update-fit command.
+    """
+    print("""
+    update-fit - Update the target quantity for a fit.
+    """)
+    print("""
+    USAGE:
+    mkts-backend update-fit --fit-id=<id> --target=<qty>
+    """)
+    print("""
+    OPTIONS:
+    --fit-id=<id>        Fit ID to update
+    --target=<qty>       Target quantity
+    """)
+    print("""
+    EXAMPLES:
+    mkts-backend update-fit --fit-id=123 --target=100
+    """)
+    return True
 
 def doctrine_remove_fit_command(
     doctrine_id: Optional[int] = None,
@@ -1117,6 +1137,83 @@ def doctrine_remove_fit_command(
 
     return success_count > 0
 
+def update_target_command(fit_id: int, target: int, remote: bool = False, market_flag: str = "primary", db_alias: str = "wcmkt") -> bool:
+    """
+    Update the target quantity for a fit.
+    """
+    if market_flag not in ["primary", "deployment", "both"]:
+        db_alias = "wcmkt"
+    elif market_flag == "both":
+        db_alias = "wcmkt"
+    elif market_flag == "deployment":
+        db_alias = "wcmktnorth"
+
+    db = DatabaseConfig(db_alias)
+    engine = db.remote_engine if remote else db.engine
+    try:
+        existing_target = get_fit_target(fit_id, remote=remote, db_alias=db_alias)
+        if existing_target is None:
+            console.print(f"[red]Fit {fit_id} not present for {db_alias} database[/red]")
+            return False
+        stmt = text("UPDATE ship_targets SET ship_target = :target WHERE fit_id = :fit_id")
+        stmt2 = text("UPDATE doctrine_fits SET target = :target, market_flag = :market_flag WHERE fit_id = :fit_id")
+        with engine.connect() as conn:
+            conn.execute(stmt, {"target": target, "fit_id": fit_id})
+            conn.execute(stmt2, {"target": target, "market_flag": market_flag, "fit_id": fit_id})
+            conn.commit()
+            console.print("**************************************************")
+            console.print(f"[green]Successfully updated target for fit {fit_id} from [yellow]{existing_target}[/yellow] to [yellow]{target}[/yellow] for database {db_alias} (remote: {remote})[/green]")
+            console.print("**************************************************")
+            return True
+    except Exception as e:
+        console.print(f"[red]Failed to update target for fit {fit_id} to {target}: {e}[/red]")
+        try:
+            stmt = text("SELECT fit_id FROM ship_targets WHERE fit_id = :fit_id")
+            with engine.connect() as conn:
+                result = conn.execute(stmt, {"fit_id": fit_id}).fetchone()
+                if not result:
+                    console.print(f"[orange]fit {fit_id} not present for {market_flag} market[/orange]. Add it before updating target.")
+                    return False
+                else:
+                    console.print(f"[red]Failed to add fit {fit_id} to {market_flag} market: {e}[/red]")
+                    return False
+        except Exception as e:
+            console.print(f"[red]Failed to update target for fit {fit_id} to {target}: {e}[/red]")
+            return False
+
+def display_update_target_help():
+    """
+    Display help for the update-target command.
+    """
+    console.print("""
+    update-target - Update the target quantity for a fit.
+    USAGE:
+    mkts-backend update-target --fit-id=<id> --target=<qty>
+    """)
+    console.print("""
+    Arguments:
+    --fit-id=<id>        Fit ID to update (required)
+    --target=<qty>       Target quantity (required)
+    --market=<flag>      Market flag: primary, deployment, both (default: primary)
+    --remote             Use remote database (default: local)
+    --local-only         Use local database only (default: no)
+    --db-alias=<alias>   Target database alias (default: wcmkt)
+    --north              Shorthand for --db-alias=wcmktnorth
+    --primary            Shorthand for --market=primary
+    """)
+    console.print("""
+    EXAMPLES:
+    mkts-backend update-target --fit-id=123 --target=100 --market=primary
+    mkts-backend update-target --fit-id=123 --target=100 --market=deployment
+    mkts-backend update-target --fit-id=123 --target=100 --market=both
+
+    DEFAULT:
+    If no market flag is provided, the default is primary.
+    If no remote flag is provided, the default is local.
+    If no db-alias flag is provided, the default is wcmkt.
+
+    """)
+    return True
 
 def fit_update_command(
     subcommand: str,
@@ -1131,8 +1228,7 @@ def fit_update_command(
     interactive: bool = False,
     target_alias: str = "wcmkt",
     target: int = 100,
-    skip_targets: bool = False,
-) -> bool:
+    skip_targets: bool = False,) -> bool:
     """
     Main entry point for fit-update commands.
 
@@ -1145,6 +1241,7 @@ def fit_update_command(
         create-doctrine      - Create a new doctrine (group of fits)
         doctrine-add-fit     - Add existing fit(s) to a doctrine (supports multiple)
         doctrine-remove-fit  - Remove fit(s) from a doctrine (supports multiple)
+        update-target        - Update the target quantity for a fit
 
     Args:
         subcommand: The subcommand to run
@@ -1230,12 +1327,11 @@ def fit_update_command(
         if fit_id is None:
             console.print("[red]Error: --fit-id is required for update command[/red]")
             return False
-        if not file_path:
+        if not file_path and not target:
             console.print("[red]Error: --file is required for update command[/red]")
             return False
-
         # For update, we need a metadata file
-        if not meta_file:
+        if not meta_file and not target:
             console.print("[red]Error: --meta-file is required for update command[/red]")
             return False
 
@@ -1305,7 +1401,16 @@ def fit_update_command(
             db_alias=target_alias,
         )
 
+    elif subcommand == "update-target":
+        if fit_id is None:
+            console.print("[red]Error: --fit-id is required for update-target command[/red]")
+            return False
+        if not target:
+            console.print("[red]Error: --target is required for update-target command[/red]")
+            return False
+        return update_target_command(fit_id, target, market_flag=market_flag, remote=use_remote, db_alias=target_alias)
     else:
         console.print(f"[red]Unknown subcommand: {subcommand}[/red]")
-        console.print("[dim]Available: add, update, assign-market, list-fits, list-doctrines, create-doctrine, doctrine-add-fit, doctrine-remove-fit[/dim]")
+        console.print("[dim]Available: add, update, assign-market, list-fits, list-doctrines, create-doctrine, doctrine-add-fit, doctrine-remove-fit, update-target[/dim]")
+        console.print("[dim]Use --help for more information about a command.[/dim]")
         return False

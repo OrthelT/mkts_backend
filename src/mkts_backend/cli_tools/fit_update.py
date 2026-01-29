@@ -1181,39 +1181,6 @@ def update_target_command(fit_id: int, target: int, remote: bool = False, market
             console.print(f"[red]Failed to update target for fit {fit_id} to {target}: {e}[/red]")
             return False
 
-def display_update_target_help():
-    """
-    Display help for the update-target command.
-    """
-    console.print("""
-    update-target - Update the target quantity for a fit.
-    USAGE:
-    mkts-backend update-target --fit-id=<id> --target=<qty>
-    """)
-    console.print("""
-    Arguments:
-    --fit-id=<id>        Fit ID to update (required)
-    --target=<qty>       Target quantity (required)
-    --market=<flag>      Market flag: primary, deployment, both (default: primary)
-    --remote             Use remote database (default: local)
-    --local-only         Use local database only (default: no)
-    --db-alias=<alias>   Target database alias (default: wcmkt)
-    --north              Shorthand for --db-alias=wcmktnorth
-    --primary            Shorthand for --market=primary
-    """)
-    console.print("""
-    EXAMPLES:
-    mkts-backend update-target --fit-id=123 --target=100 --market=primary
-    mkts-backend update-target --fit-id=123 --target=100 --market=deployment
-    mkts-backend update-target --fit-id=123 --target=100 --market=both
-
-    DEFAULT:
-    If no market flag is provided, the default is primary.
-    If no remote flag is provided, the default is local.
-    If no db-alias flag is provided, the default is wcmkt.
-
-    """)
-    return True
 
 def fit_update_command(
     subcommand: str,
@@ -1414,3 +1381,102 @@ def fit_update_command(
         console.print("[dim]Available: add, update, assign-market, list-fits, list-doctrines, create-doctrine, doctrine-add-fit, doctrine-remove-fit, update-target[/dim]")
         console.print("[dim]Use --help for more information about a command.[/dim]")
         return False
+
+
+def collect_fit_metadata_interactive(fit_id: int, fit_file: str, remote: bool = False) -> dict:
+    """
+    Interactively collect metadata for a fit update.
+
+    Args:
+        fit_id: The fit ID being updated
+        fit_file: Path to the EFT fit file (used to extract ship/fit name)
+        remote: Whether to use remote database for doctrine checks
+
+    Returns:
+        Dictionary with metadata fields matching FitMetadata expectations
+    """
+    from mkts_backend.utils.parse_fits import doctrine_exists, create_doctrine, get_next_doctrine_id
+
+    print(f"\n--- Interactive Metadata Collection for fit_id={fit_id} ---\n")
+
+    # Try to extract ship and fit name from the EFT file
+    ship_name = ""
+    fit_name = ""
+    try:
+        with open(fit_file, 'r', encoding='utf-8') as f:
+            first_line = f.readline().strip()
+            if first_line.startswith("[") and first_line.endswith("]"):
+                clean_name = first_line.strip('[]')
+                parts = clean_name.split(',')
+                ship_name = parts[0].strip()
+                fit_name = parts[1].strip() if len(parts) > 1 else ""
+                print(f"Detected from fit file: {ship_name}, {fit_name}")
+    except Exception as e:
+        print(f"Could not parse fit file header: {e}")
+
+    # Prompt for fit name (with default from file)
+    default_name = fit_name if fit_name else f"{ship_name} Fit"
+    name_input = input(f"Fit name [{default_name}]: ").strip()
+    name = name_input if name_input else default_name
+
+    # Prompt for description
+    default_desc = f"{name} doctrine fit"
+    desc_input = input(f"Description [{default_desc}]: ").strip()
+    description = desc_input if desc_input else default_desc
+
+    # Prompt for doctrine ID(s)
+    next_id = get_next_doctrine_id(remote=remote)
+    print(f"(Next available doctrine ID: {next_id})")
+    doctrine_input = input("Doctrine ID(s) (comma-separated for multiple, or 'new' to create): ").strip()
+
+    if not doctrine_input:
+        raise ValueError("Doctrine ID is required")
+
+    doctrine_ids = []
+    if doctrine_input.lower() == 'new':
+        # Create a new doctrine
+        print(f"\n--- Creating New Doctrine (ID: {next_id}) ---")
+        doctrine_name = input(f"Doctrine name [{name}]: ").strip() or name
+        doctrine_desc = input(f"Doctrine description []: ").strip()
+        create_doctrine(next_id, doctrine_name, doctrine_desc, remote=remote)
+        print(f"Created doctrine {next_id}: {doctrine_name}")
+        doctrine_ids = [next_id]
+    else:
+        doctrine_ids = [int(d.strip()) for d in doctrine_input.split(',') if d.strip()]
+        if not doctrine_ids:
+            raise ValueError("At least one valid doctrine ID is required")
+
+        # Check each doctrine exists, offer to create if not
+        for doc_id in doctrine_ids:
+            if not doctrine_exists(doc_id, remote=remote):
+                print(f"\nDoctrine {doc_id} does not exist in fittings_doctrine.")
+                create_it = input(f"Create doctrine {doc_id}? (y/n) [n]: ").strip().lower()
+                if create_it == 'y':
+                    doctrine_name = input(f"Doctrine name [{name}]: ").strip() or name
+                    doctrine_desc = input(f"Doctrine description []: ").strip()
+                    create_doctrine(doc_id, doctrine_name, doctrine_desc, remote=remote)
+                    print(f"Created doctrine {doc_id}: {doctrine_name}")
+                else:
+                    print(f"Warning: Doctrine {doc_id} will be skipped during linking")
+
+    doctrine_id = doctrine_ids if len(doctrine_ids) > 1 else doctrine_ids[0]
+
+    # Prompt for target quantity
+    target_input = input("Target quantity [100]: ").strip()
+    target = int(target_input) if target_input else 100
+
+    print(f"\nMetadata collected:")
+    print(f"  fit_id: {fit_id}")
+    print(f"  name: {name}")
+    print(f"  description: {description}")
+    print(f"  doctrine_id: {doctrine_id}")
+    print(f"  target: {target}")
+    print()
+
+    return {
+        "fit_id": fit_id,
+        "name": name,
+        "description": description,
+        "doctrine_id": doctrine_id,
+        "target": target,
+    }

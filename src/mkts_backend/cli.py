@@ -3,6 +3,7 @@ import json
 import time
 import os
 from typing import Optional
+from sqlalchemy import text
 
 from mkts_backend.config.logging_config import configure_logging
 from mkts_backend.db.db_queries import get_table_length
@@ -22,463 +23,18 @@ from mkts_backend.processing.data_processing import (
     calculate_market_stats,
     calculate_doctrine_stats,
 )
-from sqlalchemy import text
+
 from mkts_backend.config.esi_config import ESIConfig
 from mkts_backend.esi.esi_requests import fetch_market_orders
 from mkts_backend.esi.async_history import run_async_history
-from mkts_backend.utils.db_utils import add_missing_items_to_watchlist
-from mkts_backend.utils.parse_items import parse_items
 from mkts_backend.utils.validation import validate_all
-from mkts_backend.utils.parse_fits import update_fit_workflow, parse_fit_metadata
 from mkts_backend.config.config import load_settings, DatabaseConfig
-from mkts_backend.cli_tools.fit_check import fit_check_command
-from mkts_backend.cli_tools.fit_update import (
-    fit_update_command,
-    display_update_target_help,
-    update_target_command,
-)
+from mkts_backend.cli_tools.args_parser import parse_args
 from mkts_backend.config.gsheets_config import GoogleSheetConfig
 from mkts_backend.config.market_context import MarketContext
 
 settings = load_settings(file_path="src/mkts_backend/config/settings.toml")
 logger = configure_logging(__name__)
-
-
-def check_tables(market_alias: str = "primary"):
-    """Check tables in the database for the specified market."""
-    market_ctx = MarketContext.from_settings(market_alias)
-    db = DatabaseConfig(market_context=market_ctx)
-
-    print(f"Checking tables for market: {market_ctx.name} ({market_ctx.alias})")
-    print(f"Database: {db.alias} ({db.path})")
-    print("=" * 80)
-
-    tables = db.get_table_list()
-
-    for table in tables:
-        print(f"Table: {table}")
-        print("=" * 80)
-        with db.engine.connect() as conn:
-            result = conn.execute(text(f"SELECT * FROM {table} LIMIT 10"))
-            for row in result:
-                print(row)
-            print("\n")
-        conn.close()
-    db.engine.dispose()
-
-
-def display_cli_help():
-    print("\nUsage: mkts-backend [command] [options]\n")
-    print("""Commands:
-  fit-check          Display market availability for an EFT fit file
-  fit-update         Interactive tool for managing fits and doctrines
-  update-fit         Process an EFT fit file and update doctrine tables
-  add_watchlist      Add items to watchlist by type IDs
-  parse-items        Parse Eve structure data and create CSV with pricing
-  sync               Sync the database (supports --market/--deployment)
-  validate           Validate the database (supports --market/--deployment)
-
-Global Options (apply to main workflow and most commands):
-  --market=<alias>   Select market (primary, deployment). Default: primary
-  --primary          Shorthand for --market=primary
-  --deployment       Shorthand for --market=deployment
-  --history          Include history processing (main workflow)
-  --check_tables     Check the tables in the database (supports --market)
-  --validate-env     Validate environment credentials and exit
-  --list-markets     List available market configurations
-  --help             Show this help message
-
-Use 'mkts-backend <command> --help' for more information about a command.
-
-Examples:
-  mkts-backend --history                      # Run main workflow with history
-  mkts-backend --history --deployment         # Run for deployment market
-  mkts-backend sync --deployment              # Sync deployment database
-  mkts-backend validate --market=deployment   # Validate deployment database
-  mkts-backend fit-check --file=fits/hfi.txt  # Check fit availability
-  mkts-backend fit-update list-fits           # List all doctrine fits
-
-""")
-
-
-def display_fit_check_help():
-    """Display help for the fit-check subcommand."""
-    print("""
-fit-check - Display market availability for items in an EFT-formatted ship fit
-
-USAGE:
-    mkts-backend fit-check --file=<path> [options]
-    mkts-backend fit-check --paste [options]
-    mkts-backend fit-check --fit-id=<id> [options]
-
-DESCRIPTION:
-    Analyzes an EFT (Eve Fitting Tool) formatted ship fit and displays market
-    availability for each item. Shows how many complete fits can be built from
-    current market stock, with color-coded status indicators.
-
-    If the fit exists in the doctrine_fits table, the target quantity is
-    automatically loaded and used to calculate items needed.
-
-    When using --fit-id, the command retrieves pre-calculated market data from
-    the doctrines table instead of querying live market data. This is useful
-    for quickly checking the status of fits that have already been processed
-    by the main backend workflow.
-
-OPTIONS:
-    --file=<path>        Path to EFT fit file
-    --paste              Read EFT fit from stdin instead of file
-    --fit-id=<id>        Look up fit by ID from doctrine_fits/doctrines tables
-                         (uses pre-calculated market data)
-    --market=<alias>     Market to check: primary, deployment (default: primary)
-    --target=<N>         Override target quantity (default: from doctrine_fits)
-    --output=<format>    Export format: csv, multibuy, or markdown
-    --no-jita            Hide Jita price comparison columns
-    --help               Show this help message
-
-    Note: One of --file, --paste, or --fit-id is required.
-
-OUTPUT:
-    Header displays:
-      - Ship name and type ID
-      - Market being queried
-      - Total fit cost (sum of all items at current prices)
-      - Fits Available (minimum fits across all items - the bottleneck)
-      - Target (from doctrine_fits table, if available)
-
-    Table columns:
-      - Type ID      Item's Eve Online type ID
-      - Item Name    Name of the module/ship
-      - Stock        Current market stock
-      - Fit Qty      Quantity needed per fit
-      - Fits         How many complete fits this item supports
-      - Qty Needed   Items needed to reach target (only if target set)
-      - Price        Current 5th percentile price
-      - Fit Cost     Price × Fit Qty
-      - Source       ✓ = marketstats/doctrines, * = fallback data
-
-EXPORT FORMATS (--output):
-    csv       Exports items below target to a CSV file (auto-named from fit)
-    multibuy  Eve Multi-buy/jEveAssets stockpile format (ItemName qty)
-    markdown  Discord-friendly markdown with bold formatting
-
-EXAMPLES:
-    # Basic fit check from EFT file
-    mkts-backend fit-check --file=fits/hurricane_fleet.txt
-
-    # Check fit by ID from doctrines table
-    mkts-backend fit-check --fit-id=42
-
-    # Check fit by ID against deployment market
-    mkts-backend fit-check --fit-id=42 --market=deployment
-
-    # Check against deployment market with EFT file
-    mkts-backend fit-check --file=fits/hfi.txt --market=deployment
-
-    # Override target to 50 and show multi-buy list
-    mkts-backend fit-check --file=fits/hfi.txt --target=50 --output=multibuy
-
-    # Export to CSV for spreadsheet analysis
-    mkts-backend fit-check --fit-id=42 --output=csv
-
-    # Export markdown for Discord
-    mkts-backend fit-check --fit-id=42 --output=markdown
-
-    # Paste fit directly (end with two blank lines or Ctrl+D)
-    mkts-backend fit-check --paste --market=primary
-""")
-
-
-def display_fit_update_help():
-    """Display help for the fit-update subcommand."""
-    print("""
-fit-update - Interactive tool for managing fits and doctrines
-
-USAGE:
-    mkts-backend fit-update <subcommand> [options]
-
-SUBCOMMANDS:
-    Fit Management:
-    add              Add a NEW fit from an EFT file and assign to doctrine(s)
-    update           Update an existing fit's items from an EFT file
-    assign-market    Change the market assignment for an existing fit
-    list-fits        List all fits in the doctrine tracking system
-
-    Target Management:
-    update-target    Update the target quantity for a fit
-
-    Doctrine Management:
-    list-doctrines    List all available doctrines
-    create-doctrine   Create a new doctrine (group of fits)
-    doctrine-add-fit  Add existing fit(s) to a doctrine (supports multiple)
-    doctrine-remove-fit Remove a fit from a doctrine
-
-OPTIONS:
-    --file=<path>        Path to EFT fit file (for add/update)
-    --meta-file=<path>   Path to metadata JSON file
-    --fit-id=<id>        Fit ID to update or modify (can be comma-separated)
-    --market=<flag>      Market flag: primary, deployment, both
-    --interactive        Use interactive prompts for metadata
-    --dry-run            Preview changes without saving
-    --remote             Use remote database
-    --local-only         Use local database only
-    --db-alias=<alias>   Target database: wcmkt, wcmktnorth
-    --north              Shorthand for --db-alias=wcmktnorth
-    --target=<qty>       Default target quantity for new fits (default: 100)
-    --skip-targets       Preserve existing targets, skip target prompts
-    --help               Show this help message
-
-EXAMPLES:
-    # List all fits and doctrines
-    mkts-backend fit-update list-fits
-    mkts-backend fit-update list-doctrines
-
-    # Create a new doctrine (group of fits)
-    mkts-backend fit-update create-doctrine
-
-    # Add new fit interactively (prompts for doctrine assignment)
-    mkts-backend fit-update add --file=fits/new_fit.txt --interactive
-
-    # Add fit with metadata file
-    mkts-backend fit-update add --file=fits/hfi.txt --meta-file=fits/hfi_meta.json
-
-    # Add existing fit(s) to a doctrine (interactive, per-fit targets)
-    mkts-backend fit-update doctrine-add-fit
-    mkts-backend fit-update doctrine-add-fit --fit-id=123
-    mkts-backend fit-update doctrine-add-fit --fit-id=123,456,789
-
-    # Add fits without changing existing targets
-    mkts-backend fit-update doctrine-add-fit --fit-id=123,456 --skip-targets
-
-    # Add fits with a specific default target
-    mkts-backend fit-update doctrine-add-fit --fit-id=123 --target=300
-
-    # Update existing fit's items
-    mkts-backend fit-update update --fit-id=123 --file=fits/updated.txt --meta-file=meta.json
-
-    # Assign fit to deployment market
-    mkts-backend fit-update assign-market --fit-id=123 --market=deployment
-
-    # Update target for fit
-    mkts-backend fit-update update --fit-id=550 --target=300
-
-WORKFLOW:
-    1. Create a doctrine:     fit-update create-doctrine
-    2. Add a new fit:         fit-update add --file=<eft> --interactive
-       (you can create a doctrine inline during this step)
-    3. Add existing fits:     fit-update doctrine-add-fit
-       (prompts per-fit for targets, validates and skips duplicates)
-
-NOTE: Targets are set per-fit, not per-doctrine. Use --skip-targets to preserve
-existing targets when re-adding fits to doctrines.
-""")
-
-
-def display_update_fit_help():
-    """Display help for the update-fit subcommand."""
-    print("""
-    update-fit - Process an EFT fit file and metadata to update doctrine tables
-
-    USAGE:
-        mkts-backend update-fit --fit-file=<path> [options]
-
-    OPTIONS:
-        --fit-file=<path>    Path to EFT fit file (required)
-        --fit-id=<id>        Fit ID to update (required if no --meta-file)
-        --meta-file=<path>   Path to metadata JSON file (optional with --fit-id)
-        --interactive        Prompt for metadata interactively (when no --meta-file)
-
-        Market Selection (default: primary):
-        --market=<alias>     Target market: primary, deployment, both
-        --primary            Shorthand for --market=primary
-        --deployment         Shorthand for --market=deployment
-        --both               Update both primary and deployment markets
-
-        Database Options:
-        --remote             Use remote database (default: local)
-        --no-clear           Keep existing items (default: clear and replace)
-        --update-targets     Update ship_targets table (default: skip)
-        --dry-run            Preview changes without saving
-        --help               Show this help message
-
-    METADATA FILE FORMAT (JSON):
-        {
-        "fit_id": 313,
-        "name": "Hurricane Fleet Issue - Arty",
-        "description": "Standard doctrine fit",
-        "doctrine_id": 42,        // or [42, 43] for multiple doctrines
-        "target": 300
-        }
-
-    EXAMPLES:
-        # Update fit with metadata file (original workflow)
-        mkts-backend update-fit --fit-file=fits/hfi.txt --meta-file=fits/hfi_meta.json
-
-        # Update fit by ID with interactive prompts
-        mkts-backend update-fit --fit-file=fits/hfi.txt --fit-id=313 --interactive
-
-        # Update fit for deployment market
-        mkts-backend update-fit --fit-file=fits/hfi.txt --fit-id=313 --deployment
-
-        # Update fit for both markets with ship targets
-        mkts-backend update-fit --fit-file=fits/hfi.txt --meta-file=meta.json --both --update-targets
-
-        # Preview changes (dry run)
-        mkts-backend update-fit --fit-file=fits/hfi.txt --fit-id=313 --interactive --dry-run
-    """)
-
-
-def collect_fit_metadata_interactive(
-    fit_id: int, fit_file: str, remote: bool = False
-) -> dict:
-    """
-    Interactively collect metadata for a fit update.
-
-    Args:
-        fit_id: The fit ID being updated
-        fit_file: Path to the EFT fit file (used to extract ship/fit name)
-        remote: Whether to use remote database for doctrine checks
-
-    Returns:
-        Dictionary with metadata fields matching FitMetadata expectations
-    """
-    from mkts_backend.utils.parse_fits import (
-        doctrine_exists,
-        create_doctrine,
-        get_next_doctrine_id,
-    )
-
-    print(f"\n--- Interactive Metadata Collection for fit_id={fit_id} ---\n")
-
-    # Try to extract ship and fit name from the EFT file
-    ship_name = ""
-    fit_name = ""
-    try:
-        with open(fit_file, "r", encoding="utf-8") as f:
-            first_line = f.readline().strip()
-            if first_line.startswith("[") and first_line.endswith("]"):
-                clean_name = first_line.strip("[]")
-                parts = clean_name.split(",")
-                ship_name = parts[0].strip()
-                fit_name = parts[1].strip() if len(parts) > 1 else ""
-                print(f"Detected from fit file: {ship_name}, {fit_name}")
-    except Exception as e:
-        print(f"Could not parse fit file header: {e}")
-
-    # Prompt for fit name (with default from file)
-    default_name = fit_name if fit_name else f"{ship_name} Fit"
-    name_input = input(f"Fit name [{default_name}]: ").strip()
-    name = name_input if name_input else default_name
-
-    # Prompt for description
-    default_desc = f"{name} doctrine fit"
-    desc_input = input(f"Description [{default_desc}]: ").strip()
-    description = desc_input if desc_input else default_desc
-
-    # Prompt for doctrine ID(s)
-    next_id = get_next_doctrine_id(remote=remote)
-    print(f"(Next available doctrine ID: {next_id})")
-    doctrine_input = input(
-        "Doctrine ID(s) (comma-separated for multiple, or 'new' to create): "
-    ).strip()
-
-    if not doctrine_input:
-        raise ValueError("Doctrine ID is required")
-
-    doctrine_ids = []
-    if doctrine_input.lower() == "new":
-        # Create a new doctrine
-        print(f"\n--- Creating New Doctrine (ID: {next_id}) ---")
-        doctrine_name = input(f"Doctrine name [{name}]: ").strip() or name
-        doctrine_desc = input(f"Doctrine description []: ").strip()
-        create_doctrine(next_id, doctrine_name, doctrine_desc, remote=remote)
-        print(f"Created doctrine {next_id}: {doctrine_name}")
-        doctrine_ids = [next_id]
-    else:
-        doctrine_ids = [int(d.strip()) for d in doctrine_input.split(",") if d.strip()]
-        if not doctrine_ids:
-            raise ValueError("At least one valid doctrine ID is required")
-
-        # Check each doctrine exists, offer to create if not
-        for doc_id in doctrine_ids:
-            if not doctrine_exists(doc_id, remote=remote):
-                print(f"\nDoctrine {doc_id} does not exist in fittings_doctrine.")
-                create_it = (
-                    input(f"Create doctrine {doc_id}? (y/n) [n]: ").strip().lower()
-                )
-                if create_it == "y":
-                    doctrine_name = input(f"Doctrine name [{name}]: ").strip() or name
-                    doctrine_desc = input("Doctrine description []: ").strip()
-                    create_doctrine(doc_id, doctrine_name, doctrine_desc, remote=remote)
-                    print(f"Created doctrine {doc_id}: {doctrine_name}")
-                else:
-                    print(f"Warning: Doctrine {doc_id} will be skipped during linking")
-
-    doctrine_id = doctrine_ids if len(doctrine_ids) > 1 else doctrine_ids[0]
-
-    # Prompt for target quantity
-    target_input = input("Target quantity [100]: ").strip()
-    target = int(target_input) if target_input else 100
-
-    print("\nMetadata collected:")
-    print(f"  fit_id: {fit_id}")
-    print(f"  name: {name}")
-    print(f"  description: {description}")
-    print(f"  doctrine_id: {doctrine_id}")
-    print(f"  target: {target}")
-    print()
-
-    return {
-        "fit_id": fit_id,
-        "name": name,
-        "description": description,
-        "doctrine_id": doctrine_id,
-        "target": target,
-    }
-
-
-def process_add_watchlist(type_ids_str: str, remote: bool = False):
-    """
-    Process the add_watchlist command to add items to the watchlist.
-
-    Args:
-        type_ids_str: Comma-separated string of type IDs
-        remote: Whether to use remote database
-    """
-    try:
-        # Parse comma-separated type IDs
-        type_ids = [int(tid.strip()) for tid in type_ids_str.split(",") if tid.strip()]
-
-        if not type_ids:
-            logger.error("No valid type IDs provided")
-            print("Error: No valid type IDs provided")
-            return False
-
-        logger.info(f"Adding {len(type_ids)} items to watchlist: {type_ids}")
-        print(f"Adding {len(type_ids)} items to watchlist: {type_ids}")
-
-        # Call add_missing_items_to_watchlist with all type IDs at once
-        result = add_missing_items_to_watchlist(type_ids, remote=remote)
-
-        # Check if the operation was successful
-        if result.startswith("Error"):
-            logger.error(f"Failed to add items to watchlist: {result}")
-            print(f"Error: {result}")
-            return False
-        else:
-            logger.info(f"Successfully processed watchlist addition: {result}")
-            print(result)
-            return True
-
-    except ValueError as e:
-        logger.error(f"Invalid type ID format: {e}")
-        print(
-            f"Error: Invalid type ID format. Please provide comma-separated integers. {e}"
-        )
-        return False
-    except Exception as e:
-        logger.error(f"Error adding items to watchlist: {e}")
-        print(f"Error: {e}")
-        return False
 
 
 def process_market_orders(
@@ -710,11 +266,11 @@ def parse_args(args: list[str]) -> dict | None:
     for arg in args:
         if arg.startswith("--market="):
             market_choice = arg.split("=", 1)[1]
-            if market_choice == 'north' or market_choice =='North':
-                market_alias = 'deployment'
+            if market_choice == "north" or market_choice == "North":
+                market_alias = "deployment"
             else:
                 market_alias = market_choice
-                
+
             break
         elif arg == "--deployment" or arg == "--north":
             market_alias = "deployment"
@@ -722,7 +278,7 @@ def parse_args(args: list[str]) -> dict | None:
         elif arg == "--primary":
             market_alias = "primary"
             break
-    
+
     return_args["market"] = market_alias
 
     if "--list-markets" in args:
@@ -1274,13 +830,16 @@ def main(history: bool = False, market_alias: str = "primary"):
 
     logger.info("=" * 80)
 
+    # Get watchlist
     watchlist = db.get_watchlist()
+
     if len(watchlist) > 0:
         logger.debug(f"Watchlist found: {len(watchlist)} items")
     else:
         logger.error("No watchlist found. Unable to proceed further.")
         exit()
 
+    # Process history
     if history:
         logger.info("Processing history")
         status = process_history(market_ctx=market_ctx)
@@ -1291,6 +850,7 @@ def main(history: bool = False, market_alias: str = "primary"):
     else:
         logger.debug("History mode disabled. Skipping history processing")
 
+    # Process market stats
     status = process_market_stats(market_ctx=market_ctx)
     if status:
         logger.debug("Market stats updated")
@@ -1305,7 +865,8 @@ def main(history: bool = False, market_alias: str = "primary"):
         logger.error("Failed to update doctrines")
         exit()
 
-    if settings["google_sheets"]["enabled"]:
+    # Update Google Sheets if enabled and primary market
+    if settings["google_sheets"]["enabled"] and market_ctx.alias == "primary":
         logger.info(
             "Google Sheets are enabled in settings.toml. Updating Google Sheets"
         )

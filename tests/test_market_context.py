@@ -3,23 +3,25 @@ Tests for MarketContext dataclass and configuration loading.
 """
 import pytest
 from pathlib import Path
+from unittest.mock import patch
 
 
 class TestMarketContextCreation:
     """Tests for MarketContext instantiation and configuration loading."""
 
-    def test_create_primary_market_context(self, primary_market_context):
-        """Test that primary market context is created with correct values."""
+    def test_create_primary_market_context_development(self, primary_market_context):
+        """Test that primary market context uses testing db in development mode."""
         ctx = primary_market_context
 
         assert ctx.alias == "primary"
         assert ctx.name == "4-HWWF Keepstar"
         assert ctx.region_id == 10000003
         assert ctx.structure_id == 1035466617946
-        assert ctx.database_alias == "wcmktprod"
-        assert ctx.database_file == "wcmktprod.db"
-        assert ctx.turso_url_env == "TURSO_WCMKTPROD_URL"
-        assert ctx.turso_token_env == "TURSO_WCMKTPROD_TOKEN"
+        # In development mode, primary should use testing database
+        assert ctx.database_alias == "wcmkttest"
+        assert ctx.database_file == "wcmkttest.db"
+        assert ctx.turso_url_env == "TURSO_WCMKTTEST_URL"
+        assert ctx.turso_token_env == "TURSO_WCMKTTEST_TOKEN"
 
     def test_create_deployment_market_context(self, deployment_market_context):
         """Test that deployment market context is created with correct values."""
@@ -33,6 +35,22 @@ class TestMarketContextCreation:
         assert ctx.database_file == "wcmktnorth2.db"
         assert ctx.turso_url_env == "TURSO_WCMKTNORTH_URL"
         assert ctx.turso_token_env == "TURSO_WCMKTNORTH_TOKEN"
+
+    def test_create_primary_market_context_production(self):
+        """Test that primary market context uses production db in production mode."""
+        from mkts_backend.config.market_context import MarketContext, _load_settings
+
+        real_settings = _load_settings()
+        real_settings["app"]["environment"] = "production"
+
+        with patch("mkts_backend.config.market_context._load_settings", return_value=real_settings):
+            ctx = MarketContext.from_settings("primary")
+
+        assert ctx.alias == "primary"
+        assert ctx.database_alias == "wcmktprod"
+        assert ctx.database_file == "wcmktprod.db"
+        assert ctx.turso_url_env == "TURSO_WCMKTPROD_URL"
+        assert ctx.turso_token_env == "TURSO_WCMKTPROD_TOKEN"
 
     def test_get_default_returns_primary(self):
         """Test that get_default() returns primary market context."""
@@ -88,9 +106,9 @@ class TestMarketContextIsolation:
     """Tests to verify market contexts are properly isolated."""
 
     def test_primary_database_alias_mapping(self, primary_market_context):
-        """Test primary market maps to wcmktprod database."""
-        assert primary_market_context.database_alias == "wcmktprod"
-        assert "prod" in primary_market_context.database_file.lower()
+        """Test primary market maps to wcmkttest database in development mode."""
+        assert primary_market_context.database_alias == "wcmkttest"
+        assert "test" in primary_market_context.database_file.lower()
 
     def test_deployment_database_alias_mapping(self, deployment_market_context):
         """Test deployment market maps to wcmktnorth database."""
@@ -113,5 +131,25 @@ class TestMarketContextIsolation:
         deployment_url_env = deployment_market_context.turso_url_env
 
         assert primary_url_env != deployment_url_env
-        assert "WCMKTPROD" in primary_url_env
+        # In development mode, primary uses testing turso env vars
+        assert "WCMKTTEST" in primary_url_env
         assert "WCMKTNORTH" in deployment_url_env
+
+    def test_deployment_unaffected_by_environment(self):
+        """Test that deployment market is not affected by environment setting."""
+        from mkts_backend.config.market_context import MarketContext, _load_settings
+
+        # Test in development mode
+        dev_settings = _load_settings()
+        dev_settings["app"]["environment"] = "development"
+        with patch("mkts_backend.config.market_context._load_settings", return_value=dev_settings):
+            dev_ctx = MarketContext.from_settings("deployment")
+
+        # Test in production mode
+        prod_settings = _load_settings()
+        prod_settings["app"]["environment"] = "production"
+        with patch("mkts_backend.config.market_context._load_settings", return_value=prod_settings):
+            prod_ctx = MarketContext.from_settings("deployment")
+
+        assert dev_ctx.database_alias == prod_ctx.database_alias == "wcmktnorth"
+        assert dev_ctx.database_file == prod_ctx.database_file == "wcmktnorth2.db"

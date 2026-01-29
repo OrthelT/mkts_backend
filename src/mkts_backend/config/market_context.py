@@ -69,21 +69,36 @@ class MarketContext:
 
         market_config = markets[alias]
 
+        # Determine database config based on environment
+        environment = settings.get("app", {}).get("environment", "production")
+        db_alias = market_config["database_alias"]
+        db_file = market_config["database_file"]
+        turso_url_env = market_config["turso_url_env"]
+        turso_token_env = market_config["turso_token_env"]
+
+        if environment == "development" and alias == "primary":
+            db_section = settings.get("db", {})
+            db_alias = db_section.get("testing_database_alias", db_alias)
+            db_file = db_section.get("testing_database_file", db_file)
+            turso_url_env = db_section.get("testing_turso_url_env", turso_url_env)
+            turso_token_env = db_section.get("testing_turso_token_env", turso_token_env)
+            logger.info(f"Development environment: using testing database '{db_alias}' for primary market")
+
         context = cls(
             alias=alias,
             name=market_config["name"],
             region_id=market_config["region_id"],
             system_id=market_config["system_id"],
             structure_id=market_config["structure_id"],
-            database_alias=market_config["database_alias"],
-            database_file=market_config["database_file"],
-            turso_url_env=market_config["turso_url_env"],
-            turso_token_env=market_config["turso_token_env"],
+            database_alias=db_alias,
+            database_file=db_file,
+            turso_url_env=turso_url_env,
+            turso_token_env=turso_token_env,
             gsheets_url=market_config["gsheets_url"],
             gsheets_worksheets=market_config.get("gsheets_worksheets", {}),
         )
 
-        logger.info(f"Loaded MarketContext for '{alias}': {context.name}")
+        logger.info(f"Loaded MarketContext for '{alias}': {context.name} (env={environment})")
         return context
 
     @classmethod

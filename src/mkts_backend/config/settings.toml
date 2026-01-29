@@ -13,7 +13,7 @@ token_file = "file:token.json"
 
 [app]
 name = "WinterCo Markets"
-environment = "production"  # "production" or "development"
+environment = "development" # "production" or "development"
 log_level = "info"
 
 # ============================================================================
@@ -83,6 +83,8 @@ production_database_alias = "wcmktprod"
 production_database_file = "wcmktprod.db"
 testing_database_alias = "wcmkttest"
 testing_database_file = "wcmkttest.db"
+testing_turso_url_env = "TURSO_WCMKTTEST_URL"
+testing_turso_token_env = "TURSO_WCMKTTEST_TOKEN"
 deployment_database_alias = "wcmktnorth"
 deployment_database_file = "wcmktnorth2.db"
 

@@ -32,12 +32,17 @@ from mkts_backend.utils.validation import validate_all
 from mkts_backend.utils.parse_fits import update_fit_workflow, parse_fit_metadata
 from mkts_backend.config.config import load_settings, DatabaseConfig
 from mkts_backend.cli_tools.fit_check import fit_check_command
-from mkts_backend.cli_tools.fit_update import fit_update_command, display_update_target_help, update_target_command
+from mkts_backend.cli_tools.fit_update import (
+    fit_update_command,
+    display_update_target_help,
+    update_target_command,
+)
 from mkts_backend.config.gsheets_config import GoogleSheetConfig
 from mkts_backend.config.market_context import MarketContext
 
 settings = load_settings(file_path="src/mkts_backend/config/settings.toml")
 logger = configure_logging(__name__)
+
 
 def check_tables(market_alias: str = "primary"):
     """Check tables in the database for the specified market."""
@@ -60,6 +65,7 @@ def check_tables(market_alias: str = "primary"):
             print("\n")
         conn.close()
     db.engine.dispose()
+
 
 def display_cli_help():
     print("\nUsage: mkts-backend [command] [options]\n")
@@ -320,7 +326,10 @@ def display_update_fit_help():
         mkts-backend update-fit --fit-file=fits/hfi.txt --fit-id=313 --interactive --dry-run
     """)
 
-def collect_fit_metadata_interactive(fit_id: int, fit_file: str, remote: bool = False) -> dict:
+
+def collect_fit_metadata_interactive(
+    fit_id: int, fit_file: str, remote: bool = False
+) -> dict:
     """
     Interactively collect metadata for a fit update.
 
@@ -332,7 +341,11 @@ def collect_fit_metadata_interactive(fit_id: int, fit_file: str, remote: bool = 
     Returns:
         Dictionary with metadata fields matching FitMetadata expectations
     """
-    from mkts_backend.utils.parse_fits import doctrine_exists, create_doctrine, get_next_doctrine_id
+    from mkts_backend.utils.parse_fits import (
+        doctrine_exists,
+        create_doctrine,
+        get_next_doctrine_id,
+    )
 
     print(f"\n--- Interactive Metadata Collection for fit_id={fit_id} ---\n")
 
@@ -340,11 +353,11 @@ def collect_fit_metadata_interactive(fit_id: int, fit_file: str, remote: bool = 
     ship_name = ""
     fit_name = ""
     try:
-        with open(fit_file, 'r', encoding='utf-8') as f:
+        with open(fit_file, "r", encoding="utf-8") as f:
             first_line = f.readline().strip()
             if first_line.startswith("[") and first_line.endswith("]"):
-                clean_name = first_line.strip('[]')
-                parts = clean_name.split(',')
+                clean_name = first_line.strip("[]")
+                parts = clean_name.split(",")
                 ship_name = parts[0].strip()
                 fit_name = parts[1].strip() if len(parts) > 1 else ""
                 print(f"Detected from fit file: {ship_name}, {fit_name}")
@@ -364,13 +377,15 @@ def collect_fit_metadata_interactive(fit_id: int, fit_file: str, remote: bool = 
     # Prompt for doctrine ID(s)
     next_id = get_next_doctrine_id(remote=remote)
     print(f"(Next available doctrine ID: {next_id})")
-    doctrine_input = input("Doctrine ID(s) (comma-separated for multiple, or 'new' to create): ").strip()
+    doctrine_input = input(
+        "Doctrine ID(s) (comma-separated for multiple, or 'new' to create): "
+    ).strip()
 
     if not doctrine_input:
         raise ValueError("Doctrine ID is required")
 
     doctrine_ids = []
-    if doctrine_input.lower() == 'new':
+    if doctrine_input.lower() == "new":
         # Create a new doctrine
         print(f"\n--- Creating New Doctrine (ID: {next_id}) ---")
         doctrine_name = input(f"Doctrine name [{name}]: ").strip() or name
@@ -379,7 +394,7 @@ def collect_fit_metadata_interactive(fit_id: int, fit_file: str, remote: bool = 
         print(f"Created doctrine {next_id}: {doctrine_name}")
         doctrine_ids = [next_id]
     else:
-        doctrine_ids = [int(d.strip()) for d in doctrine_input.split(',') if d.strip()]
+        doctrine_ids = [int(d.strip()) for d in doctrine_input.split(",") if d.strip()]
         if not doctrine_ids:
             raise ValueError("At least one valid doctrine ID is required")
 
@@ -387,8 +402,10 @@ def collect_fit_metadata_interactive(fit_id: int, fit_file: str, remote: bool = 
         for doc_id in doctrine_ids:
             if not doctrine_exists(doc_id, remote=remote):
                 print(f"\nDoctrine {doc_id} does not exist in fittings_doctrine.")
-                create_it = input(f"Create doctrine {doc_id}? (y/n) [n]: ").strip().lower()
-                if create_it == 'y':
+                create_it = (
+                    input(f"Create doctrine {doc_id}? (y/n) [n]: ").strip().lower()
+                )
+                if create_it == "y":
                     doctrine_name = input(f"Doctrine name [{name}]: ").strip() or name
                     doctrine_desc = input(f"Doctrine description []: ").strip()
                     create_doctrine(doc_id, doctrine_name, doctrine_desc, remote=remote)
@@ -402,7 +419,7 @@ def collect_fit_metadata_interactive(fit_id: int, fit_file: str, remote: bool = 
     target_input = input("Target quantity [100]: ").strip()
     target = int(target_input) if target_input else 100
 
-    print(f"\nMetadata collected:")
+    print("\nMetadata collected:")
     print(f"  fit_id: {fit_id}")
     print(f"  name: {name}")
     print(f"  description: {description}")
@@ -429,7 +446,7 @@ def process_add_watchlist(type_ids_str: str, remote: bool = False):
     """
     try:
         # Parse comma-separated type IDs
-        type_ids = [int(tid.strip()) for tid in type_ids_str.split(',') if tid.strip()]
+        type_ids = [int(tid.strip()) for tid in type_ids_str.split(",") if tid.strip()]
 
         if not type_ids:
             logger.error("No valid type IDs provided")
@@ -454,18 +471,21 @@ def process_add_watchlist(type_ids_str: str, remote: bool = False):
 
     except ValueError as e:
         logger.error(f"Invalid type ID format: {e}")
-        print(f"Error: Invalid type ID format. Please provide comma-separated integers. {e}")
+        print(
+            f"Error: Invalid type ID format. Please provide comma-separated integers. {e}"
+        )
         return False
     except Exception as e:
         logger.error(f"Error adding items to watchlist: {e}")
         print(f"Error: {e}")
         return False
 
+
 def process_market_orders(
     esi: ESIConfig,
     order_type: str = "all",
     test_mode: bool = False,
-    market_ctx: Optional[MarketContext] = None
+    market_ctx: Optional[MarketContext] = None,
 ) -> bool:
     """Fetches market orders from ESI and updates the database."""
     save_path = "data/market_orders_new.json"
@@ -477,7 +497,9 @@ def process_market_orders(
         status = update_market_orders(data, market_ctx=market_ctx)
         if status:
             log_update("marketorders", remote=True, market_ctx=market_ctx)
-            logger.info(f"Orders updated:{get_table_length('marketorders', market_ctx=market_ctx)} items")
+            logger.info(
+                f"Orders updated:{get_table_length('marketorders', market_ctx=market_ctx)} items"
+            )
             return True
         else:
             logger.error(
@@ -488,26 +510,37 @@ def process_market_orders(
         logger.error("no data returned from ESI call.")
         return False
 
+
 def process_history(market_ctx: Optional[MarketContext] = None):
     logger.info("History mode enabled")
     logger.info("Processing history")
     data = run_async_history(market_ctx=market_ctx)
     if data:
-        with open("data/market_history_new.json", "w") as f:
-            json.dump(data, f)
+        # Only write results with actual data to the debug JSON file
+        data_with_content = [r for r in data if r and r.get("data") is not None]
+        if data_with_content:
+            with open("data/market_history_new.json", "w") as f:
+                json.dump(data_with_content, f)
         status = update_history(data, market_ctx=market_ctx)
         if status:
             log_update("market_history", remote=True, market_ctx=market_ctx)
-            logger.info(f"History updated:{get_table_length('market_history', market_ctx=market_ctx)} items")
+            logger.info(
+                f"History updated:{get_table_length('market_history', market_ctx=market_ctx)} items"
+            )
             return True
         else:
             logger.error("Failed to update market history")
             return False
 
+
 def process_market_stats(market_ctx: Optional[MarketContext] = None):
     logger.info("Calculating market stats")
     logger.info("syncing database")
-    db = DatabaseConfig(market_context=market_ctx) if market_ctx else DatabaseConfig("wcmkt")
+    db = (
+        DatabaseConfig(market_context=market_ctx)
+        if market_ctx
+        else DatabaseConfig("wcmkt")
+    )
     db.sync()
     logger.info("database synced")
     logger.info("validating database")
@@ -545,7 +578,9 @@ def process_market_stats(market_ctx: Optional[MarketContext] = None):
         status = upsert_database(MarketStats, market_stats_df, market_ctx=market_ctx)
         if status:
             log_update("marketstats", remote=True, market_ctx=market_ctx)
-            logger.info(f"Market stats updated:{get_table_length('marketstats', market_ctx=market_ctx)} items")
+            logger.info(
+                f"Market stats updated:{get_table_length('marketstats', market_ctx=market_ctx)} items"
+            )
             return True
         else:
             logger.error("Failed to update market stats")
@@ -554,10 +589,15 @@ def process_market_stats(market_ctx: Optional[MarketContext] = None):
         logger.error(f"Failed to update market stats: {e}")
         return False
 
+
 def process_doctrine_stats(market_ctx: Optional[MarketContext] = None):
     logger.info("Calculating doctrines stats")
     logger.info("syncing database")
-    db = DatabaseConfig(market_context=market_ctx) if market_ctx else DatabaseConfig("wcmkt")
+    db = (
+        DatabaseConfig(market_context=market_ctx)
+        if market_ctx
+        else DatabaseConfig("wcmkt")
+    )
     db.sync()
     logger.info("database synced")
     logger.info("validating database")
@@ -573,11 +613,14 @@ def process_doctrine_stats(market_ctx: Optional[MarketContext] = None):
     status = upsert_database(Doctrines, doctrine_stats_df, market_ctx=market_ctx)
     if status:
         log_update("doctrines", remote=True, market_ctx=market_ctx)
-        logger.info(f"Doctrines updated:{get_table_length('doctrines', market_ctx=market_ctx)} items")
+        logger.info(
+            f"Doctrines updated:{get_table_length('doctrines', market_ctx=market_ctx)} items"
+        )
         return True
     else:
         logger.error("Failed to update doctrines")
         return False
+
 
 def google_sheets_update_workflow(market_ctx: Optional[MarketContext] = None):
     """Update Google Sheets with market data."""
@@ -588,35 +631,57 @@ def google_sheets_update_workflow(market_ctx: Optional[MarketContext] = None):
 
         # Update market orders sheet
         market_orders_sheet = worksheets.get("market_orders", "market_orders")
-        update_google_sheet(google_sheet_config, sheet_name=market_orders_sheet, table_name="marketorders", market_ctx=market_ctx)
+        update_google_sheet(
+            google_sheet_config,
+            sheet_name=market_orders_sheet,
+            table_name="marketorders",
+            market_ctx=market_ctx,
+        )
 
         # Update market data sheet
         market_data_sheet = worksheets.get("market_data", "market_data")
-        update_google_sheet(google_sheet_config, sheet_name=market_data_sheet, table_name="marketstats", market_ctx=market_ctx)
+        update_google_sheet(
+            google_sheet_config,
+            sheet_name=market_data_sheet,
+            table_name="marketstats",
+            market_ctx=market_ctx,
+        )
     else:
         # Legacy behavior for backward compatibility
         settings = load_settings(file_path="src/mkts_backend/config/settings.toml")
         google_sheet_url2 = settings["google_sheets"]["sheet_url2"]
         google_sheet_config = GoogleSheetConfig(sheet_url=google_sheet_url2)
-        update_google_sheet(google_sheet_config, sheet_name="market_orders_4h", table_name="marketorders")
-        update_google_sheet(google_sheet_config, sheet_name="market_data_4h", table_name="marketstats")
+        update_google_sheet(
+            google_sheet_config,
+            sheet_name="market_orders_4h",
+            table_name="marketorders",
+        )
+        update_google_sheet(
+            google_sheet_config, sheet_name="market_data_4h", table_name="marketstats"
+        )
+
 
 def update_google_sheet(
     google_sheet_config: GoogleSheetConfig,
     sheet_name: str,
     table_name: str,
-    market_ctx: Optional[MarketContext] = None
+    market_ctx: Optional[MarketContext] = None,
 ):
     import pandas as pd
 
-    db = DatabaseConfig(market_context=market_ctx) if market_ctx else DatabaseConfig("wcmkt")
+    db = (
+        DatabaseConfig(market_context=market_ctx)
+        if market_ctx
+        else DatabaseConfig("wcmkt")
+    )
     engine = db.engine
     with engine.connect() as conn:
         df = pd.read_sql_table(table_name, conn)
         google_sheet_config.update_sheet(df, sheet_name=sheet_name)
         logger.info(f"Updated Google Sheet with {len(df)} rows of data")
 
-def parse_args(args: list[str])->dict | None:
+
+def parse_args(args: list[str]) -> dict | None:
     return_args = {}
 
     if len(args) == 0:
@@ -625,7 +690,12 @@ def parse_args(args: list[str])->dict | None:
     # Handle --help: check for subcommand-specific help first
     if "--help" in args:
         # Check if this is a subcommand help request
-        subcommands_with_help = ["fit-check", "fit-update", "update-fit", "update-target"]
+        subcommands_with_help = [
+            "fit-check",
+            "fit-update",
+            "update-fit",
+            "update-target",
+        ]
         for subcmd in subcommands_with_help:
             if subcmd in args:
                 # Let the subcommand handler show its help
@@ -654,7 +724,9 @@ def parse_args(args: list[str])->dict | None:
         print(f"Available markets: {', '.join(available)}")
         for alias in available:
             ctx = MarketContext.from_settings(alias)
-            print(f"  {alias}: {ctx.name} (region={ctx.region_id}, db={ctx.database_alias})")
+            print(
+                f"  {alias}: {ctx.name} (region={ctx.region_id}, db={ctx.database_alias})"
+            )
         exit()
 
     if "--check_tables" in args:
@@ -673,8 +745,12 @@ def parse_args(args: list[str])->dict | None:
                 output_file = arg.split("=", 1)[1]
 
         if not input_file or not output_file:
-            print("Error: Both --input and --output parameters are required for parse-items command")
-            print("Usage: mkts-backend parse-items --input=structure_data.txt --output=market_prices.csv")
+            print(
+                "Error: Both --input and --output parameters are required for parse-items command"
+            )
+            print(
+                "Usage: mkts-backend parse-items --input=structure_data.txt --output=market_prices.csv"
+            )
             return None
 
         success = parse_items(input_file, output_file)
@@ -716,7 +792,13 @@ def parse_args(args: list[str])->dict | None:
             print("Error: --fit-id and --target are required for update-target command")
             print("Use 'mkts-backend update-target --help' for usage information.")
             return None
-        success = update_target_command(fit_id, target, market_flag=market_alias, remote=remote, db_alias=target_alias)
+        success = update_target_command(
+            fit_id,
+            target,
+            market_flag=market_alias,
+            remote=remote,
+            db_alias=target_alias,
+        )
         if success:
             print("Update target command completed successfully")
         else:
@@ -726,7 +808,6 @@ def parse_args(args: list[str])->dict | None:
     if "update-fit" in args:
         # Check for subcommand help
         if "--help" in args:
-
             display_update_fit_help()
             exit(0)
 
@@ -793,13 +874,17 @@ def parse_args(args: list[str])->dict | None:
             if meta_file:
                 metadata = parse_fit_metadata(meta_file)
                 if fit_id is not None and metadata.fit_id != fit_id:
-                    print(f"Warning: --fit-id={fit_id} overrides fit_id={metadata.fit_id} from metadata file")
+                    print(
+                        f"Warning: --fit-id={fit_id} overrides fit_id={metadata.fit_id} from metadata file"
+                    )
                     # Create new metadata dict with overridden fit_id
                     metadata_dict = {
                         "fit_id": fit_id,
                         "name": metadata.name,
                         "description": metadata.description,
-                        "doctrine_id": metadata.doctrine_ids if len(metadata.doctrine_ids) > 1 else metadata.doctrine_id,
+                        "doctrine_id": metadata.doctrine_ids
+                        if len(metadata.doctrine_ids) > 1
+                        else metadata.doctrine_id,
                         "target": metadata.target,
                     }
                 else:
@@ -817,11 +902,14 @@ def parse_args(args: list[str])->dict | None:
             # Process for each target market
             for target_market in target_markets:
                 target_alias = market_to_db[target_market]
-                print(f"\n--- Processing for {target_market} market ({target_alias}) ---")
+                print(
+                    f"\n--- Processing for {target_market} market ({target_alias}) ---"
+                )
 
                 if metadata_dict:
                     # Create FitMetadata from dict for workflow
                     from mkts_backend.utils.parse_fits import FitMetadata
+
                     metadata_obj = FitMetadata(**metadata_dict)
                 else:
                     metadata_obj = metadata
@@ -845,7 +933,9 @@ def parse_args(args: list[str])->dict | None:
                     if result["missing_items"]:
                         print(f"Missing type_ids for: {result['missing_items']}")
                 else:
-                    print(f"Fit update completed for fit_id {metadata_obj.fit_id} -> {target_alias} (remote={remote})")
+                    print(
+                        f"Fit update completed for fit_id {metadata_obj.fit_id} -> {target_alias} (remote={remote})"
+                    )
                     if update_targets:
                         print(f"  ship_targets updated")
 
@@ -891,7 +981,9 @@ def parse_args(args: list[str])->dict | None:
                     return None
 
         if not file_path and not paste_mode and fit_id is None:
-            print("Error: --file=<path>, --paste, or --fit-id=<id> is required for fit-check command")
+            print(
+                "Error: --file=<path>, --paste, or --fit-id=<id> is required for fit-check command"
+            )
             print("Use 'mkts-backend fit-check --help' for usage information.")
             return None
 
@@ -901,6 +993,7 @@ def parse_args(args: list[str])->dict | None:
             lines = []
             try:
                 import sys
+
                 for line in sys.stdin:
                     if line.strip() == "":
                         # Second blank line signals end
@@ -935,7 +1028,7 @@ def parse_args(args: list[str])->dict | None:
         # Determine subcommand (first positional arg after fit-update)
         fit_update_idx = args.index("fit-update")
         subcommand = None
-        for arg in args[fit_update_idx + 1:]:
+        for arg in args[fit_update_idx + 1 :]:
             if not arg.startswith("--"):
                 subcommand = arg
                 break
@@ -950,7 +1043,7 @@ def parse_args(args: list[str])->dict | None:
         meta_file = None
         fit_id = None
         db_alias = "wcmkt"  # Database alias
-        target_qty = 100    # Default target quantity for new fits
+        target_qty = 100  # Default target quantity for new fits
         interactive = "--interactive" in args
         remote = "--remote" in args
         local_only = "--local-only" in args
@@ -1023,16 +1116,22 @@ def parse_args(args: list[str])->dict | None:
         if validation_test:
             print(f"Database validated: {db.alias}")
         else:
-            print(f"Database {db.alias} is out of date. Run 'sync' to sync the database.")
+            print(
+                f"Database {db.alias} is out of date. Run 'sync' to sync the database."
+            )
         exit()
 
     if "--validate-env" in args:
         result = validate_all()
         if result["is_valid"]:
             print(result["message"])
-            print(f"Required credentials present: {', '.join(result['present_required'])}")
+            print(
+                f"Required credentials present: {', '.join(result['present_required'])}"
+            )
             if result["present_optional"]:
-                print(f"Optional credentials present: {', '.join(result['present_optional'])}")
+                print(
+                    f"Optional credentials present: {', '.join(result['present_optional'])}"
+                )
         else:
             print(result["message"])
             if result["missing_required"]:
@@ -1051,7 +1150,9 @@ def parse_args(args: list[str])->dict | None:
         if not type_ids_str:
             print("Error: --type_id parameter is required for add_watchlist command")
             print("Usage: mkts-backend add_watchlist --type_id=12345,67890,11111")
-            print("       mkts-backend add_watchlist --type_id=12345,67890,11111 --local")
+            print(
+                "       mkts-backend add_watchlist --type_id=12345,67890,11111 --local"
+            )
             return None
 
         # Default to remote database, use --local flag for local database
@@ -1076,6 +1177,7 @@ def parse_args(args: list[str])->dict | None:
     display_cli_help()
     exit()
 
+
 def main(history: bool = False, market_alias: str = "primary"):
     """
     Main function to process market orders, history, market stats, and doctrines.
@@ -1092,7 +1194,9 @@ def main(history: bool = False, market_alias: str = "primary"):
         logger.error(validation_result["message"])
         print(validation_result["message"])
         if validation_result["missing_required"]:
-            print(f"Missing required credentials: {', '.join(validation_result['missing_required'])}")
+            print(
+                f"Missing required credentials: {', '.join(validation_result['missing_required'])}"
+            )
             print("Please check your .env file or environment variables.")
         sys.exit(1)
     logger.info("Environment validation passed")
@@ -1152,7 +1256,9 @@ def main(history: bool = False, market_alias: str = "primary"):
     print(f"Fetching market orders for {market_ctx.name}")
     print("=" * 80)
 
-    status = process_market_orders(esi, order_type="all", test_mode=False, market_ctx=market_ctx)
+    status = process_market_orders(
+        esi, order_type="all", test_mode=False, market_ctx=market_ctx
+    )
     if status:
         logger.debug("Market orders updated")
     else:
@@ -1193,13 +1299,19 @@ def main(history: bool = False, market_alias: str = "primary"):
         exit()
 
     if settings["google_sheets"]["enabled"]:
-        logger.info("Google Sheets are enabled in settings.toml. Updating Google Sheets")
+        logger.info(
+            "Google Sheets are enabled in settings.toml. Updating Google Sheets"
+        )
         google_sheets_update_workflow(market_ctx=market_ctx)
     else:
-        logger.info("Google Sheets are disabled in settings.toml. Skipping Google Sheets update")
+        logger.info(
+            "Google Sheets are disabled in settings.toml. Skipping Google Sheets update"
+        )
 
     logger.info("=" * 80)
-    logger.info(f"Market job complete for {market_ctx.name} in {time.perf_counter()-start_time:.1f}s")
+    logger.info(
+        f"Market job complete for {market_ctx.name} in {time.perf_counter() - start_time:.1f}s"
+    )
     logger.info("=" * 80)
 
 

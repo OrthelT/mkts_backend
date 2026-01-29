@@ -184,5 +184,14 @@ class UpdateLog(Base):
     def __repr__(self) -> str:
         return f"updatelog(id={self.id!r}, table_name={self.table_name!r}, timestamp={self.timestamp!r})"
 
+
+class ESIRequestCache(Base):
+    __tablename__ = "esi_request_cache"
+    type_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    region_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    etag: Mapped[str] = mapped_column(String, nullable=True)
+    last_modified: Mapped[str] = mapped_column(String, nullable=True)
+    last_checked: Mapped[DateTime] = mapped_column(DateTime, nullable=True)
+
 if __name__ == "__main__":
     pass

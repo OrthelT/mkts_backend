@@ -639,14 +639,20 @@ def parse_args(args: list[str])->dict | None:
     market_alias = "primary"  # default
     for arg in args:
         if arg.startswith("--market="):
-            market_alias = arg.split("=", 1)[1]
+            market_choice = arg.split("=", 1)[1]
+            if market_choice == 'north' or market_choice =='North':
+                market_alias = 'deployment'
+            else:
+                market_alias = market_choice
+                
             break
-        elif arg == "--deployment":
+        elif arg == "--deployment" or arg == "--north":
             market_alias = "deployment"
             break
         elif arg == "--primary":
             market_alias = "primary"
             break
+    
     return_args["market"] = market_alias
 
     if "--list-markets" in args:
@@ -972,6 +978,7 @@ def parse_args(args: list[str])->dict | None:
                 db_alias = arg.split("=", 1)[1]
             elif arg == "--north":
                 db_alias = "wcmktnorth"
+                market_alias = "deployment"
 
         # Parse fit_id(s) - supports comma-separated for doctrine-add-fit
         if fit_ids_str:

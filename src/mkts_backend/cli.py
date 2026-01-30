@@ -407,7 +407,7 @@ def collect_fit_metadata_interactive(
                 )
                 if create_it == "y":
                     doctrine_name = input(f"Doctrine name [{name}]: ").strip() or name
-                    doctrine_desc = input(f"Doctrine description []: ").strip()
+                    doctrine_desc = input("Doctrine description []: ").strip()
                     create_doctrine(doc_id, doctrine_name, doctrine_desc, remote=remote)
                     print(f"Created doctrine {doc_id}: {doctrine_name}")
                 else:
@@ -839,7 +839,7 @@ def parse_args(args: list[str]) -> dict | None:
                 elif market_val in ("primary", "deployment"):
                     target_markets = [market_val]
                 else:
-                    print(f"Error: --market must be one of: primary, deployment, both")
+                    print("Error: --market must be one of: primary, deployment, both")
                     return None
             elif arg == "--both":
                 target_markets = ["primary", "deployment"]

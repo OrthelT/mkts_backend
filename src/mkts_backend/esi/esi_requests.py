@@ -9,7 +9,9 @@ import millify
 logger = configure_logging(__name__)
 
 
-def fetch_market_orders(esi: ESIConfig, order_type: str = "all", etag: str = None, test_mode: bool = False) -> list[dict]:
+def fetch_market_orders(
+    esi: ESIConfig, order_type: str = "all", etag: str = None, test_mode: bool = False
+) -> list[dict]:
     logger.info("Fetching market orders")
     page = 1
     max_pages = 1
@@ -22,7 +24,9 @@ def fetch_market_orders(esi: ESIConfig, order_type: str = "all", etag: str = Non
 
     while page <= max_pages:
         request_count += 1
-        logger.info(f"NEW REQUEST: request_count: {request_count}, page: {page}, max_pages: {max_pages}")
+        logger.info(
+            f"NEW REQUEST: request_count: {request_count}, page: {page}, max_pages: {max_pages}"
+        )
 
         # Both primary and deployment use structure markets with same query format
         querystring = {"page": str(page)}
@@ -37,7 +41,9 @@ def fetch_market_orders(esi: ESIConfig, order_type: str = "all", etag: str = Non
 
             if test_mode:
                 max_pages = 5
-                logger.info(f"test_mode: max_pages set to {max_pages}. current page: {page}/{max_pages}")
+                logger.info(
+                    f"test_mode: max_pages set to {max_pages}. current page: {page}/{max_pages}"
+                )
             else:
                 max_pages = int(response.headers.get("X-Pages"))
                 logger.info(f"page: {page}, max_pages: {max_pages}")
@@ -54,11 +60,15 @@ def fetch_market_orders(esi: ESIConfig, order_type: str = "all", etag: str = Non
             orders.extend(data)
             page += 1
         else:
-            logger.info(f"Data retrieved for {page}/{max_pages}. total orders: {len(orders)}")
+            logger.info(
+                f"Data retrieved for {page}/{max_pages}. total orders: {len(orders)}"
+            )
             return orders
         logger.info("-" * 60)
 
-    logger.info(f"market_orders complete:{page}/{max_pages} pages. total orders: {len(orders)} orders")
+    logger.info(
+        f"market_orders complete:{page}/{max_pages} pages. total orders: {len(orders)} orders"
+    )
     logger.info("+=" * 40)
     return orders
 
@@ -69,7 +79,7 @@ def fetch_history(watchlist: pd.DataFrame) -> list[dict]:
     error_count = 0
     total_time_taken = 0
 
-    logger.info("Fetching history")
+    logger.info("Fetching history with standard fetch (non-concurrent)")
     if watchlist is None or watchlist.empty:
         logger.error("No watchlist provided or watchlist is empty")
         return None
@@ -94,9 +104,15 @@ def fetch_history(watchlist: pd.DataFrame) -> list[dict]:
         querystring = {"type_id": type_id}
         request_count += 1
         try:
-            print(f"\rFetching history for ({request_count}/{watchlist_length})", end="", flush=True)
+            print(
+                f"\rFetching history for ({request_count}/{watchlist_length})",
+                end="",
+                flush=True,
+            )
             t1 = time.perf_counter()
-            response = requests.get(url, headers=headers, timeout=10, params=querystring)
+            response = requests.get(
+                url, headers=headers, timeout=10, params=querystring
+            )
             response.raise_for_status()
 
             if response.status_code == 200:
@@ -115,7 +131,9 @@ def fetch_history(watchlist: pd.DataFrame) -> list[dict]:
                 else:
                     logger.warning(f"Unexpected data format for {item_name}")
             else:
-                logger.error(f"Error fetching history for {item_name}: {response.status_code}")
+                logger.error(
+                    f"Error fetching history for {item_name}: {response.status_code}"
+                )
 
         except Exception as e:
             logger.error(f"Error processing {item_name}: {e}")
@@ -130,10 +148,14 @@ def fetch_history(watchlist: pd.DataFrame) -> list[dict]:
         t2 = time.perf_counter()
         time_taken = round(t2 - t1, 2)
         total_time_taken += time_taken
-        logger.info(f"time: {time_taken}s, average: {round(total_time_taken / request_count, 2)}s")
+        logger.info(
+            f"time: {time_taken}s, average: {round(total_time_taken / request_count, 2)}s"
+        )
         if time_taken < 0.25:
             time.sleep(0.5)
-            print(f"sleeping for 0.5 seconds to avoid rate limiting. Time: {time_taken}s")
+            print(
+                f"sleeping for 0.5 seconds to avoid rate limiting. Time: {time_taken}s"
+            )
     if history:
         logger.info(f"Successfully fetched {len(history)} total history records")
         with open("data/market_history.json", "w") as f:
@@ -144,7 +166,7 @@ def fetch_history(watchlist: pd.DataFrame) -> list[dict]:
         return None
 
 
-def fetch_region_orders(region_id: int, order_type: str = 'sell') -> list[dict]:
+def fetch_region_orders(region_id: int, order_type: str = "sell") -> list[dict]:
     orders = []
     max_pages = 1
     page = 1
@@ -156,8 +178,8 @@ def fetch_region_orders(region_id: int, order_type: str = 'sell') -> list[dict]:
         status_code = None
 
         headers = {
-            'User-Agent': 'wcmkts_backend/1.0, orthel.toralen@gmail.com, (https://github.com/OrthelT/wcmkts_backend)',
-            'Accept': 'application/json',
+            "User-Agent": "wcmkts_backend/1.0, orthel.toralen@gmail.com, (https://github.com/OrthelT/wcmkts_backend)",
+            "Accept": "application/json",
         }
         base_url = f"https://esi.evetech.net/latest/markets/{region_id}/orders/?datasource=tranquility&order_type={order_type}&page={page}"
         start_time = time.time()
@@ -179,7 +201,9 @@ def fetch_region_orders(region_id: int, order_type: str = 'sell') -> list[dict]:
             logger.error(f"Request Error: {page} of {max_pages} | {elapsed}s")
 
         if status_code and status_code != 200:
-            logger.error(f"page {page} of {max_pages} | status: {status_code} | {elapsed}s")
+            logger.error(
+                f"page {page} of {max_pages} | status: {status_code} | {elapsed}s"
+            )
             error_count += 1
             if error_count > 5:
                 print("error", status_code)
@@ -188,7 +212,9 @@ def fetch_region_orders(region_id: int, order_type: str = 'sell') -> list[dict]:
             time.sleep(1)
             continue
         elif status_code == 200:
-            logger.info(f"page {page} of {max_pages} | status: {status_code} | {elapsed}s")
+            logger.info(
+                f"page {page} of {max_pages} | status: {status_code} | {elapsed}s"
+            )
         else:
             logger.error(f"page {page} of {max_pages} | request failed | {elapsed}s")
             error_count += 1
@@ -199,13 +225,13 @@ def fetch_region_orders(region_id: int, order_type: str = 'sell') -> list[dict]:
             continue
 
         if status_code == 200:
-            error_remain = response.headers.get('X-Error-Limit-Remain')
-            if error_remain == '0':
+            error_remain = response.headers.get("X-Error-Limit-Remain")
+            if error_remain == "0":
                 logger.critical(f"Too many errors: {error_count}")
                 raise Exception(f"Too many errors: {error_count}")
 
-            if response.headers.get('X-Pages'):
-                max_pages = int(response.headers.get('X-Pages'))
+            if response.headers.get("X-Pages"):
+                max_pages = int(response.headers.get("X-Pages"))
             else:
                 max_pages = 1
 
@@ -222,7 +248,9 @@ def fetch_region_orders(region_id: int, order_type: str = 'sell') -> list[dict]:
                 orders.append(order)
 
             page += 1
-    logger.info(f"{len(orders)} orders fetched in {millify(time.time() - begin_time, precision=2)}s | {millify(len(orders)/(time.time() - begin_time), precision=2)} orders/s")
+    logger.info(
+        f"{len(orders)} orders fetched in {millify(time.time() - begin_time, precision=2)}s | {millify(len(orders) / (time.time() - begin_time), precision=2)} orders/s"
+    )
     logger.info("--------------------------------\n\n")
     return orders
 
@@ -256,6 +284,6 @@ def fetch_region_item_history(region_id: int, type_id: int) -> list[dict]:
         print(f"    Unexpected error for type_id {type_id}: {e}")
         return []
 
+
 if __name__ == "__main__":
     pass
-

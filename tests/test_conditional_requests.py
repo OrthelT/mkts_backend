@@ -174,7 +174,6 @@ class TestCallOne304Handling:
     async def test_304_returns_none_data(self):
         """A 304 response returns data=None with status=304."""
         from mkts_backend.esi.async_history import call_one
-        from aiolimiter import AsyncLimiter
 
         mock_response = MagicMock()
         mock_response.status_code = 304
@@ -183,14 +182,13 @@ class TestCallOne304Handling:
         mock_client = AsyncMock()
         mock_client.get = AsyncMock(return_value=mock_response)
 
-        limiter = AsyncLimiter(300, time_period=60.0)
         sema = asyncio.Semaphore(50)
 
         cache_entry = {"etag": '"abc123"', "last_modified": "Wed, 01 Jan 2025 00:00:00 GMT"}
 
         result = await call_one(
             mock_client, type_id=34, length=1, region_id=10000003,
-            limiter=limiter, sema=sema,
+            sema=sema,
             headers={"User-Agent": "test"},
             cache_entry=cache_entry,
         )
@@ -204,7 +202,6 @@ class TestCallOne304Handling:
     async def test_304_does_not_call_raise_for_status(self):
         """A 304 response should not trigger raise_for_status."""
         from mkts_backend.esi.async_history import call_one
-        from aiolimiter import AsyncLimiter
 
         mock_response = MagicMock()
         mock_response.status_code = 304
@@ -213,12 +210,11 @@ class TestCallOne304Handling:
         mock_client = AsyncMock()
         mock_client.get = AsyncMock(return_value=mock_response)
 
-        limiter = AsyncLimiter(300, time_period=60.0)
         sema = asyncio.Semaphore(50)
 
         await call_one(
             mock_client, type_id=34, length=1, region_id=10000003,
-            limiter=limiter, sema=sema,
+            sema=sema,
             headers={"User-Agent": "test"},
             cache_entry={"etag": '"test"', "last_modified": None},
         )
@@ -229,7 +225,6 @@ class TestCallOne304Handling:
     async def test_200_returns_data_with_headers(self):
         """A 200 response returns data with etag and last_modified captured."""
         from mkts_backend.esi.async_history import call_one
-        from aiolimiter import AsyncLimiter
 
         mock_response = MagicMock()
         mock_response.status_code = 200
@@ -242,12 +237,11 @@ class TestCallOne304Handling:
         mock_client = AsyncMock()
         mock_client.get = AsyncMock(return_value=mock_response)
 
-        limiter = AsyncLimiter(300, time_period=60.0)
         sema = asyncio.Semaphore(50)
 
         result = await call_one(
             mock_client, type_id=34, length=1, region_id=10000003,
-            limiter=limiter, sema=sema,
+            sema=sema,
             headers={"User-Agent": "test"},
         )
 
@@ -263,7 +257,6 @@ class TestConditionalHeaderInjection:
     async def test_sends_if_none_match_when_etag_cached(self):
         """If-None-Match header is sent when cache has an etag."""
         from mkts_backend.esi.async_history import call_one
-        from aiolimiter import AsyncLimiter
 
         mock_response = MagicMock()
         mock_response.status_code = 304
@@ -272,12 +265,11 @@ class TestConditionalHeaderInjection:
         mock_client = AsyncMock()
         mock_client.get = AsyncMock(return_value=mock_response)
 
-        limiter = AsyncLimiter(300, time_period=60.0)
         sema = asyncio.Semaphore(50)
 
         await call_one(
             mock_client, type_id=34, length=1, region_id=10000003,
-            limiter=limiter, sema=sema,
+            sema=sema,
             headers={"User-Agent": "test"},
             cache_entry={"etag": '"cached_etag"', "last_modified": None},
         )
@@ -291,7 +283,6 @@ class TestConditionalHeaderInjection:
     async def test_sends_if_modified_since_when_last_modified_cached(self):
         """If-Modified-Since header is sent when cache has a last_modified value."""
         from mkts_backend.esi.async_history import call_one
-        from aiolimiter import AsyncLimiter
 
         mock_response = MagicMock()
         mock_response.status_code = 304
@@ -300,12 +291,11 @@ class TestConditionalHeaderInjection:
         mock_client = AsyncMock()
         mock_client.get = AsyncMock(return_value=mock_response)
 
-        limiter = AsyncLimiter(300, time_period=60.0)
         sema = asyncio.Semaphore(50)
 
         await call_one(
             mock_client, type_id=34, length=1, region_id=10000003,
-            limiter=limiter, sema=sema,
+            sema=sema,
             headers={"User-Agent": "test"},
             cache_entry={"etag": None, "last_modified": "Wed, 01 Jan 2025 00:00:00 GMT"},
         )
@@ -319,7 +309,6 @@ class TestConditionalHeaderInjection:
     async def test_no_conditional_headers_without_cache(self):
         """No conditional headers are sent when there is no cache entry."""
         from mkts_backend.esi.async_history import call_one
-        from aiolimiter import AsyncLimiter
 
         mock_response = MagicMock()
         mock_response.status_code = 200
@@ -329,12 +318,11 @@ class TestConditionalHeaderInjection:
         mock_client = AsyncMock()
         mock_client.get = AsyncMock(return_value=mock_response)
 
-        limiter = AsyncLimiter(300, time_period=60.0)
         sema = asyncio.Semaphore(50)
 
         await call_one(
             mock_client, type_id=34, length=1, region_id=10000003,
-            limiter=limiter, sema=sema,
+            sema=sema,
             headers={"User-Agent": "test"},
             cache_entry=None,
         )

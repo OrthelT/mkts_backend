@@ -158,10 +158,13 @@ class DatabaseConfig:
         # Record db state before and after sync to monitor WAL frame generation
         raw_info = self.read_db_info()
         start_info = json.loads(raw_info) if raw_info else None
-        
+        logger.info("\n--------------------------------")
+        logger.info(f"========== START SYNC {self.alias} ==========")
         logger.info(f"Start sync for {self.alias} at {self.path}")
         if start_info is not None:
+            logger.info("--------------------------------")
             logger.info(f"Start info: {start_info}")
+            logger.info("--------------------------------")
         else:
             logger.info("No start info found (fresh database sync)")
 
@@ -179,17 +182,17 @@ class DatabaseConfig:
         logger.info(f"Sync time: {end_time - start_time:.1f} seconds")
         logger.info(f"Sync time: {(end_time - start_time)/60:.1f} minutes")
         logger.info(f"Sync end time: {datetime.now()}")
+        logger.info(f"========== END SYNC {self.alias} ==========")
+        logger.info("--------------------------------\n")
         raw_end_info = self.read_db_info()
         end_info = json.loads(raw_end_info) if raw_end_info else None
         if start_info and end_info:
             generation_change = end_info["generation"] - start_info["generation"]
             frames_synced = end_info["durable_frame_num"] - start_info["durable_frame_num"]
-            logger.info(f"Generation change: {generation_change}")
-            logger.info(f"Frames synced: {frames_synced}")
+            logger.debug(f"Generation change: {generation_change}")
+            logger.debug(f"Frames synced: {frames_synced}")
         elif end_info:
-            logger.info(f"Fresh sync completed. Generation: {end_info['generation']}, Frames: {end_info['durable_frame_num']}")
-        logger.info("Sync complete")
-        logger.info("=" * 80)
+            logger.debug(f"Fresh sync completed. Generation: {end_info['generation']}, Frames: {end_info['durable_frame_num']}")
 
     def validate_sync(self) -> bool:
         logger.info(f"Validating sync for {self.alias}, url: {self.turso_url}, self.path: {self.path}")

@@ -129,6 +129,16 @@ def temp_db_dir(tmp_path):
                 price REAL
             )
         """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS esi_request_cache (
+                type_id INTEGER NOT NULL,
+                region_id INTEGER NOT NULL,
+                etag TEXT,
+                last_modified TEXT,
+                last_checked DATETIME,
+                PRIMARY KEY (type_id, region_id)
+            )
+        """)
         # Insert some test data
         conn.execute("INSERT OR IGNORE INTO watchlist VALUES (34, 'Tritanium', 'Mineral', 'Material', 4, 18)")
         conn.execute("INSERT OR IGNORE INTO watchlist VALUES (35, 'Pyerite', 'Mineral', 'Material', 4, 18)")

@@ -18,7 +18,7 @@ from mkts_backend.utils.utils import (
     get_type_names_from_df,
 )
 from mkts_backend.config.logging_config import configure_logging
-from mkts_backend.db.models import Base, MarketHistory, MarketOrders, UpdateLog
+from mkts_backend.db.models import Base, MarketHistory, MarketOrders, UpdateLog, ESIRequestCache
 from mkts_backend.config.config import DatabaseConfig
 from mkts_backend.db.db_queries import get_table_length, get_remote_status
 
@@ -328,8 +328,23 @@ def update_history(
 
     valid_history_columns = MarketHistory.__table__.columns.keys()
 
+    # Filter out 304 (Not Modified) results - they have no new data
+    results_with_data = [r for r in history_results if r and r.get("data") is not None]
+    count_304 = sum(1 for r in history_results if r and r.get("status") == 304)
+    count_200 = len(results_with_data)
+
+    if count_304 > 0:
+        logger.info(f"History results: {count_200} with new data, {count_304} unchanged (304)")
+
+    if not results_with_data:
+        if count_304 > 0:
+            logger.info(f"All {count_304} items returned 304 Not Modified. No database update needed.")
+            return True
+        logger.error("No history data to process")
+        return False
+
     flattened_history = []
-    for result in history_results:
+    for result in results_with_data:
         # Handle new format: {"type_id": type_id, "data": [...]}
         if isinstance(result, dict) and "type_id" in result and "data" in result:
             type_id = result["type_id"]
@@ -463,6 +478,98 @@ def log_update(
 
     engine.dispose()
     return True
+
+def ensure_cache_table(engine):
+    """Create the esi_request_cache table if it doesn't exist."""
+    from sqlalchemy import text
+    with engine.connect() as conn:
+        conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS esi_request_cache (
+                type_id INTEGER NOT NULL,
+                region_id INTEGER NOT NULL,
+                etag TEXT,
+                last_modified TEXT,
+                last_checked DATETIME,
+                PRIMARY KEY (type_id, region_id)
+            )
+        """))
+        conn.commit()
+
+
+def load_esi_cache(region_id: int, market_ctx: Optional["MarketContext"] = None) -> dict:
+    """Load ESI request cache entries for a given region.
+
+    Returns:
+        Dict mapping type_id -> {"etag": ..., "last_modified": ...}
+    """
+    db = _get_db(market_ctx)
+    engine = db.engine
+    try:
+        ensure_cache_table(engine)
+        from sqlalchemy import text
+        with engine.connect() as conn:
+            rows = conn.execute(
+                text("SELECT type_id, etag, last_modified FROM esi_request_cache WHERE region_id = :region_id"),
+                {"region_id": region_id},
+            ).fetchall()
+        return {row[0]: {"etag": row[1], "last_modified": row[2]} for row in rows}
+    except Exception as e:
+        logger.warning(f"Failed to load ESI cache: {e}")
+        return {}
+    finally:
+        engine.dispose()
+
+
+def save_esi_cache(results: list[dict], region_id: int, market_ctx: Optional["MarketContext"] = None):
+    """Save ESI request cache entries after a fetch run.
+
+    Only saves entries that have an etag or last_modified value.
+    Uses SQLite upsert on (type_id, region_id).
+    """
+    db = _get_db(market_ctx)
+    engine = db.remote_engine
+    try:
+        ensure_cache_table(engine)
+        from sqlalchemy import text
+        entries = []
+        for r in results:
+            if r is None:
+                continue
+            etag = r.get("etag")
+            last_modified = r.get("last_modified")
+            if etag or last_modified:
+                entries.append({
+                    "type_id": r["type_id"],
+                    "region_id": region_id,
+                    "etag": etag,
+                    "last_modified": last_modified,
+                    "last_checked": datetime.now(timezone.utc).isoformat(),
+                })
+
+        if not entries:
+            logger.info("No cache entries to save")
+            return
+
+        with engine.connect() as conn:
+            for entry in entries:
+                conn.execute(
+                    text("""
+                        INSERT INTO esi_request_cache (type_id, region_id, etag, last_modified, last_checked)
+                        VALUES (:type_id, :region_id, :etag, :last_modified, :last_checked)
+                        ON CONFLICT(type_id, region_id) DO UPDATE SET
+                            etag = excluded.etag,
+                            last_modified = excluded.last_modified,
+                            last_checked = excluded.last_checked
+                    """),
+                    entry,
+                )
+            conn.commit()
+        logger.info(f"Saved {len(entries)} ESI cache entries for region {region_id}")
+    except Exception as e:
+        logger.warning(f"Failed to save ESI cache: {e}")
+    finally:
+        engine.dispose()
+
 
 if __name__ == "__main__":
     pass

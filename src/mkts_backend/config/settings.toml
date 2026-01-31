@@ -13,7 +13,7 @@ token_file = "file:token.json"
 
 [app]
 name = "WinterCo Markets"
-environment = "development" # "production" or "development"
+environment = "production" # "production" or "development"
 log_level = "info"
 
 # ============================================================================

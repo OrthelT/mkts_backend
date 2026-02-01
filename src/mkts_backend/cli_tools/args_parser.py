@@ -1,20 +1,30 @@
-
 from mkts_backend.cli_tools.add_watchlist import add_watchlist
-from mkts_backend.cli_tools.cli_help import display_cli_help, display_update_fit_help, display_fit_check_help, display_fit_update_help, display_update_target_help
+from mkts_backend.cli_tools.cli_help import (
+    display_cli_help,
+    display_update_fit_help,
+    display_fit_check_help,
+    display_fit_update_help,
+    display_update_target_help,
+)
 
 from mkts_backend.config.market_context import MarketContext
 from mkts_backend.config.config import DatabaseConfig
 from mkts_backend.utils.validation import validate_all
 from mkts_backend.utils.parse_items import parse_items
 from mkts_backend.utils.parse_fits import parse_fit_metadata
-from mkts_backend.cli_tools.fit_update import fit_update_command
+from mkts_backend.cli_tools.fit_update import (
+    fit_update_command,
+    parse_fit,
+    parse_fit_from_std_in,
+)
 from mkts_backend.cli_tools.fit_check import fit_check_command
 from mkts_backend.cli_tools.cli_db_commands import check_tables
 from mkts_backend.config.logging_config import configure_logging
 
 logger = configure_logging(__name__)
 
-def parse_args(args: list[str])->dict | None:
+
+def parse_args(args: list[str]) -> dict | None:
     return_args = {}
 
     if len(args) == 0:
@@ -23,7 +33,12 @@ def parse_args(args: list[str])->dict | None:
     # Handle --help: check for subcommand-specific help first
     if "--help" in args:
         # Check if this is a subcommand help request
-        subcommands_with_help = ["fit-check", "fit-update", "update-fit", "update-target"]
+        subcommands_with_help = [
+            "fit-check",
+            "fit-update",
+            "update-fit",
+            "update-target",
+        ]
         for subcmd in subcommands_with_help:
             if subcmd in args:
                 # Let the subcommand handler show its help
@@ -38,8 +53,8 @@ def parse_args(args: list[str])->dict | None:
     for arg in args:
         if arg.startswith("--market="):
             market_choice = arg.split("=", 1)[1]
-            if market_choice == 'north' or market_choice =='North':
-                market_alias = 'deployment'
+            if market_choice == "north" or market_choice == "North":
+                market_alias = "deployment"
             else:
                 market_alias = market_choice
 
@@ -58,7 +73,9 @@ def parse_args(args: list[str])->dict | None:
         print(f"Available markets: {', '.join(available)}")
         for alias in available:
             ctx = MarketContext.from_settings(alias)
-            print(f"  {alias}: {ctx.name} (region={ctx.region_id}, db={ctx.database_alias})")
+            print(
+                f"  {alias}: {ctx.name} (region={ctx.region_id}, db={ctx.database_alias})"
+            )
         exit()
 
     if "--check_tables" in args:
@@ -77,8 +94,12 @@ def parse_args(args: list[str])->dict | None:
                 output_file = arg.split("=", 1)[1]
 
         if not input_file or not output_file:
-            print("Error: Both --input and --output parameters are required for parse-items command")
-            print("Usage: mkts-backend parse-items --input=structure_data.txt --output=market_prices.csv")
+            print(
+                "Error: Both --input and --output parameters are required for parse-items command"
+            )
+            print(
+                "Usage: mkts-backend parse-items --input=structure_data.txt --output=market_prices.csv"
+            )
             return None
 
         success = parse_items(input_file, output_file)
@@ -120,7 +141,13 @@ def parse_args(args: list[str])->dict | None:
             print("Error: --fit-id and --target are required for update-target command")
             print("Use 'mkts-backend update-target --help' for usage information.")
             return None
-        success = update_target_command(fit_id, target, market_flag=market_alias, remote=remote, db_alias=target_alias)
+        success = update_target_command(
+            fit_id,
+            target,
+            market_flag=market_alias,
+            remote=remote,
+            db_alias=target_alias,
+        )
         if success:
             print("Update target command completed successfully")
         else:
@@ -130,7 +157,6 @@ def parse_args(args: list[str])->dict | None:
     if "update-fit" in args:
         # Check for subcommand help
         if "--help" in args:
-
             display_update_fit_help()
             exit(0)
 
@@ -162,7 +188,7 @@ def parse_args(args: list[str])->dict | None:
                 elif market_val in ("primary", "deployment"):
                     target_markets = [market_val]
                 else:
-                    print(f"Error: --market must be one of: primary, deployment, both")
+                    print("Error: --market must be one of: primary, deployment, both")
                     return None
             elif arg == "--both":
                 target_markets = ["primary", "deployment"]
@@ -197,13 +223,17 @@ def parse_args(args: list[str])->dict | None:
             if meta_file:
                 metadata = parse_fit_metadata(meta_file)
                 if fit_id is not None and metadata.fit_id != fit_id:
-                    print(f"Warning: --fit-id={fit_id} overrides fit_id={metadata.fit_id} from metadata file")
+                    print(
+                        f"Warning: --fit-id={fit_id} overrides fit_id={metadata.fit_id} from metadata file"
+                    )
                     # Create new metadata dict with overridden fit_id
                     metadata_dict = {
                         "fit_id": fit_id,
                         "name": metadata.name,
                         "description": metadata.description,
-                        "doctrine_id": metadata.doctrine_ids if len(metadata.doctrine_ids) > 1 else metadata.doctrine_id,
+                        "doctrine_id": metadata.doctrine_ids
+                        if len(metadata.doctrine_ids) > 1
+                        else metadata.doctrine_id,
                         "target": metadata.target,
                     }
                 else:
@@ -221,11 +251,14 @@ def parse_args(args: list[str])->dict | None:
             # Process for each target market
             for target_market in target_markets:
                 target_alias = market_to_db[target_market]
-                print(f"\n--- Processing for {target_market} market ({target_alias}) ---")
+                print(
+                    f"\n--- Processing for {target_market} market ({target_alias}) ---"
+                )
 
                 if metadata_dict:
                     # Create FitMetadata from dict for workflow
                     from mkts_backend.utils.parse_fits import FitMetadata
+
                     metadata_obj = FitMetadata(**metadata_dict)
                 else:
                     metadata_obj = metadata
@@ -249,7 +282,9 @@ def parse_args(args: list[str])->dict | None:
                     if result["missing_items"]:
                         print(f"Missing type_ids for: {result['missing_items']}")
                 else:
-                    print(f"Fit update completed for fit_id {metadata_obj.fit_id} -> {target_alias} (remote={remote})")
+                    print(
+                        f"Fit update completed for fit_id {metadata_obj.fit_id} -> {target_alias} (remote={remote})"
+                    )
                     if update_targets:
                         print(f"  ship_targets updated")
 
@@ -295,7 +330,9 @@ def parse_args(args: list[str])->dict | None:
                     return None
 
         if not file_path and not paste_mode and fit_id is None:
-            print("Error: --file=<path>, --paste, or --fit-id=<id> is required for fit-check command")
+            print(
+                "Error: --file=<path>, --paste, or --fit-id=<id> is required for fit-check command"
+            )
             print("Use 'mkts-backend fit-check --help' for usage information.")
             return None
 
@@ -305,6 +342,7 @@ def parse_args(args: list[str])->dict | None:
             lines = []
             try:
                 import sys
+
                 for line in sys.stdin:
                     if line.strip() == "":
                         # Second blank line signals end
@@ -339,7 +377,7 @@ def parse_args(args: list[str])->dict | None:
         # Determine subcommand (first positional arg after fit-update)
         fit_update_idx = args.index("fit-update")
         subcommand = None
-        for arg in args[fit_update_idx + 1:]:
+        for arg in args[fit_update_idx + 1 :]:
             if not arg.startswith("--"):
                 subcommand = arg
                 break
@@ -354,12 +392,13 @@ def parse_args(args: list[str])->dict | None:
         meta_file = None
         fit_id = None
         db_alias = "wcmkt"  # Database alias
-        target_qty = 100    # Default target quantity for new fits
+        target_qty = 100  # Default target quantity for new fits
         interactive = "--interactive" in args
         remote = "--remote" in args
         local_only = "--local-only" in args
         dry_run = "--dry-run" in args
         skip_targets = "--skip-targets" in args
+        paste_mode = "--paste" in args
 
         fit_ids_str = None
         for arg in args:
@@ -391,6 +430,9 @@ def parse_args(args: list[str])->dict | None:
             fit_id = None
             fit_ids = None
 
+        if paste_mode:
+            eft_text = parse_fit_from_std_in()
+
         success = fit_update_command(
             subcommand=subcommand,
             fit_id=fit_id,
@@ -405,6 +447,7 @@ def parse_args(args: list[str])->dict | None:
             target_alias=db_alias,
             target=target_qty,
             skip_targets=skip_targets,
+            eft_fit=eft_text,
         )
         exit(0 if success else 1)
 
@@ -428,16 +471,22 @@ def parse_args(args: list[str])->dict | None:
         if validation_test:
             print(f"Database validated: {db.alias}")
         else:
-            print(f"Database {db.alias} is out of date. Run 'sync' to sync the database.")
+            print(
+                f"Database {db.alias} is out of date. Run 'sync' to sync the database."
+            )
         exit()
 
     if "--validate-env" in args:
         result = validate_all()
         if result["is_valid"]:
             print(result["message"])
-            print(f"Required credentials present: {', '.join(result['present_required'])}")
+            print(
+                f"Required credentials present: {', '.join(result['present_required'])}"
+            )
             if result["present_optional"]:
-                print(f"Optional credentials present: {', '.join(result['present_optional'])}")
+                print(
+                    f"Optional credentials present: {', '.join(result['present_optional'])}"
+                )
         else:
             print(result["message"])
             if result["missing_required"]:

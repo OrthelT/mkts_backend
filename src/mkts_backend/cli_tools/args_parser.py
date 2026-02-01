@@ -177,7 +177,7 @@ def parse_args(args: list[str]) -> dict | None:
                 fit_file = arg.split("=", 1)[1]
             elif arg.startswith("--meta-file="):
                 meta_file = arg.split("=", 1)[1]
-            elif arg.startswith("--fit-id="):
+            elif arg.startswith("--fit-id=") or arg.startswith("--fit_id"):
                 try:
                     fit_id = int(arg.split("=", 1)[1])
                 except ValueError:
@@ -243,6 +243,8 @@ def parse_args(args: list[str]) -> dict | None:
                 else:
                     metadata_dict = None  # Use metadata object directly
             else:
+                from fit_update import collect_fit_metadata_interactive
+
                 # Interactive mode - collect metadata from user
                 metadata_dict = collect_fit_metadata_interactive(
                     fit_id, fit_file)
@@ -422,7 +424,7 @@ def parse_args(args: list[str]) -> dict | None:
                 file_path = arg.split("=", 1)[1]
             elif arg.startswith("--meta-file="):
                 meta_file = arg.split("=", 1)[1]
-            elif arg.startswith("--fit-id="):
+            elif arg.startswith("--fit-id=") or arg.startswith("--fit_id="):
                 fit_ids_str = arg.split("=", 1)[1]
             elif arg.startswith("--target="):
                 # Target quantity for doctrine-add-fit

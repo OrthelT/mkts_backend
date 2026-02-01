@@ -1,4 +1,5 @@
 from mkts_backend.config.logging_config import configure_logging
+from mkts_backend.utils.db_utils import add_missing_items_to_watchlist
 
 logger = configure_logging(__name__)
 

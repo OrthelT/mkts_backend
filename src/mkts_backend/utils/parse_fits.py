@@ -27,6 +27,7 @@ _wcmkt_db = DatabaseConfig("wcmkt")
 _sde_db = DatabaseConfig("sde")
 _fittings_db = DatabaseConfig("fittings")
 
+
 def _get_engine(db_alias: str, remote: bool = False):
     cfg = DatabaseConfig(db_alias)
     return cfg.remote_engine if remote else cfg.engine
@@ -49,7 +50,7 @@ class FittingItem:
         self.type_fk_id = self.type_id
         self.details = self.get_fitting_details()
         if "description" in self.details:
-            self.description = self.details['description']
+            self.description = self.details["description"]
         else:
             self.description = "No description"
 
@@ -58,7 +59,8 @@ class FittingItem:
                 self.fit_name = self.details["name"]
                 if "name" in self.details and self.fit_name != self.details["name"]:
                     logger.warning(
-                        f"Fit name mismatch: parsed='{self.fit_name}' vs DB='{self.details['name']}'"
+                        f"Fit name mismatch: parsed='{
+                            self.fit_name}' vs DB='{self.details['name']}'"
                     )
             else:
                 self.fit_name = f"Default {self.ship_type_name} fit"
@@ -67,7 +69,8 @@ class FittingItem:
         engine = _sde_db.engine
         query = text("SELECT typeID FROM inv_info WHERE typeName = :type_name")
         with engine.connect() as conn:
-            result = conn.execute(query, {"type_name": self.type_name}).fetchone()
+            result = conn.execute(
+                query, {"type_name": self.type_name}).fetchone()
             return result[0] if result else -1
 
     def get_fitting_details(self) -> dict:
@@ -76,6 +79,7 @@ class FittingItem:
         with engine.connect() as conn:
             row = conn.execute(query, {"fit_id": self.fit_id}).fetchone()
             return dict(row._mapping) if row else {}
+
 
 @dataclass
 class FitMetadata:
@@ -90,7 +94,9 @@ class FitMetadata:
     doctrine_ids: List[int] = field(init=False)
 
     def __post_init__(self):
-        self.last_updated = datetime.now().astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+        self.last_updated = (
+            datetime.now().astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+        )
         self.doctrine_ids = self._normalize_doctrine_ids(self.doctrine_id)
         # Maintain legacy single-doctrine access
         self.doctrine_id = self.doctrine_ids[0]
@@ -122,11 +128,11 @@ def convert_fit_date(date: str) -> datetime:
 
 
 def slot_yielder() -> Generator[str, None, None]:
-    corrected_order = ['LoSlot', 'MedSlot', 'HiSlot', 'RigSlot', 'DroneBay']
+    corrected_order = ["LoSlot", "MedSlot", "HiSlot", "RigSlot", "DroneBay"]
     for slot in corrected_order:
         yield slot
     while True:
-        yield 'Cargo'
+        yield "Cargo"
 
 
 def _lookup_type_id(type_name: str, conn) -> Optional[int]:
@@ -172,7 +178,8 @@ def parse_eft_fit_file(fit_file: str, fit_id: int, sde_engine) -> FitParseResult
                     clean_name = line.strip("[]")
                     parts = clean_name.split(",")
                     ship_name = parts[0].strip()
-                    fit_name = parts[1].strip() if len(parts) > 1 else "Unnamed Fit"
+                    fit_name = parts[1].strip() if len(
+                        parts) > 1 else "Unnamed Fit"
                     continue
 
                 if line == "":
@@ -200,7 +207,10 @@ def parse_eft_fit_file(fit_file: str, fit_id: int, sde_engine) -> FitParseResult
                 type_id = _lookup_type_id(item_name, sde_conn)
                 if type_id is None:
                     missing.append(item_name)
-                    logger.warning(f"Unable to resolve type_id for '{item_name}' (fit {fit_id})")
+                    logger.warning(
+                        f"Unable to resolve type_id for '{
+                            item_name}' (fit {fit_id})"
+                    )
                     continue
 
                 items.append(
@@ -213,7 +223,9 @@ def parse_eft_fit_file(fit_file: str, fit_id: int, sde_engine) -> FitParseResult
                     }
                 )
 
-    return FitParseResult(items=items, ship_name=ship_name, fit_name=fit_name, missing_types=missing)
+    return FitParseResult(
+        items=items, ship_name=ship_name, fit_name=fit_name, missing_types=missing
+    )
 
 
 def process_fit(fit_file: str, fit_id: int):
@@ -225,15 +237,16 @@ def process_fit(fit_file: str, fit_id: int):
     fit_name = ""
     slot_counters = defaultdict(int)
 
-    with open(fit_file, 'r', encoding='utf-8') as f:
+    with open(fit_file, "r", encoding="utf-8") as f:
         for line in f:
             line = line.strip()
 
             if line.startswith("[") and line.endswith("]"):
-                clean_name = line.strip('[]')
-                parts = clean_name.split(',')
+                clean_name = line.strip("[]")
+                parts = clean_name.split(",")
                 ship_name = parts[0].strip()
-                fit_name = parts[1].strip() if len(parts) > 1 else "Unnamed Fit"
+                fit_name = parts[1].strip() if len(
+                    parts) > 1 else "Unnamed Fit"
                 continue
 
             if line == "":
@@ -243,15 +256,15 @@ def process_fit(fit_file: str, fit_id: int):
             if current_slot is None:
                 current_slot = next(slot_gen)
 
-            qty_match = re.search(r'\s+x(\d+)$', line)
+            qty_match = re.search(r"\s+x(\d+)$", line)
             if qty_match:
                 qty = int(qty_match.group(1))
-                item = line[:qty_match.start()].strip()
+                item = line[: qty_match.start()].strip()
             else:
                 qty = 1
                 item = line.strip()
 
-            if current_slot in {'LoSlot', 'MedSlot', 'HiSlot', 'RigSlot'}:
+            if current_slot in {"LoSlot", "MedSlot", "HiSlot", "RigSlot"}:
                 suffix = slot_counters[current_slot]
                 slot_counters[current_slot] += 1
                 slot_name = f"{current_slot}{suffix}"
@@ -267,7 +280,15 @@ def process_fit(fit_file: str, fit_id: int):
                 quantity=qty,
             )
 
-            fit.append([fitting_item.flag, fitting_item.quantity, fitting_item.type_id, fit_id, fitting_item.type_id])
+            fit.append(
+                [
+                    fitting_item.flag,
+                    fitting_item.quantity,
+                    fitting_item.type_id,
+                    fit_id,
+                    fitting_item.type_id,
+                ]
+            )
 
     return fit, ship_name, fit_name
 
@@ -277,7 +298,7 @@ def create_doctrine(
     name: str,
     description: str = "",
     icon_url: str = "",
-    remote: bool = False
+    remote: bool = False,
 ) -> bool:
     """
     Create a new doctrine in fittings_doctrine table.
@@ -373,21 +394,26 @@ def add_doctrine_to_watch(doctrine_id: int, remote: bool = False) -> None:
 
     with engine.connect() as conn:
         # Check if doctrine exists in fittings_doctrine
-        select_stmt = text("SELECT * FROM fittings_doctrine WHERE id = :doctrine_id")
+        select_stmt = text(
+            "SELECT * FROM fittings_doctrine WHERE id = :doctrine_id")
         result = conn.execute(select_stmt, {"doctrine_id": doctrine_id})
         doctrine_row = result.fetchone()
 
         if not doctrine_row:
-            logger.error(f"Doctrine {doctrine_id} not found in fittings_doctrine")
+            logger.error(
+                f"Doctrine {doctrine_id} not found in fittings_doctrine")
             return
 
         # Check if already exists in watch_doctrines
-        check_stmt = text("SELECT COUNT(*) FROM watch_doctrines WHERE id = :doctrine_id")
+        check_stmt = text(
+            "SELECT COUNT(*) FROM watch_doctrines WHERE id = :doctrine_id"
+        )
         result = conn.execute(check_stmt, {"doctrine_id": doctrine_id})
         count = result.fetchone()[0]
 
         if count > 0:
-            logger.info(f"Doctrine {doctrine_id} already exists in watch_doctrines")
+            logger.info(
+                f"Doctrine {doctrine_id} already exists in watch_doctrines")
             return
 
         # Insert into watch_doctrines
@@ -396,22 +422,30 @@ def add_doctrine_to_watch(doctrine_id: int, remote: bool = False) -> None:
             VALUES (:id, :name, :icon_url, :description, :created, :last_updated)
         """)
 
-        conn.execute(insert_stmt, {
-            "id": doctrine_row[0],
-            "name": doctrine_row[1],
-            "icon_url": doctrine_row[2],
-            "description": doctrine_row[3],
-            "created": doctrine_row[4],
-            "last_updated": doctrine_row[5]
-        })
+        conn.execute(
+            insert_stmt,
+            {
+                "id": doctrine_row[0],
+                "name": doctrine_row[1],
+                "icon_url": doctrine_row[2],
+                "description": doctrine_row[3],
+                "created": doctrine_row[4],
+                "last_updated": doctrine_row[5],
+            },
+        )
         conn.commit()
 
-        logger.info(f"Added doctrine {doctrine_id} ('{doctrine_row[1]}') to watch_doctrines")
+        logger.info(
+            f"Added doctrine {
+                doctrine_id} ('{doctrine_row[1]}') to watch_doctrines"
+        )
 
     engine.dispose()
 
 
-def insert_fit_items_to_db(fit_items: list, fit_id: int, clear_existing: bool = True, remote: bool = False) -> None:
+def insert_fit_items_to_db(
+    fit_items: list, fit_id: int, clear_existing: bool = True, remote: bool = False
+) -> None:
     """
     Insert parsed fit items into the fittings_fittingitem table.
 
@@ -428,7 +462,9 @@ def insert_fit_items_to_db(fit_items: list, fit_id: int, clear_existing: bool = 
 
         # Optionally clear existing items for this fit
         if clear_existing:
-            delete_stmt = text("DELETE FROM fittings_fittingitem WHERE fit_id = :fit_id")
+            delete_stmt = text(
+                "DELETE FROM fittings_fittingitem WHERE fit_id = :fit_id"
+            )
             conn.execute(delete_stmt, {"fit_id": fit_id})
             logger.info(f"Cleared existing items for fit_id {fit_id}")
 
@@ -471,12 +507,16 @@ def insert_fit_items_to_db(fit_items: list, fit_id: int, clear_existing: bool = 
 
     engine.dispose()
 
+
 def parse_fit_metadata(fit_metadata_file: str) -> FitMetadata:
-    with open(fit_metadata_file, 'r', encoding='utf-8') as f:
+    with open(fit_metadata_file, "r", encoding="utf-8") as f:
         metadata = json.load(f)
     return FitMetadata(**metadata)
 
-def upsert_fittings_fitting(metadata: FitMetadata, ship_type_id: int, remote: bool = False) -> None:
+
+def upsert_fittings_fitting(
+    metadata: FitMetadata, ship_type_id: int, remote: bool = False
+) -> None:
     """
     Upsert the shell record in fittings_fitting.
 
@@ -520,7 +560,8 @@ def upsert_fittings_fitting(metadata: FitMetadata, ship_type_id: int, remote: bo
         # Re-enable FK constraints
         conn.execute(text("PRAGMA foreign_keys = ON"))
     logger.info(
-        f"Upserted fittings_fitting for fit_id {metadata.fit_id}: {metadata.name} (ship_type_id={ship_type_id})"
+        f"Upserted fittings_fitting for fit_id {metadata.fit_id}: {
+            metadata.name} (ship_type_id={ship_type_id})"
     )
 
 
@@ -551,7 +592,9 @@ def ensure_doctrine_link(doctrine_id: int, fit_id: int, remote: bool = False) ->
         # Disable FK constraints for this insert (doctrine may exist in source but not synced locally)
         conn.execute(text("PRAGMA foreign_keys = OFF"))
         next_id = conn.execute(
-            text("SELECT COALESCE(MAX(id), 0) + 1 AS next_id FROM fittings_doctrine_fittings")
+            text(
+                "SELECT COALESCE(MAX(id), 0) + 1 AS next_id FROM fittings_doctrine_fittings"
+            )
         ).scalar_one()
         conn.execute(
             text(
@@ -561,7 +604,10 @@ def ensure_doctrine_link(doctrine_id: int, fit_id: int, remote: bool = False) ->
         )
         conn.commit()
         conn.execute(text("PRAGMA foreign_keys = ON"))
-    logger.info(f"Linked doctrine_id {doctrine_id} to fit_id {fit_id} in fittings_doctrine_fittings")
+    logger.info(
+        f"Linked doctrine_id {doctrine_id} to fit_id {
+            fit_id} in fittings_doctrine_fittings"
+    )
 
 
 def remove_doctrine_link(doctrine_id: int, fit_id: int, remote: bool = False) -> bool:
@@ -589,10 +635,16 @@ def remove_doctrine_link(doctrine_id: int, fit_id: int, remote: bool = False) ->
     engine.dispose()
 
     if rows_affected > 0:
-        logger.info(f"Removed link between doctrine_id {doctrine_id} and fit_id {fit_id} from fittings_doctrine_fittings")
+        logger.info(
+            f"Removed link between doctrine_id {doctrine_id} and fit_id {
+                fit_id} from fittings_doctrine_fittings"
+        )
         return True
     else:
-        logger.warning(f"No fittings_doctrine_fittings row found for doctrine_id={doctrine_id}, fit_id={fit_id}")
+        logger.warning(
+            f"No fittings_doctrine_fittings row found for doctrine_id={
+                doctrine_id}, fit_id={fit_id}"
+        )
         return False
 
 
@@ -631,7 +683,9 @@ def update_fit_workflow(
     elif fit_metadata_file:
         metadata = parse_fit_metadata(fit_metadata_file)
     else:
-        raise ValueError("Either fit_metadata_file or metadata_override must be provided")
+        raise ValueError(
+            "Either fit_metadata_file or metadata_override must be provided"
+        )
 
     sde_engine = _get_engine("sde", False)
 
@@ -640,10 +694,15 @@ def update_fit_workflow(
         metadata.ship_name = parse_result.ship_name
 
         with sde_engine.connect() as conn:
-            ship_type_id = metadata.ship_type_id or _resolve_ship_type_id(parse_result.ship_name, conn)
+            ship_type_id = metadata.ship_type_id or _resolve_ship_type_id(
+                parse_result.ship_name, conn
+            )
 
         if ship_type_id is None:
-            raise ValueError(f"Could not resolve ship type id for ship '{parse_result.ship_name}'")
+            raise ValueError(
+                f"Could not resolve ship type id for ship '{
+                    parse_result.ship_name}'"
+            )
 
         if dry_run:
             return {
@@ -658,11 +717,16 @@ def update_fit_workflow(
 
     # Upsert core fitting data
     upsert_fittings_fitting(metadata, ship_type_id, remote=remote)
-    insert_fit_items_to_db(parse_result.items, fit_id=fit_id, clear_existing=clear_existing, remote=remote)
+    insert_fit_items_to_db(
+        parse_result.items, fit_id=fit_id, clear_existing=clear_existing, remote=remote
+    )
     for doctrine_id in metadata.doctrine_ids:
         # Auto-create doctrine if it doesn't exist
         if not doctrine_exists(doctrine_id, remote=remote):
-            logger.info(f"Doctrine {doctrine_id} doesn't exist, creating it with name '{metadata.name}'")
+            logger.info(
+                f"Doctrine {doctrine_id} doesn't exist, creating it with name '{
+                    metadata.name}'"
+            )
             create_doctrine(
                 doctrine_id=doctrine_id,
                 name=metadata.name,
@@ -674,11 +738,19 @@ def update_fit_workflow(
 
         ensure_doctrine_link(doctrine_id, fit_id, remote=remote)
 
-        doctrine_fit = DoctrineFit(doctrine_id=doctrine_id, fit_id=fit_id, target=metadata.target)
+        doctrine_fit = DoctrineFit(
+            doctrine_id=doctrine_id, fit_id=fit_id, target=metadata.target
+        )
 
         # Propagate to market/production dbs (wcmktprod.db or wcmktnorth2.db)
-        upsert_doctrine_fits(doctrine_fit, remote=remote, db_alias=target_alias)
-        upsert_doctrine_map(doctrine_fit.doctrine_id, doctrine_fit.fit_id, remote=remote, db_alias=target_alias)
+        upsert_doctrine_fits(doctrine_fit, remote=remote,
+                             db_alias=target_alias)
+        upsert_doctrine_map(
+            doctrine_fit.doctrine_id,
+            doctrine_fit.fit_id,
+            remote=remote,
+            db_alias=target_alias,
+        )
 
     # Always update ship_targets - this tracks target quantities for each fit
     upsert_ship_target(
@@ -706,22 +778,50 @@ def update_fit_workflow(
     # Add missing items to watchlist in wcmkt
     type_ids = {item["type_id"] for item in parse_result.items}
     type_ids.add(ship_type_id)
-    add_missing_items_to_watchlist(list(type_ids), remote=remote, db_alias=target_alias)
+    add_missing_items_to_watchlist(
+        list(type_ids), remote=remote, db_alias=target_alias)
     logger.info(
-        f"Completed fit update for fit_id={fit_id}, doctrine_ids={metadata.doctrine_ids} "
+        f"Completed fit update for fit_id={
+            fit_id}, doctrine_ids={metadata.doctrine_ids} "
         f"(remote={remote}, update_targets={update_targets})"
     )
 
 
-def update_existing_fit(fit_id: int, fit_file: str, fit_metadata_file: str, remote: bool = False, clear_existing: bool = True):
-    update_fit_workflow(fit_id, fit_file, fit_metadata_file, remote=remote, clear_existing=clear_existing)
+def update_existing_fit(
+    fit_id: int,
+    fit_file: str,
+    fit_metadata_file: str,
+    remote: bool = False,
+    clear_existing: bool = True,
+):
+    update_fit_workflow(
+        fit_id,
+        fit_file,
+        fit_metadata_file,
+        remote=remote,
+        clear_existing=clear_existing,
+    )
 
 
-def update_fit(fit_id: int, fit_file: str, fit_metadata_file: str, remote: bool = False, clear_existing: bool = True):
-    update_fit_workflow(fit_id, fit_file, fit_metadata_file, remote=remote, clear_existing=clear_existing)
+def update_fit(
+    fit_id: int,
+    fit_file: str,
+    fit_metadata_file: str,
+    remote: bool = False,
+    clear_existing: bool = True,
+):
+    update_fit_workflow(
+        fit_id,
+        fit_file,
+        fit_metadata_file,
+        remote=remote,
+        clear_existing=clear_existing,
+    )
 
 
-def display_fit_market_status(parse_result: FitParseResult, db_alias: str = "wcmktprod"):
+def display_fit_market_status(
+    parse_result: FitParseResult, db_alias: str = "wcmktprod"
+):
     """
     Display market status from wcmktprod.db for items in a parsed fit.
 
@@ -758,60 +858,88 @@ def display_fit_market_status(parse_result: FitParseResult, db_alias: str = "wcm
                     FROM marketstats
                     WHERE type_id = :type_id
                 """)
-                stats_result = market_conn.execute(stats_query, {"type_id": type_id}).fetchone()
+                stats_result = market_conn.execute(
+                    stats_query, {"type_id": type_id}
+                ).fetchone()
 
                 if stats_result:
                     # Item found in market stats
                     stats_dict = dict(stats_result._mapping)
                     stats_dict["type_id"] = type_id
                     stats_dict["needed_qty"] = needed_qty
-                    stats_dict["available"] = stats_dict["total_volume_remain"] >= needed_qty
+                    stats_dict["available"] = (
+                        stats_dict["total_volume_remain"] >= needed_qty
+                    )
                     market_data.append(stats_dict)
                 else:
                     # Item not in market stats - get type name from SDE
-                    type_name_query = text("SELECT typeName FROM inv_info WHERE typeID = :type_id")
-                    type_name_result = sde_conn.execute(type_name_query, {"type_id": type_id}).fetchone()
-                    type_name = type_name_result[0] if type_name_result else f"Unknown (ID: {type_id})"
+                    type_name_query = text(
+                        "SELECT typeName FROM inv_info WHERE typeID = :type_id"
+                    )
+                    type_name_result = sde_conn.execute(
+                        type_name_query, {"type_id": type_id}
+                    ).fetchone()
+                    type_name = (
+                        type_name_result[0]
+                        if type_name_result
+                        else f"Unknown (ID: {type_id})"
+                    )
 
-                    market_data.append({
-                        "type_id": type_id,
-                        "type_name": type_name,
-                        "price": None,
-                        "min_price": None,
-                        "total_volume_remain": 0,
-                        "avg_price": None,
-                        "days_remaining": None,
-                        "last_update": None,
-                        "needed_qty": needed_qty,
-                        "available": False,
-                    })
+                    market_data.append(
+                        {
+                            "type_id": type_id,
+                            "type_name": type_name,
+                            "price": None,
+                            "min_price": None,
+                            "total_volume_remain": 0,
+                            "avg_price": None,
+                            "days_remaining": None,
+                            "last_update": None,
+                            "needed_qty": needed_qty,
+                            "available": False,
+                        }
+                    )
 
     # Display results
-    print(f"\n{'='*80}")
+    print(f"\n{'=' * 80}")
     print(f"Market Status for Fit: {parse_result.fit_name}")
     print(f"Ship: {parse_result.ship_name}")
-    print(f"{'='*80}\n")
+    print(f"{'=' * 80}\n")
 
     # Sort by availability (available first), then by type name
     market_data.sort(key=lambda x: (not x["available"], x["type_name"]))
 
     # Calculate column widths
-    max_name_len = max(len(item["type_name"]) for item in market_data) if market_data else 20
+    max_name_len = (
+        max(len(item["type_name"])
+            for item in market_data) if market_data else 20
+    )
     max_name_len = max(max_name_len, len("Item Name"))
 
     # Print table header
-    header = f"{'Item Name':<{max_name_len}} | {'Needed':>8} | {'Available':>12} | {'Status':>12} | {'Price (ISK)':>15} | {'Days':>8}"
+    header = f"{'Item Name':<{max_name_len}} | {'Needed':>8} | {
+        'Available':>12} | {'Status':>12} | {'Price (ISK)':>15} | {'Days':>8}"
     print(header)
     print("-" * len(header))
 
     # Print table rows
     for item in market_data:
         status = "✓ Available" if item["available"] else "✗ Insufficient"
-        price_str = f"{item['price']:,.2f}" if item["price"] is not None else "N/A"
-        volume_str = f"{item['total_volume_remain']:,}" if item["total_volume_remain"] is not None else "0"
-        days_str = f"{item['days_remaining']:.1f}" if item["days_remaining"] is not None else "N/A"
+        price_str = f"{item['price']
+            :,.2f}" if item["price"] is not None else "N/A"
+        volume_str = (
+            f"{item['total_volume_remain']:,}"
+            if item["total_volume_remain"] is not None
+            else "0"
+        )
+        days_str = (
+            f"{item['days_remaining']:.1f}"
+            if item["days_remaining"] is not None
+            else "N/A"
+        )
 
-        row = f"{item['type_name']:<{max_name_len}} | {item['needed_qty']:>8} | {volume_str:>12} | {status:>12} | {price_str:>15} | {days_str:>8}"
+        row = f"{item['type_name']:<{max_name_len}} | {item['needed_qty']:>8} | {
+            volume_str:>12} | {status:>12} | {price_str:>15} | {days_str:>8}"
         print(row)
 
     # Summary
@@ -819,9 +947,12 @@ def display_fit_market_status(parse_result: FitParseResult, db_alias: str = "wcm
     total_count = len(market_data)
     missing_count = total_count - available_count
 
-    print(f"\nSummary: {available_count}/{total_count} items available on market")
+    print(f"\nSummary: {
+          available_count}/{total_count} items available on market")
     if missing_count > 0:
-        missing_items = [item["type_name"] for item in market_data if not item["available"]]
+        missing_items = [
+            item["type_name"] for item in market_data if not item["available"]
+        ]
         print(f"Missing items: {', '.join(missing_items[:10])}")
         if len(missing_items) > 10:
             print(f"  ... and {len(missing_items) - 10} more")
@@ -835,7 +966,7 @@ def display_fit_market_status(parse_result: FitParseResult, db_alias: str = "wcm
     if total_cost > 0:
         print(f"\nEstimated Total Cost: {total_cost:,.2f} ISK")
 
-    print(f"\n{'='*80}\n")
+    print(f"\n{'=' * 80}\n")
 
 
 if __name__ == "__main__":
@@ -843,3 +974,4 @@ if __name__ == "__main__":
     # maelstrom = "data/maelstrom.txt"
     # update_fit_workflow(901, rni, "data/rni.txt", remote=False, clear_existing=True, dry_run=True, target_alias="wcmkt")
     pass
+

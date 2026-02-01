@@ -12,7 +12,6 @@ Interactive tools for managing fits and doctrines:
 - doctrine-remove-fit: Remove fit(s) from a doctrine
 """
 
-import sys
 from typing import List, Optional
 from rich.console import Console
 from rich.table import Table
@@ -23,7 +22,7 @@ from sqlalchemy import text
 
 from mkts_backend.config.logging_config import configure_logging
 from mkts_backend.config import DatabaseConfig
-from mkts_backend.utils.eft_parser import parse_eft_file
+from mkts_backend.utils.eft_parser import parse_eft_file, parse_eft_string
 from mkts_backend.utils.doctrine_update import (
     update_fit_market_flag,
     get_fit_target,
@@ -44,28 +43,10 @@ from mkts_backend.utils.parse_fits import (
     ensure_doctrine_link,
     remove_doctrine_link,
 )
-from mkts_backend.cli_tools.fit_check import display_fit_status
+from mkts_backend.cli_tools.prompter import get_multiline_input
 
 logger = configure_logging(__name__)
 console = Console()
-
-
-def parse_fit_from_std_in():
-    # Handle paste mode
-    eft_text = None
-    print("Paste your EFT fit below (Ctrl+D or blank line to finish):")
-    lines = []
-    try:
-        for line in sys.stdin:
-            if line.strip() == "":
-                if lines and lines[-1] == "":
-                    break
-                lines.append("")
-            else:
-                lines.append(line.rstrip())
-    except EOFError:
-        pass
-    eft_text = "\n".join(lines)
 
 
 def get_available_doctrines(remote: bool = False) -> List[dict]:
@@ -89,6 +70,13 @@ def get_available_doctrines(remote: bool = False) -> List[dict]:
 
     engine.dispose()
     return doctrines
+
+
+def eft_text_to_file(eft_text: str) -> str:
+    file_path = "temp_file.txt"
+    with open(file_path, "w") as f:
+        f.write(eft_text)
+    return file_path
 
 
 def get_fits_list(db_alias: str = "wcmkt", remote: bool = False) -> List[dict]:
@@ -185,7 +173,8 @@ def display_doctrines_table(doctrines: List[dict]) -> None:
     table.add_column("Name", style="white", min_width=30)
 
     # Filter out deprecated doctrines (names starting with "zz")
-    active_doctrines = [d for d in doctrines if not d["name"].lower().startswith("zz")]
+    active_doctrines = [
+        d for d in doctrines if not d["name"].lower().startswith("zz")]
 
     for doctrine in active_doctrines:
         table.add_row(
@@ -197,7 +186,7 @@ def display_doctrines_table(doctrines: List[dict]) -> None:
 
 
 def interactive_add_fit(
-    fit_file: str,
+    fit_file: str = None,
     remote: bool = False,
     dry_run: bool = False,
     target_alias: str = "wcmkt",
@@ -218,7 +207,8 @@ def interactive_add_fit(
     """
     # Parse the fit file first
     try:
-        parse_result = parse_eft_file(fit_file)
+        if fit_file:
+            parse_result = parse_eft_file(fit_file)
     except FileNotFoundError:
         console.print(f"[red]Error: File not found: {fit_file}[/red]")
         return False
@@ -239,7 +229,8 @@ def interactive_add_fit(
     )
 
     if parse_result.has_missing_types:
-        console.print("[yellow]Warning: Some items could not be resolved:[/yellow]")
+        console.print(
+            "[yellow]Warning: Some items could not be resolved:[/yellow]")
         for item in parse_result.missing_types[:5]:
             console.print(f"  • {item}", style="yellow")
         if not Confirm.ask("Continue anyway?"):
@@ -287,14 +278,18 @@ def interactive_add_fit(
                 ]
                 # Validate doctrine IDs exist
                 existing_ids = {d["id"] for d in doctrines}
-                invalid_ids = [did for did in doctrine_ids if did not in existing_ids]
+                invalid_ids = [
+                    did for did in doctrine_ids if did not in existing_ids]
                 if invalid_ids:
                     console.print(
-                        f"[yellow]Warning: Doctrine ID(s) {invalid_ids} not found[/yellow]"
+                        f"[yellow]Warning: Doctrine ID(s) {
+                            invalid_ids
+                        } not found[/yellow]"
                     )
                     if not Confirm.ask("Continue with only valid IDs?"):
                         return False
-                    doctrine_ids = [did for did in doctrine_ids if did in existing_ids]
+                    doctrine_ids = [
+                        did for did in doctrine_ids if did in existing_ids]
 
         elif action == "new":
             console.print("\n[cyan]Creating a new doctrine:[/cyan]")
@@ -306,7 +301,8 @@ def interactive_add_fit(
             if not new_doctrine_name:
                 console.print("[red]Error: Doctrine name is required[/red]")
                 return False
-            new_doctrine_desc = Prompt.ask("[bold]Description[/bold]", default="")
+            new_doctrine_desc = Prompt.ask(
+                "[bold]Description[/bold]", default="")
 
             # Create the doctrine
             success = create_doctrine(
@@ -317,12 +313,16 @@ def interactive_add_fit(
             )
             if success:
                 console.print(
-                    f"[green]Created doctrine {new_doctrine_id}: {new_doctrine_name}[/green]"
+                    f"[green]Created doctrine {new_doctrine_id}: {
+                        new_doctrine_name
+                    }[/green]"
                 )
                 doctrine_ids = [new_doctrine_id]
             else:
                 console.print(
-                    f"[yellow]Doctrine {new_doctrine_id} already exists, using it[/yellow]"
+                    f"[yellow]Doctrine {
+                        new_doctrine_id
+                    } already exists, using it[/yellow]"
                 )
                 doctrine_ids = [new_doctrine_id]
 
@@ -342,7 +342,8 @@ def interactive_add_fit(
             if not new_doctrine_name:
                 console.print("[red]Error: Doctrine name is required[/red]")
                 return False
-            new_doctrine_desc = Prompt.ask("[bold]Description[/bold]", default="")
+            new_doctrine_desc = Prompt.ask(
+                "[bold]Description[/bold]", default="")
 
             success = create_doctrine(
                 doctrine_id=new_doctrine_id,
@@ -352,7 +353,9 @@ def interactive_add_fit(
             )
             if success:
                 console.print(
-                    f"[green]Created doctrine {new_doctrine_id}: {new_doctrine_name}[/green]"
+                    f"[green]Created doctrine {new_doctrine_id}: {
+                        new_doctrine_name
+                    }[/green]"
                 )
                 doctrine_ids = [new_doctrine_id]
             else:
@@ -474,7 +477,9 @@ def assign_market_command(
         )
         if success:
             console.print(
-                f"[green]Successfully updated fit {fit_id} to market '{market_flag}'[/green]"
+                f"[green]Successfully updated fit {fit_id} to market '{
+                    market_flag
+                }'[/green]"
             )
         else:
             console.print(f"[yellow]No fit found with ID {fit_id}[/yellow]")
@@ -502,7 +507,8 @@ def list_doctrines_command(remote: bool = False) -> None:
     """List all available doctrines (excludes deprecated 'zz' prefixed)."""
     doctrines = get_available_doctrines(remote=remote)
     # Filter out deprecated doctrines for count
-    active_doctrines = [d for d in doctrines if not d["name"].lower().startswith("zz")]
+    active_doctrines = [
+        d for d in doctrines if not d["name"].lower().startswith("zz")]
     if active_doctrines:
         display_doctrines_table(
             doctrines
@@ -553,7 +559,8 @@ def create_doctrine_command(
         # Get doctrine ID
         next_id = get_next_doctrine_id(remote=remote)
         if doctrine_id is None:
-            doctrine_id = IntPrompt.ask("[bold]Doctrine ID[/bold]", default=next_id)
+            doctrine_id = IntPrompt.ask(
+                "[bold]Doctrine ID[/bold]", default=next_id)
 
         # Get doctrine name
         if name is None:
@@ -601,10 +608,12 @@ def create_doctrine_command(
         )
         if success:
             console.print(
-                f"[green]Successfully created doctrine {doctrine_id}: {name}[/green]"
+                f"[green]Successfully created doctrine {
+                    doctrine_id}: {name}[/green]"
             )
         else:
-            console.print(f"[yellow]Doctrine {doctrine_id} already exists[/yellow]")
+            console.print(f"[yellow]Doctrine {
+                          doctrine_id} already exists[/yellow]")
         return success
     except Exception as e:
         console.print(f"[red]Error creating doctrine: {e}[/red]")
@@ -747,7 +756,8 @@ def doctrine_add_fit_command(
 
         # Get doctrine ID
         if doctrine_id is None:
-            doctrine_id = IntPrompt.ask("[bold]Doctrine ID[/bold] to add fit(s) to")
+            doctrine_id = IntPrompt.ask(
+                "[bold]Doctrine ID[/bold] to add fit(s) to")
 
         # Verify doctrine exists
         doctrine_info = None
@@ -756,16 +766,20 @@ def doctrine_add_fit_command(
                 doctrine_info = d
                 break
         if not doctrine_info:
-            console.print(f"[red]Error: Doctrine {doctrine_id} not found[/red]")
+            console.print(f"[red]Error: Doctrine {
+                          doctrine_id} not found[/red]")
             return False
 
-        console.print(f"\n[cyan]Selected doctrine:[/cyan] {doctrine_info['name']}")
+        console.print(
+            f"\n[cyan]Selected doctrine:[/cyan] {doctrine_info['name']}")
 
         # Show fits already in this doctrine
         existing_fit_ids = get_doctrine_fits(doctrine_id, remote=remote)
         if existing_fit_ids:
             console.print(
-                f"[dim]Currently has {len(existing_fit_ids)} fit(s): {existing_fit_ids}[/dim]"
+                f"[dim]Currently has {len(existing_fit_ids)} fit(s): {
+                    existing_fit_ids
+                }[/dim]"
             )
 
         # Get fit IDs
@@ -774,9 +788,11 @@ def doctrine_add_fit_command(
                 "\n[bold]Fit ID(s)[/bold] to add (comma-separated for multiple)"
             )
             if not fit_input:
-                console.print("[red]Error: At least one fit ID is required[/red]")
+                console.print(
+                    "[red]Error: At least one fit ID is required[/red]")
                 return False
-            fit_ids = [int(f.strip()) for f in fit_input.split(",") if f.strip()]
+            fit_ids = [int(f.strip())
+                       for f in fit_input.split(",") if f.strip()]
 
         # Validate and categorize fits
         valid_fits = []
@@ -794,10 +810,12 @@ def doctrine_add_fit_command(
 
         # Report validation results
         if invalid_fits:
-            console.print(f"[red]Not found in fittings database:[/red] {invalid_fits}")
+            console.print(
+                f"[red]Not found in fittings database:[/red] {invalid_fits}")
         if already_added:
             console.print(
-                f"[yellow]Already in doctrine (skipping):[/yellow] {already_added}"
+                f"[yellow]Already in doctrine (skipping):[/yellow] {
+                    already_added}"
             )
 
         if not valid_fits:
@@ -805,12 +823,14 @@ def doctrine_add_fit_command(
             return False
 
         # Display valid fits with existing targets
-        console.print(f"\n[green]Valid fits to add ({len(valid_fits)}):[/green]")
+        console.print(f"\n[green]Valid fits to add ({
+                      len(valid_fits)}):[/green]")
         fit_table = Table(box=box.SIMPLE)
         fit_table.add_column("Fit ID", style="dim")
         fit_table.add_column("Fit Name", style="white")
         fit_table.add_column("Ship", style="cyan")
-        fit_table.add_column("Existing Target", style="yellow", justify="right")
+        fit_table.add_column(
+            "Existing Target", style="yellow", justify="right")
 
         # Look up existing targets for each fit
         for fit in valid_fits:
@@ -867,7 +887,8 @@ def doctrine_add_fit_command(
         )
         console.print(
             Panel(
-                f"[bold]Doctrine:[/bold] {doctrine_info['name']} (ID: {doctrine_id})\n"
+                f"[bold]Doctrine:[/bold] {doctrine_info['name']
+                                          } (ID: {doctrine_id})\n"
                 f"[bold]Fits to add:[/bold] {len(valid_fits)}\n"
                 f"[bold]Market:[/bold] {market_flag}\n"
                 f"[bold]Targets:[/bold]\n{targets_summary}",
@@ -898,7 +919,8 @@ def doctrine_add_fit_command(
                 doctrine_info = d
                 break
         if not doctrine_info:
-            console.print(f"[red]Error: Doctrine {doctrine_id} not found[/red]")
+            console.print(f"[red]Error: Doctrine {
+                          doctrine_id} not found[/red]")
             return False
 
         existing_fit_ids = get_doctrine_fits(doctrine_id, remote=remote)
@@ -920,7 +942,8 @@ def doctrine_add_fit_command(
         if invalid_fits:
             console.print(f"[red]Not found: {invalid_fits}[/red]")
         if already_added:
-            console.print(f"[yellow]Already in doctrine: {already_added}[/yellow]")
+            console.print(f"[yellow]Already in doctrine: {
+                          already_added}[/yellow]")
 
         if not valid_fits:
             console.print("[red]No valid fits to add[/red]")
@@ -964,7 +987,8 @@ def doctrine_add_fit_command(
             )
 
             # Add doctrine map entry
-            upsert_doctrine_map(doctrine_id, fit_id, remote=remote, db_alias=db_alias)
+            upsert_doctrine_map(doctrine_id, fit_id,
+                                remote=remote, db_alias=db_alias)
 
             # Update ship_targets table
             upsert_ship_target(
@@ -987,20 +1011,25 @@ def doctrine_add_fit_command(
             )
 
             console.print(
-                f"[green]✓ Added fit {fit_id}: {doctrine_fit.fit_name} (target: {fit_target})[/green]"
+                f"[green]✓ Added fit {fit_id}: {doctrine_fit.fit_name} (target: {
+                    fit_target
+                })[/green]"
             )
             success_count += 1
 
         except Exception as e:
             console.print(f"[red]✗ Failed to add fit {fit_id}: {e}[/red]")
-            logger.exception(f"Error adding fit {fit_id} to doctrine {doctrine_id}")
+            logger.exception(f"Error adding fit {
+                             fit_id} to doctrine {doctrine_id}")
             fail_count += 1
 
     # Summary
     console.print()
     if success_count > 0:
         console.print(
-            f"[green]Successfully added {success_count} fit(s) to doctrine {doctrine_id}[/green]"
+            f"[green]Successfully added {success_count} fit(s) to doctrine {
+                doctrine_id
+            }[/green]"
         )
     if fail_count > 0:
         console.print(f"[red]Failed to add {fail_count} fit(s)[/red]")
@@ -1087,15 +1116,18 @@ def doctrine_remove_fit_command(
                 doctrine_info = d
                 break
         if not doctrine_info:
-            console.print(f"[red]Error: Doctrine {doctrine_id} not found[/red]")
+            console.print(f"[red]Error: Doctrine {
+                          doctrine_id} not found[/red]")
             return False
 
-        console.print(f"\n[cyan]Selected doctrine:[/cyan] {doctrine_info['name']}")
+        console.print(
+            f"\n[cyan]Selected doctrine:[/cyan] {doctrine_info['name']}")
 
         # Show fits currently in this doctrine
         existing_fit_ids = get_doctrine_fits(doctrine_id, remote=remote)
         if not existing_fit_ids:
-            console.print(f"[yellow]This doctrine has no fits to remove.[/yellow]")
+            console.print(
+                f"[yellow]This doctrine has no fits to remove.[/yellow]")
             return False
 
         console.print(
@@ -1114,10 +1146,12 @@ def doctrine_remove_fit_command(
             if fit_info:
                 existing_fits_info.append(fit_info)
                 fit_table.add_row(
-                    str(fit_info["fit_id"]), fit_info["fit_name"], fit_info["ship_name"]
+                    str(fit_info["fit_id"]
+                        ), fit_info["fit_name"], fit_info["ship_name"]
                 )
             else:
-                fit_table.add_row(str(fid), "[dim]Unknown[/dim]", "[dim]Unknown[/dim]")
+                fit_table.add_row(
+                    str(fid), "[dim]Unknown[/dim]", "[dim]Unknown[/dim]")
         console.print(fit_table)
 
         # Get fit IDs to remove
@@ -1126,9 +1160,11 @@ def doctrine_remove_fit_command(
                 "\n[bold]Fit ID(s)[/bold] to remove (comma-separated for multiple)"
             )
             if not fit_input:
-                console.print("[red]Error: At least one fit ID is required[/red]")
+                console.print(
+                    "[red]Error: At least one fit ID is required[/red]")
                 return False
-            fit_ids = [int(f.strip()) for f in fit_input.split(",") if f.strip()]
+            fit_ids = [int(f.strip())
+                       for f in fit_input.split(",") if f.strip()]
 
         # Validate fits are in the doctrine
         valid_fits = []
@@ -1155,7 +1191,8 @@ def doctrine_remove_fit_command(
         # Report validation results
         if not_in_doctrine:
             console.print(
-                f"[yellow]Not in this doctrine (skipping):[/yellow] {not_in_doctrine}"
+                f"[yellow]Not in this doctrine (skipping):[/yellow] {
+                    not_in_doctrine}"
             )
 
         if not valid_fits:
@@ -1163,20 +1200,23 @@ def doctrine_remove_fit_command(
             return False
 
         # Display fits to be removed
-        console.print(f"\n[yellow]Fits to remove ({len(valid_fits)}):[/yellow]")
+        console.print(f"\n[yellow]Fits to remove ({
+                      len(valid_fits)}):[/yellow]")
         remove_table = Table(box=box.SIMPLE)
         remove_table.add_column("Fit ID", style="dim")
         remove_table.add_column("Fit Name", style="white")
         remove_table.add_column("Ship", style="cyan")
         for fit in valid_fits:
-            remove_table.add_row(str(fit["fit_id"]), fit["fit_name"], fit["ship_name"])
+            remove_table.add_row(
+                str(fit["fit_id"]), fit["fit_name"], fit["ship_name"])
         console.print(remove_table)
 
         # Confirm
         console.print()
         console.print(
             Panel(
-                f"[bold]Doctrine:[/bold] {doctrine_info['name']} (ID: {doctrine_id})\n"
+                f"[bold]Doctrine:[/bold] {doctrine_info['name']
+                                          } (ID: {doctrine_id})\n"
                 f"[bold]Fits to remove:[/bold] {len(valid_fits)}",
                 title="[bold yellow]Remove Fits Summary[/bold yellow]",
                 border_style="yellow",
@@ -1205,7 +1245,8 @@ def doctrine_remove_fit_command(
                 doctrine_info = d
                 break
         if not doctrine_info:
-            console.print(f"[red]Error: Doctrine {doctrine_id} not found[/red]")
+            console.print(f"[red]Error: Doctrine {
+                          doctrine_id} not found[/red]")
             return False
 
         existing_fit_ids = get_doctrine_fits(doctrine_id, remote=remote)
@@ -1232,7 +1273,8 @@ def doctrine_remove_fit_command(
                 not_in_doctrine.append(fid)
 
         if not_in_doctrine:
-            console.print(f"[yellow]Not in doctrine: {not_in_doctrine}[/yellow]")
+            console.print(f"[yellow]Not in doctrine: {
+                          not_in_doctrine}[/yellow]")
 
         if not valid_fits:
             console.print("[red]No valid fits to remove[/red]")
@@ -1251,29 +1293,36 @@ def doctrine_remove_fit_command(
             )
 
             # Step 2: Remove from doctrine_map
-            remove_doctrine_map(doctrine_id, fit_id, remote=remote, db_alias=db_alias)
+            remove_doctrine_map(doctrine_id, fit_id,
+                                remote=remote, db_alias=db_alias)
 
             # Step 3: Remove from doctrine_fits
-            remove_doctrine_fits(doctrine_id, fit_id, remote=remote, db_alias=db_alias)
+            remove_doctrine_fits(doctrine_id, fit_id,
+                                 remote=remote, db_alias=db_alias)
 
             # Step 4: Remove from fittings_doctrine_fittings
             remove_doctrine_link(doctrine_id, fit_id, remote=remote)
 
             console.print(
-                f"[green]✓ Removed fit {fit_id}: {fit_info['fit_name']} ({rows_removed} doctrine rows)[/green]"
+                f"[green]✓ Removed fit {fit_id}: {fit_info['fit_name']} ({
+                    rows_removed
+                } doctrine rows)[/green]"
             )
             success_count += 1
 
         except Exception as e:
             console.print(f"[red]✗ Failed to remove fit {fit_id}: {e}[/red]")
-            logger.exception(f"Error removing fit {fit_id} from doctrine {doctrine_id}")
+            logger.exception(f"Error removing fit {
+                             fit_id} from doctrine {doctrine_id}")
             fail_count += 1
 
     # Summary
     console.print()
     if success_count > 0:
         console.print(
-            f"[green]Successfully removed {success_count} fit(s) from doctrine {doctrine_id}[/green]"
+            f"[green]Successfully removed {success_count} fit(s) from doctrine {
+                doctrine_id
+            }[/green]"
         )
     if fail_count > 0:
         console.print(f"[red]Failed to remove {fail_count} fit(s)[/red]")
@@ -1301,7 +1350,8 @@ def update_target_command(
     db = DatabaseConfig(db_alias)
     engine = db.remote_engine if remote else db.engine
     try:
-        existing_target = get_fit_target(fit_id, remote=remote, db_alias=db_alias)
+        existing_target = get_fit_target(
+            fit_id, remote=remote, db_alias=db_alias)
         if existing_target is None:
             console.print(
                 f"[red]Fit {fit_id} not present for {db_alias} database[/red]"
@@ -1316,36 +1366,48 @@ def update_target_command(
         with engine.connect() as conn:
             conn.execute(stmt, {"target": target, "fit_id": fit_id})
             conn.execute(
-                stmt2, {"target": target, "market_flag": market_flag, "fit_id": fit_id}
+                stmt2, {"target": target,
+                        "market_flag": market_flag, "fit_id": fit_id}
             )
             conn.commit()
             console.print("**************************************************")
             console.print(
-                f"[green]Successfully updated target for fit {fit_id} from [yellow]{existing_target}[/yellow] to [yellow]{target}[/yellow] for database {db_alias} (remote: {remote})[/green]"
+                f"[green]Successfully updated target for fit {fit_id} from [yellow]{
+                    existing_target
+                }[/yellow] to [yellow]{target}[/yellow] for database {
+                    db_alias
+                } (remote: {remote})[/green]"
             )
             console.print("**************************************************")
             return True
     except Exception as e:
         console.print(
-            f"[red]Failed to update target for fit {fit_id} to {target}: {e}[/red]"
+            f"[red]Failed to update target for fit {
+                fit_id} to {target}: {e}[/red]"
         )
         try:
-            stmt = text("SELECT fit_id FROM ship_targets WHERE fit_id = :fit_id")
+            stmt = text(
+                "SELECT fit_id FROM ship_targets WHERE fit_id = :fit_id")
             with engine.connect() as conn:
                 result = conn.execute(stmt, {"fit_id": fit_id}).fetchone()
                 if not result:
                     console.print(
-                        f"[orange]fit {fit_id} not present for {market_flag} market[/orange]. Add it before updating target."
+                        f"[orange]fit {fit_id} not present for {
+                            market_flag
+                        } market[/orange]. Add it before updating target."
                     )
                     return False
                 else:
                     console.print(
-                        f"[red]Failed to add fit {fit_id} to {market_flag} market: {e}[/red]"
+                        f"[red]Failed to add fit {fit_id} to {market_flag} market: {
+                            e
+                        }[/red]"
                     )
                     return False
         except Exception as e:
             console.print(
-                f"[red]Failed to update target for fit {fit_id} to {target}: {e}[/red]"
+                f"[red]Failed to update target for fit {
+                    fit_id} to {target}: {e}[/red]"
             )
             return False
 
@@ -1364,6 +1426,7 @@ def fit_update_command(
     target_alias: str = "wcmkt",
     target: int = 100,
     skip_targets: bool = False,
+    paste_mode: bool = False,
 ) -> bool:
     """
     Main entry point for fit-update commands.
@@ -1393,12 +1456,24 @@ def fit_update_command(
         target_alias: Target database alias
         target: Default target quantity for new fits (used by doctrine-add-fit)
         skip_targets: Preserve existing targets, skip target prompts (doctrine-add-fit)
+        paste_mode: whether to use pasted fit.
 
     Returns:
         True if command succeeded
     """
     # Determine remote flag
     use_remote = remote and not local_only
+
+    if paste_mode:
+        eft_text = get_multiline_input()
+        if eft_text:
+            print("EFT text input registered")
+            file_path = "temp_file.txt"
+            with open(file_path, "w") as f:
+                f.write(eft_text)
+
+        else:
+            console.print("[orange]warning: eft_text not recorded")
 
     if subcommand == "list-fits":
         list_fits_command(db_alias=target_alias, remote=use_remote)
@@ -1410,16 +1485,17 @@ def fit_update_command(
 
     elif subcommand == "assign-market":
         if fit_id is None:
-            console.print("[red]Error: --fit-id is required for assign-market[/red]")
+            console.print(
+                "[red]Error: --fit-id is required for assign-market[/red]")
             return False
         return assign_market_command(
             fit_id, market_flag, remote=use_remote, db_alias=target_alias
         )
 
     elif subcommand == "add":
-        if not file_path:
-            console.print("[red]Error: --file is required for add command[/red]")
-            return False
+        if not eft_text and not file_path:
+            eft_text = get_multiline_input()
+            file_path = None
 
         if interactive:
             return interactive_add_fit(
@@ -1434,7 +1510,8 @@ def fit_update_command(
                 console.print(
                     "[red]Error: --meta-file is required for non-interactive add[/red]"
                 )
-                console.print("[dim]Use --interactive for prompted input[/dim]")
+                console.print(
+                    "[dim]Use --interactive for prompted input[/dim]")
                 return False
 
             try:
@@ -1452,12 +1529,14 @@ def fit_update_command(
                 if dry_run:
                     console.print("[yellow]DRY RUN complete[/yellow]")
                     console.print(
-                        f"Ship: {result['ship_name']} ({result['ship_type_id']})"
+                        f"Ship: {result['ship_name']
+                                 } ({result['ship_type_id']})"
                     )
                     console.print(f"Items: {len(result['items'])}")
                 else:
                     console.print(
-                        f"[green]Successfully added fit {metadata.fit_id}[/green]"
+                        f"[green]Successfully added fit {
+                            metadata.fit_id}[/green]"
                     )
 
                 return True
@@ -1469,17 +1548,23 @@ def fit_update_command(
 
     elif subcommand == "update":
         if fit_id is None:
-            console.print("[red]Error: --fit-id is required for update command[/red]")
+            console.print(
+                "[red]Error: --fit-id is required for update command[/red]")
             return False
+
+        if not file_path and paste_mode:
+            eft_text = get_multiline_input()
+            file_path = eft_text_to_file(eft_text)
+
         if not file_path and not target:
-            console.print("[red]Error: --file is required for update command[/red]")
+            console.print(
+                "[red]Error: --file is required for update command[/red]")
             return False
         # For update, we need a metadata file
-        if not meta_file and not target:
-            console.print(
-                "[red]Error: --meta-file is required for update command[/red]"
+        if not meta_file:
+            meta_data_dict = collect_fit_metadata_interactive(
+                fit_id=fit_id, fit_file=file_path, remote=remote
             )
-            return False
 
         try:
             result = update_fit_workflow(
@@ -1490,14 +1575,17 @@ def fit_update_command(
                 clear_existing=True,
                 dry_run=dry_run,
                 target_alias=target_alias,
+                metadata_override=meta_data_dict,
             )
 
             if dry_run:
                 console.print("[yellow]DRY RUN complete[/yellow]")
-                console.print(f"Ship: {result['ship_name']} ({result['ship_type_id']})")
+                console.print(f"Ship: {result['ship_name']} ({
+                              result['ship_type_id']})")
                 console.print(f"Items: {len(result['items'])}")
             else:
-                console.print(f"[green]Successfully updated fit {fit_id}[/green]")
+                console.print(f"[green]Successfully updated fit {
+                              fit_id}[/green]")
 
             return True
 
@@ -1570,7 +1658,8 @@ def fit_update_command(
         console.print(
             "[dim]Available: add, update, assign-market, list-fits, list-doctrines, create-doctrine, doctrine-add-fit, doctrine-remove-fit, update-target[/dim]"
         )
-        console.print("[dim]Use --help for more information about a command.[/dim]")
+        console.print(
+            "[dim]Use --help for more information about a command.[/dim]")
         return False
 
 
@@ -1636,29 +1725,35 @@ def collect_fit_metadata_interactive(
         # Create a new doctrine
         print(f"\n--- Creating New Doctrine (ID: {next_id}) ---")
         doctrine_name = input(f"Doctrine name [{name}]: ").strip() or name
-        doctrine_desc = input(f"Doctrine description []: ").strip()
+        doctrine_desc = input("Doctrine description []: ").strip()
         create_doctrine(next_id, doctrine_name, doctrine_desc, remote=remote)
         print(f"Created doctrine {next_id}: {doctrine_name}")
         doctrine_ids = [next_id]
     else:
-        doctrine_ids = [int(d.strip()) for d in doctrine_input.split(",") if d.strip()]
+        doctrine_ids = [int(d.strip())
+                        for d in doctrine_input.split(",") if d.strip()]
         if not doctrine_ids:
             raise ValueError("At least one valid doctrine ID is required")
 
         # Check each doctrine exists, offer to create if not
         for doc_id in doctrine_ids:
             if not doctrine_exists(doc_id, remote=remote):
-                print(f"\nDoctrine {doc_id} does not exist in fittings_doctrine.")
+                print(f"\nDoctrine {
+                      doc_id} does not exist in fittings_doctrine.")
                 create_it = (
-                    input(f"Create doctrine {doc_id}? (y/n) [n]: ").strip().lower()
+                    input(f"Create doctrine {
+                          doc_id}? (y/n) [n]: ").strip().lower()
                 )
                 if create_it == "y":
-                    doctrine_name = input(f"Doctrine name [{name}]: ").strip() or name
-                    doctrine_desc = input(f"Doctrine description []: ").strip()
-                    create_doctrine(doc_id, doctrine_name, doctrine_desc, remote=remote)
+                    doctrine_name = input(
+                        f"Doctrine name [{name}]: ").strip() or name
+                    doctrine_desc = input("Doctrine description []: ").strip()
+                    create_doctrine(doc_id, doctrine_name,
+                                    doctrine_desc, remote=remote)
                     print(f"Created doctrine {doc_id}: {doctrine_name}")
                 else:
-                    print(f"Warning: Doctrine {doc_id} will be skipped during linking")
+                    print(f"Warning: Doctrine {
+                          doc_id} will be skipped during linking")
 
     doctrine_id = doctrine_ids if len(doctrine_ids) > 1 else doctrine_ids[0]
 
@@ -1666,7 +1761,7 @@ def collect_fit_metadata_interactive(
     target_input = input("Target quantity [100]: ").strip()
     target = int(target_input) if target_input else 100
 
-    print(f"\nMetadata collected:")
+    print("\nMetadata collected:")
     print(f"  fit_id: {fit_id}")
     print(f"  name: {name}")
     print(f"  description: {description}")

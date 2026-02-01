@@ -17,7 +17,6 @@ from mkts_backend.cli_tools.fit_check import fit_check_command
 from mkts_backend.cli_tools.fit_update import (
     fit_update_command,
     collect_fit_metadata_interactive,
-    parse_fit_from_std_in,
 )
 from mkts_backend.cli_tools.cli_help import (
     display_cli_help,
@@ -27,6 +26,7 @@ from mkts_backend.cli_tools.cli_help import (
 from mkts_backend.cli_tools.add_watchlist import add_watchlist
 from mkts_backend.cli_tools.args_parser import parse_args
 from mkts_backend.cli_tools.cli_db_commands import check_tables
+from mkts_backend.cli_tools.prompter import get_multiline_input
 
 __all__ = [
     "fit_check_command",
@@ -38,5 +38,5 @@ __all__ = [
     "display_update_fit_help",
     "display_update_target_help",
     "check_tables",
-    "parse_fit_from_std_in",
+    "get_multiline_input",
 ]

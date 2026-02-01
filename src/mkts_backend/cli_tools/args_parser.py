@@ -14,8 +14,8 @@ from mkts_backend.utils.parse_items import parse_items
 from mkts_backend.utils.parse_fits import parse_fit_metadata
 from mkts_backend.cli_tools.fit_update import (
     fit_update_command,
-    parse_fit,
-    parse_fit_from_std_in,
+    update_fit_workflow,
+    update_target_command,
 )
 from mkts_backend.cli_tools.fit_check import fit_check_command
 from mkts_backend.cli_tools.cli_db_commands import check_tables
@@ -74,7 +74,9 @@ def parse_args(args: list[str]) -> dict | None:
         for alias in available:
             ctx = MarketContext.from_settings(alias)
             print(
-                f"  {alias}: {ctx.name} (region={ctx.region_id}, db={ctx.database_alias})"
+                f"  {alias}: {ctx.name} (region={ctx.region_id}, db={
+                    ctx.database_alias
+                })"
             )
         exit()
 
@@ -224,7 +226,9 @@ def parse_args(args: list[str]) -> dict | None:
                 metadata = parse_fit_metadata(meta_file)
                 if fit_id is not None and metadata.fit_id != fit_id:
                     print(
-                        f"Warning: --fit-id={fit_id} overrides fit_id={metadata.fit_id} from metadata file"
+                        f"Warning: --fit-id={fit_id} overrides fit_id={
+                            metadata.fit_id
+                        } from metadata file"
                     )
                     # Create new metadata dict with overridden fit_id
                     metadata_dict = {
@@ -240,7 +244,8 @@ def parse_args(args: list[str]) -> dict | None:
                     metadata_dict = None  # Use metadata object directly
             else:
                 # Interactive mode - collect metadata from user
-                metadata_dict = collect_fit_metadata_interactive(fit_id, fit_file)
+                metadata_dict = collect_fit_metadata_interactive(
+                    fit_id, fit_file)
 
             # Map market aliases to database aliases
             market_to_db = {
@@ -252,7 +257,8 @@ def parse_args(args: list[str]) -> dict | None:
             for target_market in target_markets:
                 target_alias = market_to_db[target_market]
                 print(
-                    f"\n--- Processing for {target_market} market ({target_alias}) ---"
+                    f"\n--- Processing for {
+                        target_market} market ({target_alias}) ---"
                 )
 
                 if metadata_dict:
@@ -277,16 +283,20 @@ def parse_args(args: list[str]) -> dict | None:
 
                 if dry_run:
                     print("Dry run complete")
-                    print(f"Ship: {result['ship_name']} ({result['ship_type_id']})")
+                    print(f"Ship: {result['ship_name']
+                                   } ({result['ship_type_id']})")
                     print(f"Items parsed: {len(result['items'])}")
                     if result["missing_items"]:
-                        print(f"Missing type_ids for: {result['missing_items']}")
+                        print(f"Missing type_ids for: {
+                              result['missing_items']}")
                 else:
                     print(
-                        f"Fit update completed for fit_id {metadata_obj.fit_id} -> {target_alias} (remote={remote})"
+                        f"Fit update completed for fit_id {metadata_obj.fit_id} -> {
+                            target_alias
+                        } (remote={remote})"
                     )
                     if update_targets:
-                        print(f"  ship_targets updated")
+                        print("  ship_targets updated")
 
             exit(0)
         except Exception as e:
@@ -326,7 +336,7 @@ def parse_args(args: list[str]) -> dict | None:
             elif arg.startswith("--output="):
                 output_format = arg.split("=", 1)[1].lower()
                 if output_format not in ("csv", "multibuy", "markdown"):
-                    print(f"Error: --output must be one of: csv, multibuy, markdown")
+                    print("Error: --output must be one of: csv, multibuy, markdown")
                     return None
 
         if not file_path and not paste_mode and fit_id is None:
@@ -377,7 +387,7 @@ def parse_args(args: list[str]) -> dict | None:
         # Determine subcommand (first positional arg after fit-update)
         fit_update_idx = args.index("fit-update")
         subcommand = None
-        for arg in args[fit_update_idx + 1 :]:
+        for arg in args[fit_update_idx + 1:]:
             if not arg.startswith("--"):
                 subcommand = arg
                 break
@@ -399,6 +409,12 @@ def parse_args(args: list[str]) -> dict | None:
         dry_run = "--dry-run" in args
         skip_targets = "--skip-targets" in args
         paste_mode = "--paste" in args
+
+        if paste_mode:
+            file_path = None
+            print("***PASTE MODE***")
+        else:
+            paste_mode = False
 
         fit_ids_str = None
         for arg in args:
@@ -422,16 +438,14 @@ def parse_args(args: list[str]) -> dict | None:
             if "," in fit_ids_str:
                 # Multiple fit IDs for doctrine-add-fit
                 fit_id = None  # Will use fit_ids list instead
-                fit_ids = [int(f.strip()) for f in fit_ids_str.split(",") if f.strip()]
+                fit_ids = [int(f.strip())
+                           for f in fit_ids_str.split(",") if f.strip()]
             else:
                 fit_id = int(fit_ids_str)
                 fit_ids = None
         else:
             fit_id = None
             fit_ids = None
-
-        if paste_mode:
-            eft_text = parse_fit_from_std_in()
 
         success = fit_update_command(
             subcommand=subcommand,
@@ -447,7 +461,7 @@ def parse_args(args: list[str]) -> dict | None:
             target_alias=db_alias,
             target=target_qty,
             skip_targets=skip_targets,
-            eft_fit=eft_text,
+            paste_mode=paste_mode,
         )
         exit(0 if success else 1)
 
@@ -455,7 +469,8 @@ def parse_args(args: list[str]) -> dict | None:
         # Use market_alias parsed from --market/--deployment/--primary flags
         market_ctx = MarketContext.from_settings(market_alias)
         db = DatabaseConfig(market_context=market_ctx)
-        print(f"Syncing database for market: {market_ctx.name} ({market_ctx.alias})")
+        print(f"Syncing database for market: {
+              market_ctx.name} ({market_ctx.alias})")
         db.sync()
         logger.info(f"Database synced: {db.alias}")
         print(f"Database synced: {db.alias} ({db.path})")
@@ -466,13 +481,15 @@ def parse_args(args: list[str]) -> dict | None:
         # Use market_alias parsed from --market/--deployment/--primary flags
         market_ctx = MarketContext.from_settings(market_alias)
         db = DatabaseConfig(market_context=market_ctx)
-        print(f"Validating database for market: {market_ctx.name} ({market_ctx.alias})")
+        print(f"Validating database for market: {
+              market_ctx.name} ({market_ctx.alias})")
         validation_test = db.validate_sync()
         if validation_test:
             print(f"Database validated: {db.alias}")
         else:
             print(
-                f"Database {db.alias} is out of date. Run 'sync' to sync the database."
+                f"Database {
+                    db.alias} is out of date. Run 'sync' to sync the database."
             )
         exit()
 
@@ -481,16 +498,20 @@ def parse_args(args: list[str]) -> dict | None:
         if result["is_valid"]:
             print(result["message"])
             print(
-                f"Required credentials present: {', '.join(result['present_required'])}"
+                f"Required credentials present: {
+                    ', '.join(result['present_required'])}"
             )
             if result["present_optional"]:
                 print(
-                    f"Optional credentials present: {', '.join(result['present_optional'])}"
+                    f"Optional credentials present: {
+                        ', '.join(result['present_optional'])
+                    }"
                 )
         else:
             print(result["message"])
             if result["missing_required"]:
-                print(f"Missing required: {', '.join(result['missing_required'])}")
+                print(f"Missing required: {
+                      ', '.join(result['missing_required'])}")
         exit(0 if result["is_valid"] else 1)
 
     # Handle add_watchlist command

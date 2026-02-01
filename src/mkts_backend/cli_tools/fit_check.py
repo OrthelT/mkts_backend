@@ -16,7 +16,11 @@ from sqlalchemy import text
 from mkts_backend.config.logging_config import configure_logging
 from mkts_backend.config import DatabaseConfig
 from mkts_backend.config.market_context import MarketContext
-from mkts_backend.utils.eft_parser import parse_eft_file, parse_eft_string, FitParseResult
+from mkts_backend.utils.eft_parser import (
+    parse_eft_file,
+    parse_eft_string,
+    FitParseResult,
+)
 from mkts_backend.utils.jita import fetch_jita_prices, get_overpriced_items
 from mkts_backend.cli_tools.rich_display import (
     console,
@@ -36,6 +40,7 @@ logger = configure_logging(__name__)
 @dataclass
 class DoctrineFitInfo:
     """Metadata for a fit from the doctrine_fits table."""
+
     fit_id: int
     fit_name: str
     ship_type_id: int
@@ -49,6 +54,7 @@ class DoctrineFitInfo:
 @dataclass
 class FitCheckResult:
     """Result of a fit check operation with market data and export utilities."""
+
     fit_name: str
     ship_name: str
     ship_type_id: Optional[int]
@@ -75,7 +81,9 @@ class FitCheckResult:
         return [
             {
                 "type_name": item["type_name"],
-                "qty_needed": max(0, int((self.target - item["fits"]) * item["fit_qty"])),
+                "qty_needed": max(
+                    0, int((self.target - item["fits"]) * item["fit_qty"])
+                ),
                 "fits": item["fits"],
             }
             for item in self.market_data
@@ -93,7 +101,15 @@ class FitCheckResult:
         with open(path, "w", newline="") as f:
             writer = csv.writer(f)
             # Header
-            headers = ["type_id", "type_name", "market_stock", "fit_qty", "fits", "price", "fit_cost"]
+            headers = [
+                "type_id",
+                "type_name",
+                "market_stock",
+                "fit_qty",
+                "fits",
+                "price",
+                "fit_cost",
+            ]
             if self.target is not None:
                 headers.append("qty_needed")
             writer.writerow(headers)
@@ -109,7 +125,12 @@ class FitCheckResult:
                     f"{item.get('fit_price', 0):.2f}",
                 ]
                 if self.target is not None:
-                    qty_needed = max(0, int((self.target - item["fits"]) * item["fit_qty"])) if item["fits"] < self.target else 0
+                    qty_needed = (
+                        max(0, int(
+                            (self.target - item["fits"]) * item["fit_qty"]))
+                        if item["fits"] < self.target
+                        else 0
+                    )
                     row.append(qty_needed)
                 writer.writerow(row)
         return str(path.absolute())
@@ -130,13 +151,15 @@ class FitCheckResult:
             return ""
         lines = [
             f"# {self.fit_name}",
-            f"Target (**{self.target:,}**); Fits (**{int(self.min_fits)}**); Hulls (**{self.hulls}**)",
+            f"Target (**{self.target:,}**); Fits (**{int(self.min_fits)
+                                                     }**); Hulls (**{self.hulls}**)",
             "",
         ]
         for item in self.missing_for_target:
             if item["qty_needed"] > 0:
                 lines.append(
-                    f"- **{item['type_name']}**: {item['qty_needed']:,} needed "
+                    f"- **{item['type_name']
+                           }**: {item['qty_needed']:,} needed "
                     f"(current: {item['fits']:.1f} fits)"
                 )
         return "\n".join(lines)
@@ -179,7 +202,8 @@ def _get_target_for_fit(
                 WHERE ship_type_id = :ship_type_id
                 LIMIT 1
             """)
-            result = conn.execute(query, {"ship_type_id": ship_type_id}).fetchone()
+            result = conn.execute(
+                query, {"ship_type_id": ship_type_id}).fetchone()
             if result:
                 return result[0]
 
@@ -257,23 +281,26 @@ def _get_doctrines_market_data(
 
         for row in rows:
             is_ship = row.category_id == 6 if row.category_id else False
-            fit_price = (row.price * row.fit_qty) if row.price and row.fit_qty else 0
+            fit_price = (
+                row.price * row.fit_qty) if row.price and row.fit_qty else 0
 
-            market_data.append({
-                "type_id": row.type_id,
-                "type_name": row.type_name or "Unknown",
-                "market_stock": row.total_stock or 0,
-                "fit_qty": row.fit_qty or 1,
-                "fits": row.fits_on_mkt or 0,
-                "price": row.price,
-                "fit_price": fit_price,
-                "avg_price": None,  # Not stored in doctrines table
-                "is_fallback": False,  # Pre-calculated data
-                "is_ship": is_ship,
-                "category_id": row.category_id,
-                "jita_price": None,  # Will be populated later
-                "jita_fit_price": 0,
-            })
+            market_data.append(
+                {
+                    "type_id": row.type_id,
+                    "type_name": row.type_name or "Unknown",
+                    "market_stock": row.total_stock or 0,
+                    "fit_qty": row.fit_qty or 1,
+                    "fits": row.fits_on_mkt or 0,
+                    "price": row.price,
+                    "fit_price": fit_price,
+                    "avg_price": None,  # Not stored in doctrines table
+                    "is_fallback": False,  # Pre-calculated data
+                    "is_ship": is_ship,
+                    "category_id": row.category_id,
+                    "jita_price": None,  # Will be populated later
+                    "jita_fit_price": 0,
+                }
+            )
 
     return market_data
 
@@ -311,7 +338,11 @@ def _get_marketstats_data(
     return results
 
 
-def _is_ship(type_id: int, category_id: Optional[int] = None, market_ctx: Optional[MarketContext] = None) -> bool:
+def _is_ship(
+    type_id: int,
+    category_id: Optional[int] = None,
+    market_ctx: Optional[MarketContext] = None,
+) -> bool:
     """
     Determine if a type_id is a ship.
 
@@ -336,7 +367,8 @@ def _is_ship(type_id: int, category_id: Optional[int] = None, market_ctx: Option
     db_alias = market_ctx.database_alias if market_ctx else "wcmkt"
     db = DatabaseConfig(db_alias)
     with db.engine.connect() as conn:
-        query = text("SELECT 1 FROM ship_targets WHERE ship_id = :type_id LIMIT 1")
+        query = text(
+            "SELECT 1 FROM ship_targets WHERE ship_id = :type_id LIMIT 1")
         result = conn.execute(query, {"type_id": type_id}).fetchone()
         if result:
             return True
@@ -410,7 +442,9 @@ def _get_fallback_data(
                 "price": percentile_5_price,
                 "min_price": prices[0] if prices else None,
                 "total_volume_remain": total_volume,
-                "avg_price": sum(p * v for p, v in zip(prices, volumes)) / total_volume if total_volume else None,
+                "avg_price": sum(p * v for p, v in zip(prices, volumes)) / total_volume
+                if total_volume
+                else None,
                 "is_fallback": True,
             }
 
@@ -501,7 +535,8 @@ def get_fit_market_status(
                 is_fallback = True
 
             # Get type name from SDE if not in item_names
-            type_name = item_names.get(type_id) or _get_type_name_from_sde(type_id)
+            type_name = item_names.get(
+                type_id) or _get_type_name_from_sde(type_id)
 
         # Calculate fits available
         fits = (market_stock / fit_qty) if fit_qty > 0 else 0
@@ -516,27 +551,31 @@ def get_fit_market_status(
         # Determine if this is a ship
         is_ship = _is_ship(type_id, category_id, market_ctx)
 
-        market_data.append({
-            "type_id": type_id,
-            "type_name": type_name,
-            "market_stock": market_stock,
-            "fit_qty": fit_qty,
-            "fits": fits,
-            "price": price,
-            "fit_price": fit_price,
-            "avg_price": avg_price,
-            "is_fallback": is_fallback,
-            "is_ship": is_ship,
-            "jita_price": jita_price,
-            "jita_fit_price": jita_fit_price,
-        })
+        market_data.append(
+            {
+                "type_id": type_id,
+                "type_name": type_name,
+                "market_stock": market_stock,
+                "fit_qty": fit_qty,
+                "fits": fits,
+                "price": price,
+                "fit_price": fit_price,
+                "avg_price": avg_price,
+                "is_fallback": is_fallback,
+                "is_ship": is_ship,
+                "jita_price": jita_price,
+                "jita_fit_price": jita_fit_price,
+            }
+        )
 
     # Sort: ships first, then by fits available (lowest first to highlight bottlenecks)
-    market_data.sort(key=lambda x: (not x["is_ship"], x["fits"], x["type_name"]))
+    market_data.sort(key=lambda x: (
+        not x["is_ship"], x["fits"], x["type_name"]))
 
     # Calculate totals
     total_fit_cost = sum(item.get("fit_price", 0) for item in market_data)
-    total_jita_fit_cost = sum(item.get("jita_fit_price", 0) for item in market_data)
+    total_jita_fit_cost = sum(item.get("jita_fit_price", 0)
+                              for item in market_data)
     min_fits = min((item["fits"] for item in market_data), default=0)
 
     return FitCheckResult(
@@ -595,14 +634,17 @@ def get_fit_market_status_by_id(
         type_id = item["type_id"]
         jita_price = jita_prices.get(type_id)
         item["jita_price"] = jita_price
-        item["jita_fit_price"] = (jita_price * item["fit_qty"]) if jita_price else 0
+        item["jita_fit_price"] = (
+            jita_price * item["fit_qty"]) if jita_price else 0
 
     # Sort: ships first, then by fits available (lowest first to highlight bottlenecks)
-    market_data.sort(key=lambda x: (not x["is_ship"], x["fits"], x["type_name"]))
+    market_data.sort(key=lambda x: (
+        not x["is_ship"], x["fits"], x["type_name"]))
 
     # Calculate totals
     total_fit_cost = sum(item.get("fit_price", 0) for item in market_data)
-    total_jita_fit_cost = sum(item.get("jita_fit_price", 0) for item in market_data)
+    total_jita_fit_cost = sum(item.get("jita_fit_price", 0)
+                              for item in market_data)
     min_fits = min((item["fits"] for item in market_data), default=0)
 
     return FitCheckResult(
@@ -682,9 +724,12 @@ def display_fit_status_by_id(
     console.print(table)
 
     # Print summary
-    available_count = sum(1 for item in result.market_data if item["fits"] >= 1)
+    available_count = sum(
+        1 for item in result.market_data if item["fits"] >= 1)
     total_count = len(result.market_data)
-    missing_items = [item["type_name"] for item in result.market_data if item["fits"] < 1]
+    missing_items = [
+        item["type_name"] for item in result.market_data if item["fits"] < 1
+    ]
 
     print_fit_summary(
         available_count=available_count,
@@ -707,11 +752,15 @@ def display_fit_status_by_id(
     # Handle output format exports
     if output_format:
         if result.target is None:
-            console.print("\n[yellow]No target set - export requires --target[/yellow]")
+            console.print(
+                "\n[yellow]No target set - export requires --target[/yellow]")
         elif not result.missing_for_target:
-            console.print("\n[yellow]No items below target - nothing to export[/yellow]")
+            console.print(
+                "\n[yellow]No items below target - nothing to export[/yellow]"
+            )
         elif output_format == "csv":
-            csv_path = result.to_csv(f"{result.fit_name.replace(' ', '_')}_missing.csv")
+            csv_path = result.to_csv(
+                f"{result.fit_name.replace(' ', '_')}_missing.csv")
             console.print(f"\n[green]CSV exported to:[/green] {csv_path}")
         elif output_format == "multibuy":
             print_multibuy_export(result.to_multibuy())
@@ -781,9 +830,12 @@ def display_fit_status(
     console.print(table)
 
     # Print summary
-    available_count = sum(1 for item in result.market_data if item["fits"] >= 1)
+    available_count = sum(
+        1 for item in result.market_data if item["fits"] >= 1)
     total_count = len(result.market_data)
-    missing_items = [item["type_name"] for item in result.market_data if item["fits"] < 1]
+    missing_items = [
+        item["type_name"] for item in result.market_data if item["fits"] < 1
+    ]
 
     print_fit_summary(
         available_count=available_count,
@@ -806,11 +858,15 @@ def display_fit_status(
     # Handle output format exports
     if output_format:
         if result.target is None:
-            console.print("\n[yellow]No target set - export requires --target[/yellow]")
+            console.print(
+                "\n[yellow]No target set - export requires --target[/yellow]")
         elif not result.missing_for_target:
-            console.print("\n[yellow]No items below target - nothing to export[/yellow]")
+            console.print(
+                "\n[yellow]No items below target - nothing to export[/yellow]"
+            )
         elif output_format == "csv":
-            csv_path = result.to_csv(f"{result.fit_name.replace(' ', '_')}_missing.csv")
+            csv_path = result.to_csv(
+                f"{result.fit_name.replace(' ', '_')}_missing.csv")
             console.print(f"\n[green]CSV exported to:[/green] {csv_path}")
         elif output_format == "multibuy":
             print_multibuy_export(result.to_multibuy())
@@ -896,7 +952,8 @@ def fit_check_command(
         market_ctx = MarketContext.from_settings(market_alias)
     except ValueError as e:
         console.print(f"[red]Error: {e}[/red]")
-        console.print(f"Available markets: {', '.join(MarketContext.list_available())}")
+        console.print(f"Available markets: {
+                      ', '.join(MarketContext.list_available())}")
         return False
 
     # Handle fit_id mode - use pre-calculated data from doctrines table
@@ -918,7 +975,9 @@ def fit_check_command(
         elif eft_text:
             parse_result = parse_eft_string(eft_text)
         else:
-            console.print("[red]Error: Either --file, --paste, or --fit_id must be specified[/red]")
+            console.print(
+                "[red]Error: Either --file, --paste, or --fit_id must be specified[/red]"
+            )
             return False
     except FileNotFoundError:
         console.print(f"[red]Error: File not found: {file_path}[/red]")
@@ -930,11 +989,15 @@ def fit_check_command(
 
     # Check for missing types
     if parse_result.has_missing_types:
-        console.print("[yellow]Warning: Some items could not be resolved:[/yellow]")
+        console.print(
+            "[yellow]Warning: Some items could not be resolved:[/yellow]")
         for item in parse_result.missing_types[:5]:
             console.print(f"  • {item}", style="yellow")
         if len(parse_result.missing_types) > 5:
-            console.print(f"  ... and {len(parse_result.missing_types) - 5} more", style="dim yellow")
+            console.print(
+                f"  ... and {len(parse_result.missing_types) - 5} more",
+                style="dim yellow",
+            )
         console.print()
 
     # Display status
@@ -999,7 +1062,9 @@ def main():
         elif arg.startswith("--output="):
             output_format = arg.split("=", 1)[1].lower()
             if output_format not in ("csv", "multibuy", "markdown"):
-                console.print("[red]Error: --output must be one of: csv, multibuy, markdown[/red]")
+                console.print(
+                    "[red]Error: --output must be one of: csv, multibuy, markdown[/red]"
+                )
                 sys.exit(1)
         elif arg == "--no-jita":
             show_jita = False
@@ -1010,26 +1075,18 @@ def main():
 
     # Validate input
     if not file_path and fit_id is None and not paste_mode:
-        console.print("[red]Error: --fit=<id>, --file=<path>, or --paste is required[/red]")
+        console.print(
+            "[red]Error: --fit=<id>, --file=<path>, or --paste is required[/red]"
+        )
         console.print("Use 'fitcheck --help' for usage information.")
         sys.exit(1)
 
     # Handle paste mode
     eft_text = None
     if paste_mode:
-        print("Paste your EFT fit below (Ctrl+D or blank line to finish):")
-        lines = []
-        try:
-            for line in sys.stdin:
-                if line.strip() == "":
-                    if lines and lines[-1] == "":
-                        break
-                    lines.append("")
-                else:
-                    lines.append(line.rstrip())
-        except EOFError:
-            pass
-        eft_text = "\n".join(lines)
+        from mkts_backend.cli_tools.fit_update import get_multiline_input
+
+        eft_text = get_multiline_input()
 
     # Run the command
     success = fit_check_command(

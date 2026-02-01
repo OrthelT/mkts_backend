@@ -3,9 +3,10 @@ CLI subpackage for mkts-backend doctrine tools.
 
 This package contains CLI commands for managing EVE Online fits and doctrines:
 - fit-check: Display market availability for EFT fits
-- fit-update: Interactive tool for managing fits and doctrines
+- fit-update: Interactive tool for managing fits and doctrines (file or paste input)
 - add_watchlist: Add items to watchlist by type IDs
 - args_parser: Parse command line arguments
+- prompter: Multiline input prompter for pasting EFT fit text
 - collect_fit_metadata_interactive: Collect fit metadata interactively
 - display_cli_help: Display general CLI help
 - display_update_fit_help: Display update fit help

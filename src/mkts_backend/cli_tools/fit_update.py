@@ -2,14 +2,18 @@
 Fit Update CLI commands.
 
 Interactive tools for managing fits and doctrines:
-- add: Add a new fit with optional interactive metadata prompts
-- update: Update an existing fit
+- add: Add a new fit from an EFT file or pasted text
+- update: Update an existing fit's items from file or pasted text
 - assign-market: Assign market flags to fits
 - list-fits: List all fits
 - list-doctrines: List all doctrines
 - create-doctrine: Create a new doctrine
 - doctrine-add-fit: Add existing fit(s) to a doctrine
 - doctrine-remove-fit: Remove fit(s) from a doctrine
+- update-target: Update the target quantity for a fit
+
+Supports --paste mode for pasting EFT text directly via multiline prompt
+instead of requiring a file path.
 """
 
 from typing import List, Optional
@@ -73,6 +77,7 @@ def get_available_doctrines(remote: bool = False) -> List[dict]:
 
 
 def eft_text_to_file(eft_text: str) -> str:
+    """Write EFT text to a temporary file and return the file path."""
     file_path = "temp_file.txt"
     with open(file_path, "w") as f:
         f.write(eft_text)
@@ -196,7 +201,7 @@ def interactive_add_fit(
     Interactively add a new fit with prompts for metadata.
 
     Args:
-        fit_file: Path to EFT fit file
+        fit_file: Path to EFT fit file (optional; None when using paste mode)
         remote: Use remote database
         dry_run: Preview without committing
         target_alias: Target database alias

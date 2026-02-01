@@ -118,7 +118,7 @@ cat fit.txt | uv run fit-check --paste
 
 ### update-fit - Update Doctrine Fits
 
-Process EFT fit files and update doctrine tables. Supports interactive metadata input and multi-market targeting.
+Process EFT fit files (or pasted EFT text) and update doctrine tables. Supports interactive metadata input, paste mode, and multi-market targeting.
 
 ```bash
 # Update fit with metadata file
@@ -135,17 +135,22 @@ uv run mkts-backend update-fit --fit-file=fits/hfi.txt --meta-file=meta.json --b
 
 # Preview changes (dry run)
 uv run mkts-backend update-fit --fit-file=fits/hfi.txt --fit-id=313 --interactive --dry-run
+
+# Paste EFT text directly (opens multiline prompt)
+uv run mkts-backend fit-update add --paste --interactive
+uv run mkts-backend fit-update update --fit-id=313 --paste
 ```
 
 **Available Subcommands:**
-- `add` - Add a NEW fit from an EFT file
-- `update` - Update an existing fit's items
+- `add` - Add a NEW fit from an EFT file or pasted text
+- `update` - Update an existing fit's items from file or pasted text
 - `assign-market` - Change market assignment
 - `list-fits` - List all fits in tracking system
 - `list-doctrines` - List all available doctrines
 - `create-doctrine` - Create a new doctrine
 - `doctrine-add-fit` - Add existing fit(s) to a doctrine
 - `doctrine-remove-fit` - Remove fit(s) from a doctrine
+- `update-target` - Update the target quantity for a fit
 
 ```bash
 # Add existing fits to a doctrine (supports multiple)
@@ -153,12 +158,15 @@ uv run mkts-backend update-fit doctrine-add-fit --doctrine-id=42 --fit-ids=313,3
 
 # Remove fits from a doctrine (reverse of doctrine-add-fit)
 uv run mkts-backend update-fit doctrine-remove-fit --doctrine-id=42 --fit-id=313
+
+# Update target quantity for a fit
+uv run mkts-backend update-target --fit-id=313 --target=300
 ```
 
 **Input Modes:**
 - `--file=<path>`: Parse an EFT-formatted fit file and query live market data
 - `--fit-id=<id>`: Look up fit by ID from doctrine_fits table and display pre-calculated market data from doctrines table
-- `--paste`: Read EFT fit from stdin
+- `--paste`: Open a multiline prompt to paste EFT fit text directly (uses prompt_toolkit)
 
 **Features:**
 - Displays complete fit breakdown with market availability

@@ -144,6 +144,7 @@ Configuration is now managed through `settings.toml` with market-specific config
 - **Custom dbtools:** External dependency package `mydbtools` for database utilities
 - **Turso/libsql:** For remote database synchronization (optional in dev, required in production)
 - **Google Sheets API:** For automated market data reporting (optional)
+- **prompt_toolkit:** For multiline input prompts (paste mode in fit-update)
 
 ## Data Processing Flow
 
@@ -247,7 +248,7 @@ uv run fit-check --file=fit.txt --market=deployment --target=100 --output=csv
 
 ### update-fit Command
 
-The update-fit command processes EFT fit files and updates doctrine tables across multiple databases. It supports both file-based and interactive metadata input, with flexible market targeting.
+The update-fit command processes EFT fit files (or pasted EFT text) and updates doctrine tables across multiple databases. It supports file-based input, paste mode (multiline prompt), and interactive metadata input, with flexible market targeting.
 
 **Basic Usage:**
 ```bash
@@ -268,12 +269,17 @@ uv run mkts-backend update-fit --fit-file=fits/hfi.txt --fit-id=313 --interactiv
 
 # Preview changes without saving (dry run)
 uv run mkts-backend update-fit --fit-file=fits/hfi.txt --fit-id=313 --interactive --dry-run
+
+# Paste EFT text directly (opens multiline prompt instead of reading a file)
+uv run mkts-backend fit-update add --paste --interactive
+uv run mkts-backend fit-update update --fit-id=313 --paste
 ```
 
 **Command Options:**
-- `--fit-file=<path>`: Path to EFT fit file (required)
+- `--fit-file=<path>`: Path to EFT fit file (optional when using --paste)
 - `--fit-id=<id>`: Fit ID to update (required if no --meta-file)
 - `--meta-file=<path>`: Path to metadata JSON file (optional with --fit-id)
+- `--paste`: Open a multiline prompt to paste EFT fit text directly (uses prompt_toolkit)
 - `--interactive`: Prompt for metadata interactively (when no --meta-file)
 - `--market=<alias>`: Target market (primary, deployment, both)
 - `--primary`: Shorthand for --market=primary
@@ -313,7 +319,7 @@ uv run mkts-backend update-fit --fit-file=fits/hfi.txt --fit-id=313 --interactiv
 **Input Modes:**
 - `--file=<path>`: Parse an EFT-formatted fit file and query live market data
 - `--fit-id=<id>`: Look up fit by ID from `doctrine_fits` table and display pre-calculated market data from `doctrines` table
-- `--paste`: Read EFT fit from stdin
+- `--paste`: Open a multiline prompt (via prompt_toolkit) to paste EFT fit text directly; for fit-check, reads from stdin
 
 **Display Features:**
 - **Header Section**: Shows fit name, ship name, ship type ID, total fit cost, fits available (bottleneck), and target quantity
@@ -377,14 +383,15 @@ uv run mkts-backend update-fit --fit-file=fits/hfi.txt --fit-id=313 --interactiv
 The `update-fit` command supports multiple subcommands for managing fits and doctrines:
 
 #### Available Subcommands:
-- `add` - Add a NEW fit from an EFT file and assign to doctrine(s)
-- `update` - Update an existing fit's items from an EFT file
+- `add` - Add a NEW fit from an EFT file or pasted text and assign to doctrine(s)
+- `update` - Update an existing fit's items from an EFT file or pasted text
 - `assign-market` - Change the market assignment for an existing fit
 - `list-fits` - List all fits in the doctrine tracking system
 - `list-doctrines` - List all available doctrines
 - `create-doctrine` - Create a new doctrine (group of fits)
 - `doctrine-add-fit` - Add existing fit(s) to a doctrine (supports multiple)
 - `doctrine-remove-fit` - Remove fit(s) from a doctrine (supports multiple)
+- `update-target` - Update the target quantity for a fit
 
 #### doctrine-add-fit Subcommand
 
@@ -448,6 +455,23 @@ uv run mkts-backend update-fit doctrine-remove-fit --doctrine-id=42 --fit-id=313
 **Databases Affected:**
 - `wcfitting.db`: Removes link in `fittings_doctrine_fittings`
 - `wcmktprod.db` or `wcmktnorth2.db` (based on market): Removes entries from `doctrine_fits`, `doctrine_map`, and `doctrines`
+
+#### update-target Subcommand
+
+Update the target quantity for an existing fit.
+
+```bash
+# Update target for a fit on primary market
+uv run mkts-backend update-target --fit-id=313 --target=300
+
+# Update target for deployment market
+uv run mkts-backend update-target --fit-id=313 --target=300 --market=deployment
+```
+
+**Features:**
+- Updates target in both `ship_targets` and `doctrine_fits` tables
+- Shows the previous and new target values
+- Validates the fit exists in the specified database before updating
 
 ---
 
@@ -1009,6 +1033,8 @@ Side Channel:
 - **data_processing.py**: Statistics calculation
 - **gsheets_config.py**: Google Sheets integration
 - **config.py**: Database connection management
+- **cli_tools/prompter.py**: Multiline input prompter for paste mode (uses prompt_toolkit)
+- **cli_tools/fit_update.py**: Fit and doctrine management CLI commands
 
 ## Version Compatibility
 
@@ -1017,6 +1043,7 @@ Side Channel:
 - libsql: Latest
 - gspread: 5.x+
 - pandas: 2.x
+- prompt_toolkit: Latest
 - Streamlit: 1.x+
 
 ## License and Disclaimer

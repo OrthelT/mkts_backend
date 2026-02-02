@@ -383,3 +383,123 @@ def split_suffix_format(item: str, color: str)->str:
     suffix = split_item[1]
     formatted_item = f"[{color}]{value}[/{color}] {suffix}"
     return formatted_item
+
+
+def _fits_style(fits: float, target: Optional[int] = None) -> str:
+    """
+    Return a Rich style string based on fits available.
+
+    Args:
+        fits: Number of fits available
+        target: Optional target quantity for comparison
+
+    Returns:
+        Rich style string: "green", "yellow", or "red"
+    """
+    if target is not None and fits >= target:
+        return "green"
+    if fits >= 10:
+        return "green"
+    elif fits >= 1:
+        return "yellow"
+    else:
+        return "red"
+
+
+def create_module_usage_table(
+    type_name: str,
+    type_id: int,
+    market_data: List[Dict],
+    show_both: bool = False,
+) -> Table:
+    """
+    Create a Rich table showing which fits use a given module and their market status.
+
+    Args:
+        type_name: Name of the module/item
+        type_id: Type ID of the module/item
+        market_data: List of dicts with fit usage data. Each dict contains:
+            - fit_id, fit_name, ship_name, doctrine_name, fit_qty, target
+            - For single market: total_stock, fits_on_mkt, qty_needed, price
+            - For dual market: p_stock, p_fits, p_need, p_price, d_stock, d_fits, d_need, d_price
+        show_both: If True, show columns for both primary and deployment markets
+
+    Returns:
+        A Rich Table object ready for display
+    """
+    table = Table(
+        title=f"[bold cyan]{type_name}[/bold cyan] (ID: {type_id})",
+        box=box.ROUNDED,
+        show_header=True,
+        header_style="bold magenta",
+        title_justify="left",
+    )
+
+    table.add_column("Fit ID", style="dim", justify="right", width=8)
+    table.add_column("Fit Name", style="white", min_width=25)
+    table.add_column("Ship", style="cyan", min_width=18)
+    table.add_column("Doctrine", style="green", min_width=15)
+    table.add_column("Fit Qty", justify="right", width=8)
+    table.add_column("Target", justify="right", width=8)
+
+    if show_both:
+        table.add_column("Stock(P)", justify="right", width=10)
+        table.add_column("Fits(P)", justify="right", width=9)
+        table.add_column("Need(P)", justify="right", width=9)
+        table.add_column("Stock(D)", justify="right", width=10)
+        table.add_column("Fits(D)", justify="right", width=9)
+        table.add_column("Need(D)", justify="right", width=9)
+    else:
+        table.add_column("Stock", justify="right", width=10)
+        table.add_column("Fits", justify="right", width=9)
+        table.add_column("Qty Needed", justify="right", width=10)
+
+    table.add_column("Price", justify="right", width=14)
+
+    for row in market_data:
+        fit_id = row.get("fit_id", 0)
+        fit_name = row.get("fit_name", "Unknown")
+        ship_name = row.get("ship_name", "Unknown")
+        doctrine_name = row.get("doctrine_name", "")
+        fit_qty = row.get("fit_qty", 1)
+        target = row.get("target", 0)
+        price = row.get("price")
+
+        row_data = [
+            str(fit_id),
+            fit_name,
+            ship_name,
+            doctrine_name,
+            str(fit_qty),
+            str(target),
+        ]
+
+        if show_both:
+            for prefix in ("p_", "d_"):
+                stock = row.get(f"{prefix}stock", 0)
+                fits = row.get(f"{prefix}fits", 0)
+                need = row.get(f"{prefix}need", 0)
+
+                style = _fits_style(fits, target)
+                row_data.append(format_quantity(stock))
+                row_data.append(f"[{style}]{format_fits(fits)}[/{style}]")
+                need_str = format_quantity(need) if need > 0 else "-"
+                need_style = "red" if need > 0 else "dim"
+                row_data.append(f"[{need_style}]{need_str}[/{need_style}]")
+        else:
+            stock = row.get("total_stock", 0)
+            fits = row.get("fits_on_mkt", 0)
+            need = row.get("qty_needed", 0)
+
+            style = _fits_style(fits, target)
+            row_data.append(format_quantity(stock))
+            row_data.append(f"[{style}]{format_fits(fits)}[/{style}]")
+            need_str = format_quantity(need) if need > 0 else "-"
+            need_style = "red" if need > 0 else "dim"
+            row_data.append(f"[{need_style}]{need_str}[/{need_style}]")
+
+        row_data.append(format_isk(price, include_suffix=False))
+
+        table.add_row(*row_data)
+
+    return table

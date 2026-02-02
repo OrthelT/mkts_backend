@@ -25,6 +25,7 @@ from mkts_backend.utils.jita import fetch_jita_prices, get_overpriced_items
 from mkts_backend.cli_tools.rich_display import (
     console,
     create_fit_status_table,
+    create_module_usage_table,
     print_fit_header,
     print_fit_summary,
     print_legend,
@@ -876,6 +877,309 @@ def display_fit_status(
     return result
 
 
+def _resolve_module_identity(
+    type_id: Optional[int] = None,
+    type_name: Optional[str] = None,
+) -> tuple[int, str]:
+    """
+    Resolve a module to both type_id and type_name via SDE.
+
+    Args:
+        type_id: Type ID to look up (mutually exclusive with type_name)
+        type_name: Type name to search for (mutually exclusive with type_id)
+
+    Returns:
+        Tuple of (type_id, type_name)
+
+    Raises:
+        ValueError: If the module cannot be resolved or is ambiguous
+    """
+    sde_db = DatabaseConfig("sde")
+
+    if type_id is not None:
+        with sde_db.engine.connect() as conn:
+            query = text(
+                "SELECT typeName FROM inv_info WHERE typeID = :type_id")
+            result = conn.execute(query, {"type_id": type_id}).fetchone()
+            if result:
+                return type_id, result[0]
+            raise ValueError(f"No item found with typeID={type_id}")
+
+    if type_name is not None:
+        with sde_db.engine.connect() as conn:
+            # Try exact match first
+            query = text(
+                "SELECT typeID, typeName FROM inv_info WHERE typeName = :name"
+            )
+            result = conn.execute(query, {"name": type_name}).fetchone()
+            if result:
+                return result[0], result[1]
+
+            # Try partial match
+            query = text(
+                "SELECT typeID, typeName FROM inv_info "
+                "WHERE typeName LIKE :pattern ORDER BY typeName LIMIT 10"
+            )
+            rows = conn.execute(
+                query, {"pattern": f"%{type_name}%"}).fetchall()
+            if len(rows) == 1:
+                return rows[0][0], rows[0][1]
+            elif len(rows) > 1:
+                names = "\n  ".join(
+                    f"{r[0]}: {r[1]}" for r in rows)
+                raise ValueError(
+                    f"Ambiguous name '{type_name}'. Matches:\n  {names}"
+                )
+            raise ValueError(f"No item found matching '{type_name}'")
+
+    raise ValueError("Either --id or --name is required")
+
+
+def _query_module_usage(
+    type_id: int,
+    market_ctx: Optional[MarketContext] = None,
+) -> List[Dict]:
+    """
+    Query which fits use a given module and their market status.
+
+    Joins doctrines and doctrine_fits on fit_id where type_id matches.
+
+    Args:
+        type_id: The type ID of the module to look up
+        market_ctx: Market context for database selection
+
+    Returns:
+        List of dicts with fit usage and market data
+    """
+    db_alias = market_ctx.database_alias if market_ctx else "wcmkt"
+    db = DatabaseConfig(db_alias)
+
+    results = []
+    with db.engine.connect() as conn:
+        query = text("""
+            SELECT
+                d.fit_id,
+                df.fit_name,
+                df.ship_name,
+                df.doctrine_name,
+                d.fit_qty,
+                df.target,
+                d.total_stock,
+                d.fits_on_mkt,
+                d.price
+            FROM doctrines d
+            JOIN doctrine_fits df ON d.fit_id = df.fit_id
+            WHERE d.type_id = :type_id
+            ORDER BY df.doctrine_name, df.fit_name
+        """)
+        rows = conn.execute(query, {"type_id": type_id}).fetchall()
+
+        for row in rows:
+            fits = row.fits_on_mkt or 0
+            target = row.target or 0
+            fit_qty = row.fit_qty or 1
+            qty_needed = max(0, int(
+                (target - fits) * fit_qty)) if fits < target else 0
+
+            results.append({
+                "fit_id": row.fit_id,
+                "fit_name": row.fit_name,
+                "ship_name": row.ship_name,
+                "doctrine_name": row.doctrine_name,
+                "fit_qty": fit_qty,
+                "target": target,
+                "total_stock": row.total_stock or 0,
+                "fits_on_mkt": fits,
+                "qty_needed": qty_needed,
+                "price": row.price,
+            })
+
+    return results
+
+
+def module_command(
+    type_id: Optional[int] = None,
+    type_name: Optional[str] = None,
+    market_alias: str = "primary",
+) -> bool:
+    """
+    Display which fits use a module and their market availability.
+
+    Args:
+        type_id: Type ID of the module
+        type_name: Type name of the module (alternative to type_id)
+        market_alias: Market alias or "both" for dual-market display
+
+    Returns:
+        True if successful, False otherwise
+    """
+    # Resolve module identity
+    try:
+        resolved_id, resolved_name = _resolve_module_identity(
+            type_id, type_name)
+    except ValueError as e:
+        console.print(f"[red]Error: {e}[/red]")
+        return False
+
+    show_both = market_alias == "both"
+
+    if show_both:
+        # Query both markets
+        try:
+            primary_ctx = MarketContext.from_settings("primary")
+            deploy_ctx = MarketContext.from_settings("deployment")
+        except ValueError as e:
+            console.print(f"[red]Error: {e}[/red]")
+            return False
+
+        primary_data = _query_module_usage(resolved_id, primary_ctx)
+        deploy_data = _query_module_usage(resolved_id, deploy_ctx)
+
+        if not primary_data and not deploy_data:
+            console.print(
+                f"[yellow]Module '{resolved_name}' (ID: {resolved_id}) "
+                f"is not used in any tracked fits.[/yellow]"
+            )
+            return True
+
+        # Merge data: key by fit_id
+        deploy_by_fit = {r["fit_id"]: r for r in deploy_data}
+        merged = []
+        seen_fit_ids = set()
+
+        for row in primary_data:
+            fid = row["fit_id"]
+            seen_fit_ids.add(fid)
+            d_row = deploy_by_fit.get(fid, {})
+            merged.append({
+                "fit_id": fid,
+                "fit_name": row["fit_name"],
+                "ship_name": row["ship_name"],
+                "doctrine_name": row["doctrine_name"],
+                "fit_qty": row["fit_qty"],
+                "target": row["target"],
+                "price": row["price"],
+                "p_stock": row["total_stock"],
+                "p_fits": row["fits_on_mkt"],
+                "p_need": row["qty_needed"],
+                "d_stock": d_row.get("total_stock", 0),
+                "d_fits": d_row.get("fits_on_mkt", 0),
+                "d_need": d_row.get("qty_needed", 0),
+            })
+
+        # Add any deployment-only fits
+        for fid, d_row in deploy_by_fit.items():
+            if fid not in seen_fit_ids:
+                merged.append({
+                    "fit_id": fid,
+                    "fit_name": d_row["fit_name"],
+                    "ship_name": d_row["ship_name"],
+                    "doctrine_name": d_row["doctrine_name"],
+                    "fit_qty": d_row["fit_qty"],
+                    "target": d_row["target"],
+                    "price": d_row["price"],
+                    "p_stock": 0,
+                    "p_fits": 0,
+                    "p_need": 0,
+                    "d_stock": d_row["total_stock"],
+                    "d_fits": d_row["fits_on_mkt"],
+                    "d_need": d_row["qty_needed"],
+                })
+
+        table = create_module_usage_table(
+            resolved_name, resolved_id, merged, show_both=True)
+        console.print(table)
+        console.print(
+            f"\n[dim]Total: {len(merged)} fit(s) using this module[/dim]")
+
+    else:
+        # Single market
+        try:
+            market_ctx = MarketContext.from_settings(market_alias)
+        except ValueError as e:
+            console.print(f"[red]Error: {e}[/red]")
+            console.print(f"Available markets: {
+                ', '.join(MarketContext.list_available())}")
+            return False
+
+        data = _query_module_usage(resolved_id, market_ctx)
+
+        if not data:
+            console.print(
+                f"[yellow]Module '{resolved_name}' (ID: {resolved_id}) "
+                f"is not used in any tracked fits on {market_ctx.name}.[/yellow]"
+            )
+            return True
+
+        table = create_module_usage_table(
+            resolved_name, resolved_id, data, show_both=False)
+        console.print(table)
+        console.print(
+            f"\n[dim]Total: {len(data)} fit(s) using this module "
+            f"on {market_ctx.name}[/dim]"
+        )
+
+    return True
+
+
+def _handle_list_fits(sub_args: List[str]) -> None:
+    """
+    Handle the list-fits subcommand.
+
+    Args:
+        sub_args: Remaining arguments after 'list-fits'
+    """
+    from mkts_backend.cli_tools.fit_update import list_fits_command
+
+    market_alias = "primary"
+    for arg in sub_args:
+        if arg.startswith("--market="):
+            market_alias = arg.split("=", 1)[1]
+
+    try:
+        market_ctx = MarketContext.from_settings(market_alias)
+        db_alias = market_ctx.database_alias
+    except ValueError as e:
+        console.print(f"[red]Error: {e}[/red]")
+        return
+
+    list_fits_command(db_alias=db_alias)
+
+
+def _handle_module(sub_args: List[str]) -> None:
+    """
+    Handle the module subcommand.
+
+    Args:
+        sub_args: Remaining arguments after 'module'
+    """
+    type_id = None
+    type_name = None
+    market_alias = "primary"
+
+    for arg in sub_args:
+        if arg.startswith("--id="):
+            try:
+                type_id = int(arg.split("=", 1)[1])
+            except ValueError:
+                console.print("[red]Error: --id must be an integer[/red]")
+                return
+        elif arg.startswith("--name="):
+            type_name = arg.split("=", 1)[1]
+        elif arg.startswith("--market="):
+            market_alias = arg.split("=", 1)[1]
+
+    if type_id is None and type_name is None:
+        console.print(
+            "[red]Error: --id=<type_id> or --name=<name> is required[/red]")
+        console.print("Usage: fitcheck module --id=11269")
+        console.print('       fitcheck module --name="Multispectrum Energized Membrane II"')
+        return
+
+    module_command(type_id=type_id, type_name=type_name,
+                   market_alias=market_alias)
+
+
 def display_help():
     """Display help for the fitcheck command."""
     print("""
@@ -885,6 +1189,19 @@ USAGE:
     fitcheck --fit=<id> [options]
     fitcheck --file=<path> [options]
     fitcheck --paste [options]
+    fitcheck list-fits [--market=<alias>]
+    fitcheck module --id=<type_id> [--market=<alias>]
+    fitcheck module --name="<name>" [--market=<alias>]
+
+SUBCOMMANDS:
+    list-fits            List all tracked doctrine fits
+        --market=<alias>     Market database to query (default: primary)
+
+    module               Show which fits use a given module and market status
+        --id=<type_id>       Look up module by type ID
+        --name="<name>"      Look up module by name (exact or partial match)
+        --market=<alias>     Market to check: primary, deployment, both
+                             (default: primary)
 
 DESCRIPTION:
     Analyzes an EFT (Eve Fitting Tool) formatted ship fit and displays market
@@ -918,6 +1235,15 @@ EXAMPLES:
 
     # Export markdown for Discord
     fitcheck --fit=42 --output=markdown
+
+    # List all tracked fits
+    fitcheck list-fits
+    fitcheck list-fits --market=deployment
+
+    # Check module usage across fits
+    fitcheck module --id=11269
+    fitcheck module --name="Multispectrum Energized Membrane II"
+    fitcheck module --id=11269 --market=both
 """)
 
 
@@ -1026,6 +1352,17 @@ def main():
     # Handle help
     if not args or "--help" in args or "-h" in args:
         display_help()
+        sys.exit(0)
+
+    # Subcommand routing - check before flag parsing
+    subcommands = {"list-fits", "module"}
+    if args[0] in subcommands:
+        sub = args[0]
+        sub_args = args[1:]
+        if sub == "list-fits":
+            _handle_list_fits(sub_args)
+        elif sub == "module":
+            _handle_module(sub_args)
         sys.exit(0)
 
     # Parse arguments

@@ -78,6 +78,30 @@ jobs:
         mkdir -p data
         mkdir -p databackup
 
+    - name: Restore cached databases
+      uses: actions/cache/restore@v4
+      id: db-cache
+      with:
+        path: |
+          sde.db
+          sde.db-info
+          wcfitting.db
+          wcfitting.db-info
+          wcmktprod.db
+          wcmktprod.db-info
+          wcmktnorth2.db
+          wcmktnorth2.db-info
+        key: turso-dbs-${{ matrix.market }}-${{ github.run_id }}
+        restore-keys: |
+          turso-dbs-${{ matrix.market }}-
+
+    - name: Log cache status
+      run: |
+        echo "Cache hit: ${{ steps.db-cache.outputs.cache-hit }}"
+        echo "Cache key: ${{ steps.db-cache.outputs.cache-matched-key }}"
+        echo "Database files after restore:"
+        ls -lh *.db *.db-info 2>/dev/null || echo "No database files found (cache miss)"
+
     - name: Set up environment variables
       run: |
         echo "CLIENT_ID=${{ secrets.CLIENT_ID }}" >> $GITHUB_ENV
@@ -138,6 +162,21 @@ jobs:
         echo "Running: uv run mkts-backend --market=${{ matrix.market }} $HISTORY_FLAG"
         uv run mkts-backend --market=${{ matrix.market }} $HISTORY_FLAG
       timeout-minutes: 30
+
+    - name: Save database cache
+      uses: actions/cache/save@v4
+      if: always()
+      with:
+        path: |
+          sde.db
+          sde.db-info
+          wcfitting.db
+          wcfitting.db-info
+          wcmktprod.db
+          wcmktprod.db-info
+          wcmktnorth2.db
+          wcmktnorth2.db-info
+        key: turso-dbs-${{ matrix.market }}-${{ github.run_id }}
 
     - name: Upload logs as artifacts
       uses: actions/upload-artifact@v4

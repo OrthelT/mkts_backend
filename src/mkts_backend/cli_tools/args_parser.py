@@ -20,8 +20,11 @@ from mkts_backend.cli_tools.fit_update import (
 from mkts_backend.cli_tools.fit_check import fit_check_command
 from mkts_backend.cli_tools.cli_db_commands import check_tables
 from mkts_backend.config.logging_config import configure_logging
+import os
 
 logger = configure_logging(__name__)
+
+_VALID_ENVIRONMENTS = ("production", "development")
 
 
 def parse_args(args: list[str]) -> dict | None:
@@ -29,6 +32,19 @@ def parse_args(args: list[str]) -> dict | None:
 
     if len(args) == 0:
         return None
+
+    # ── Parse --env flag early so the override is visible to all downstream
+    #    settings loaders (MarketContext, DatabaseConfig, etc.).  This sets the
+    #    MKTS_ENVIRONMENT env-var for the duration of this process only.
+    for arg in args:
+        if arg.startswith("--env="):
+            env_value = arg.split("=", 1)[1].lower()
+            if env_value not in _VALID_ENVIRONMENTS:
+                print(f"Error: --env must be one of: {', '.join(_VALID_ENVIRONMENTS)}")
+                exit(1)
+            os.environ["MKTS_ENVIRONMENT"] = env_value
+            print(f"Environment override: {env_value}")
+            break
 
     # Handle --help: check for subcommand-specific help first
     if "--help" in args:

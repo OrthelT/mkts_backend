@@ -22,6 +22,7 @@ Global Options (apply to main workflow and most commands):
   --market=<alias>   Select market (primary, deployment). Default: primary
   --primary          Shorthand for --market=primary
   --deployment       Shorthand for --market=deployment
+  --env=<env>        Override app.environment temporarily (production, development)
   --history          Include history processing (main workflow)
   --check_tables     Check the tables in the database (supports --market)
   --validate-env     Validate environment credentials and exit
@@ -33,6 +34,7 @@ Use 'mkts-backend <command> --help' for more information about a command.
 Examples:
   mkts-backend --history                      # Run main workflow with history
   mkts-backend --history --deployment         # Run for deployment market
+  mkts-backend --env=development              # Run against testing database
   mkts-backend sync --deployment              # Sync deployment database
   mkts-backend validate --market=deployment   # Validate deployment database
   mkts-backend fit-check --file=fits/hfi.txt  # Check fit availability

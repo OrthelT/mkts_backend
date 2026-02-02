@@ -27,6 +27,11 @@ def load_settings(file_path: str = settings_file):
     with open(file_path, "rb") as f:
         settings = tomllib.load(f)
         logger.debug(f"Settings loaded from {file_path}")
+    # Allow environment variable to override app.environment for temporary switching
+    env_override = os.environ.get("MKTS_ENVIRONMENT")
+    if env_override and "app" in settings:
+        logger.info(f"Environment overridden by MKTS_ENVIRONMENT: {env_override}")
+        settings["app"] = {**settings["app"], "environment": env_override}
     return settings
 
 class DatabaseConfig:
@@ -92,7 +97,9 @@ class DatabaseConfig:
                 alias = "wcmkt"
 
             if alias == "wcmkt":
-                if self.settings["app"]["environment"] == "development":
+                # Check env var override first (class-level settings is cached at import time)
+                env = os.environ.get("MKTS_ENVIRONMENT", self.settings["app"]["environment"])
+                if env == "development":
                     alias = self._testing_db_alias
                 else:
                     alias = self._production_db_alias

@@ -19,9 +19,19 @@ SETTINGS_FILE = "src/mkts_backend/config/settings.toml"
 
 
 def _load_settings(file_path: str = SETTINGS_FILE) -> dict:
-    """Load settings from TOML file."""
+    """Load settings from TOML file.
+
+    Respects the MKTS_ENVIRONMENT environment variable as a temporary override
+    for settings["app"]["environment"]. Use ``--env=development`` on the CLI
+    or ``export MKTS_ENVIRONMENT=development`` to switch without editing the file.
+    """
     with open(file_path, "rb") as f:
-        return tomllib.load(f)
+        settings = tomllib.load(f)
+    env_override = os.environ.get("MKTS_ENVIRONMENT")
+    if env_override and "app" in settings:
+        logger.info(f"Environment overridden by MKTS_ENVIRONMENT: {env_override}")
+        settings["app"] = {**settings["app"], "environment": env_override}
+    return settings
 
 
 @dataclass

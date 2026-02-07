@@ -26,6 +26,7 @@ from mkts_backend.cli_tools.rich_display import (
     console,
     create_fit_status_table,
     create_module_usage_table,
+    create_needed_table,
     print_fit_header,
     print_fit_summary,
     print_legend,
@@ -1122,6 +1123,228 @@ def module_command(
     return True
 
 
+def _query_needed_data(
+    market_ctx: Optional[MarketContext] = None,
+    ship_filter: Optional[str] = None,
+    fit_filter: Optional[int] = None,
+    targ_perc_filter: Optional[float] = None,
+) -> List[Dict]:
+    """
+    Query needed items by joining doctrines and ship_targets tables.
+
+    Equivalent to the SQL view:
+        SELECT d.fit_id, d.ship_name, d.type_id, d.type_name,
+               t.ship_target AS target, t.fit_name,
+               d.fits_on_mkt, d.total_stock,
+               round((1.0 * d.fits_on_mkt) / NULLIF(t.ship_target, 0), 2) AS targ_perc,
+               CASE WHEN d.fits_on_mkt < t.ship_target
+                    THEN (NULLIF(t.ship_target, 0) - d.fits_on_mkt) * d.fit_qty
+                    ELSE 0
+               END AS qty_needed
+        FROM doctrines AS d
+        LEFT JOIN ship_targets AS t ON d.fit_id = t.fit_id
+        WHERE qty_needed > 0
+
+    Args:
+        market_ctx: Market context for database selection
+        ship_filter: Filter by ship name (case-insensitive substring match)
+        fit_filter: Filter by fit_id
+        targ_perc_filter: Filter where targ_perc < this value
+
+    Returns:
+        List of dicts with needed item data
+    """
+    db_alias = market_ctx.database_alias if market_ctx else "wcmkt"
+    db = DatabaseConfig(db_alias)
+
+    results = []
+    with db.engine.connect() as conn:
+        query = text("""
+            SELECT
+                d.fit_id,
+                d.ship_name,
+                d.type_id,
+                d.type_name,
+                t.ship_target AS target,
+                t.fit_name,
+                d.fits_on_mkt,
+                d.total_stock,
+                round((1.0 * d.fits_on_mkt) / NULLIF(t.ship_target, 0), 2) AS targ_perc,
+                CASE
+                    WHEN d.fits_on_mkt < t.ship_target
+                        THEN (NULLIF(t.ship_target, 0) - d.fits_on_mkt) * d.fit_qty
+                    ELSE 0
+                END AS qty_needed
+            FROM doctrines AS d
+            LEFT JOIN ship_targets AS t
+                ON d.fit_id = t.fit_id
+            WHERE CASE
+                    WHEN d.fits_on_mkt < t.ship_target
+                        THEN (NULLIF(t.ship_target, 0) - d.fits_on_mkt) * d.fit_qty
+                    ELSE 0
+                  END > 0
+            ORDER BY d.ship_name, d.fit_id, targ_perc
+        """)
+        rows = conn.execute(query).fetchall()
+
+        for row in rows:
+            item = {
+                "fit_id": row.fit_id,
+                "ship_name": row.ship_name,
+                "type_id": row.type_id,
+                "type_name": row.type_name,
+                "target": row.target,
+                "fit_name": row.fit_name or "Unknown",
+                "fits_on_mkt": row.fits_on_mkt or 0,
+                "total_stock": row.total_stock or 0,
+                "targ_perc": row.targ_perc or 0,
+                "qty_needed": row.qty_needed or 0,
+            }
+
+            # Apply filters
+            if ship_filter and ship_filter.lower() not in item["ship_name"].lower():
+                continue
+            if fit_filter is not None and item["fit_id"] != fit_filter:
+                continue
+            if targ_perc_filter is not None and item["targ_perc"] >= targ_perc_filter:
+                continue
+
+            results.append(item)
+
+    return results
+
+
+def needed_command(
+    market_alias: str = "primary",
+    ship_filter: Optional[str] = None,
+    fit_filter: Optional[int] = None,
+    targ_perc_filter: Optional[float] = None,
+) -> bool:
+    """
+    Display needed items organized into sub-tables by fit.
+
+    Args:
+        market_alias: Market alias (primary, deployment)
+        ship_filter: Filter by ship name
+        fit_filter: Filter by fit_id
+        targ_perc_filter: Filter where targ_perc < this value
+
+    Returns:
+        True if successful, False otherwise
+    """
+    try:
+        market_ctx = MarketContext.from_settings(market_alias)
+    except ValueError as e:
+        console.print(f"[red]Error: {e}[/red]")
+        return False
+
+    data = _query_needed_data(
+        market_ctx,
+        ship_filter=ship_filter,
+        fit_filter=fit_filter,
+        targ_perc_filter=targ_perc_filter,
+    )
+
+    if not data:
+        console.print("[yellow]No items needed - all fits are at or above target.[/yellow]")
+        return True
+
+    # Group by fit_id
+    grouped = {}
+    for item in data:
+        fid = item["fit_id"]
+        if fid not in grouped:
+            grouped[fid] = []
+        grouped[fid].append(item)
+
+    # Print header
+    console.print()
+    filter_parts = []
+    if ship_filter:
+        filter_parts.append(f"ship={ship_filter}")
+    if fit_filter is not None:
+        filter_parts.append(f"fit={fit_filter}")
+    if targ_perc_filter is not None:
+        filter_parts.append(f"targ_perc<{targ_perc_filter}")
+    filter_str = f" ({', '.join(filter_parts)})" if filter_parts else ""
+
+    console.print(
+        f"[bold]Needed Items[/bold] - [green]{market_ctx.name}[/green]{filter_str}",
+    )
+    console.print()
+
+    # Render a sub-table for each fit group
+    for fit_id, items in grouped.items():
+        ship_name = items[0]["ship_name"]
+        fit_name = items[0]["fit_name"]
+        target = items[0]["target"] or 0
+
+        # min(fits_on_mkt) across all items in this fit
+        min_fits = min((item["fits_on_mkt"] for item in items), default=0)
+
+        table = create_needed_table(
+            fit_id=fit_id,
+            ship_name=ship_name,
+            fit_name=fit_name,
+            min_fits=min_fits,
+            target=target,
+            items=items,
+        )
+        console.print(table)
+        console.print()
+
+    # Summary
+    total_fits = len(grouped)
+    total_items = len(data)
+    console.print(
+        f"[dim]{total_fits} fit(s), {total_items} item(s) below target[/dim]"
+    )
+
+    return True
+
+
+def _handle_needed(sub_args: List[str]) -> None:
+    """
+    Handle the needed subcommand.
+
+    Args:
+        sub_args: Remaining arguments after 'needed'
+    """
+    ship_filter = None
+    fit_filter = None
+    targ_perc_filter = None
+    market_alias = "primary"
+
+    for arg in sub_args:
+        if arg.startswith("--ship="):
+            ship_filter = arg.split("=", 1)[1]
+        elif arg.startswith("--fit="):
+            try:
+                fit_filter = int(arg.split("=", 1)[1])
+            except ValueError:
+                console.print("[red]Error: --fit must be an integer[/red]")
+                return
+        elif arg.startswith("--target="):
+            try:
+                targ_perc_filter = float(arg.split("=", 1)[1])
+            except ValueError:
+                console.print("[red]Error: --target must be a number (e.g. 0.5)[/red]")
+                return
+        elif arg.startswith("--market="):
+            market_alias = arg.split("=", 1)[1]
+        elif arg == "--deployment":
+            market_alias = "deployment"
+        elif arg == "--primary":
+            market_alias = "primary"
+
+    needed_command(
+        market_alias=market_alias,
+        ship_filter=ship_filter,
+        fit_filter=fit_filter,
+        targ_perc_filter=targ_perc_filter,
+    )
+
+
 def _handle_list_fits(sub_args: List[str]) -> None:
     """
     Handle the list-fits subcommand.
@@ -1189,11 +1412,18 @@ USAGE:
     fitcheck --fit=<id> [options]
     fitcheck --file=<path> [options]
     fitcheck --paste [options]
+    fitcheck needed [--ship=<name>] [--fit=<id>] [--target=<pct>]
     fitcheck list-fits [--market=<alias>]
     fitcheck module --id=<type_id> [--market=<alias>]
     fitcheck module --name="<name>" [--market=<alias>]
 
 SUBCOMMANDS:
+    needed               Show all items needed to reach ship targets
+        --ship=<name>        Filter by ship name (e.g. --ship=Maelstrom)
+        --fit=<id>           Filter by fit ID (e.g. --fit=550)
+        --target=<pct>       Show only fits below this target % (e.g. --target=0.5)
+        --market=<alias>     Market to check (default: primary)
+
     list-fits            List all tracked doctrine fits
         --market=<alias>     Market database to query (default: primary)
 
@@ -1235,6 +1465,15 @@ EXAMPLES:
 
     # Export markdown for Discord
     fitcheck --fit=42 --output=markdown
+
+    # Show all items needed across all fits
+    fitcheck needed
+
+    # Show needed items for a specific ship
+    fitcheck needed --ship=Maelstrom
+
+    # Show needed items for fits below 50% of target
+    fitcheck needed --target=0.5
 
     # List all tracked fits
     fitcheck list-fits
@@ -1355,7 +1594,7 @@ def main():
         sys.exit(0)
 
     # Subcommand routing - check before flag parsing
-    subcommands = {"list-fits", "module"}
+    subcommands = {"list-fits", "module", "needed"}
     if args[0] in subcommands:
         sub = args[0]
         sub_args = args[1:]
@@ -1363,6 +1602,8 @@ def main():
             _handle_list_fits(sub_args)
         elif sub == "module":
             _handle_module(sub_args)
+        elif sub == "needed":
+            _handle_needed(sub_args)
         sys.exit(0)
 
     # Parse arguments

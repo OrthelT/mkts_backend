@@ -385,6 +385,81 @@ def split_suffix_format(item: str, color: str)->str:
     return formatted_item
 
 
+def create_needed_table(
+    fit_id: int,
+    ship_name: str,
+    fit_name: str,
+    min_fits: float,
+    target: int,
+    items: List[Dict],
+) -> Table:
+    """
+    Create a Rich sub-table for a single fit's needed items.
+
+    Args:
+        fit_id: The fit ID
+        ship_name: Ship name for the header
+        fit_name: Fit name for the header
+        min_fits: Minimum fits on market for this fit
+        target: Target quantity for this fit
+        items: List of dicts with type_id, type_name, target, fits_on_mkt,
+               total_stock, targ_perc, qty_needed
+
+    Returns:
+        A Rich Table object for this fit group
+    """
+    fits_style = "green" if min_fits >= target else (
+        "yellow" if min_fits >= target * 0.5 else "red")
+
+    table = Table(
+        title=(
+            f"[bold cyan]{ship_name}[/bold cyan]"
+            f" - [white]{fit_name}[/white]"
+            f" ([{fits_style}]{int(min_fits)}[/{fits_style}])"
+        ),
+        box=box.SIMPLE_HEAVY,
+        show_header=True,
+        header_style="bold magenta",
+        title_justify="left",
+        padding=(0, 1),
+    )
+
+    table.add_column("ID", style="dim", justify="right", width=7)
+    table.add_column("Item", style="white", no_wrap=False)
+    table.add_column("Stock", justify="right", width=7)
+    table.add_column("Fits", justify="right", width=6)
+    table.add_column("Tgt", justify="right", width=5)
+    table.add_column("Tgt%", justify="right", width=5)
+    table.add_column("Need", justify="right", width=7)
+
+    for item in items:
+        fits = item.get("fits_on_mkt", 0) or 0
+        targ_perc = item.get("targ_perc", 0) or 0
+        qty_needed = item.get("qty_needed", 0) or 0
+
+        # Color code fits
+        if targ_perc >= 1.0:
+            perc_style = "green"
+        elif targ_perc >= 0.5:
+            perc_style = "yellow"
+        else:
+            perc_style = "red"
+
+        row_data = [
+            str(item.get("type_id", "")),
+            item.get("type_name", "Unknown"),
+            format_quantity(item.get("total_stock", 0)),
+            format_fits(fits),
+            str(item.get("target", 0)),
+            f"[{perc_style}]{targ_perc:.0%}[/{perc_style}]",
+            f"[red]{format_quantity(qty_needed)}[/red]" if qty_needed > 0 else "[dim]-[/dim]",
+        ]
+
+        table.add_row(*row_data)
+
+    return table
+
+
 def _fits_style(fits: float, target: Optional[int] = None) -> str:
     """
     Return a Rich style string based on fits available.

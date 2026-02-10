@@ -1,7 +1,11 @@
 # Ensure Fresh Data
 
+> **STATUS: PLANNING DOCUMENT - FEATURE NOT YET IMPLEMENTED**
+> This document outlines a planned feature to optimize market history API calls using ETags and Last-Modified headers.
+> This feature has not been implemented. The document is kept for future reference.
+
 ## Project Goal
-Each day we pull market history data for our app with a series of API call for each of the 870 items in our watch-list. Often, there is no new data and the call is wasted. The ESI has two methods to signal if data has changed since your last call that can be configured in headers. ESI returns Status Code 304 if data is unchanged. Refactor aync history ESI function to utilize these methods. 
+Each day we pull market history data for our app with a series of API call for each of the 870 items in our watch-list. Often, there is no new data and the call is wasted. The ESI has two methods to signal if data has changed since your last call that can be configured in headers. ESI returns Status Code 304 if data is unchanged. Refactor async history ESI function to utilize these methods. 
 
 ### "If-None-Match": "Etag":
 - ESI response returns a Etag value in the headers.

@@ -2,9 +2,9 @@
 
 This document tracks the development of doctrine management tools for the mkts_backend system.
 
-## Fit Check ✓ IMPLEMENTED
+## fitcheck Command ✓ IMPLEMENTED
 
-A command-line interface that displays market availability for ship fittings from EFT-formatted files or from pre-calculated doctrine data.
+A command-line interface that displays market availability for ship fittings from EFT-formatted files or from pre-calculated doctrine data. Includes three subcommands for advanced functionality.
 
 ### Features Implemented:
 - **Input Methods**:
@@ -34,32 +34,88 @@ A command-line interface that displays market availability for ship fittings fro
   - `markdown`: Discord-friendly markdown format with bold formatting
 
 ### CLI Usage:
+
+#### Basic Fit Checking
 ```bash
 # Basic usage - from EFT file
-fit-check --file=<path>
+fitcheck --file=<path>
 
-# Check by fit_id (uses pre-calculated doctrine data)
-fit-check --fit-id=42
+# Check by fit ID (uses pre-calculated doctrine data)
+fitcheck --fit=42
 
 # With market selection (works with both modes)
-fit-check --file=<path> --market=deployment
-fit-check --fit-id=42 --market=deployment
+fitcheck --file=<path> --market=deployment
+fitcheck --fit=42 --market=deployment
 
 # Override target quantity
-fit-check --file=<path> --target=50
-fit-check --fit-id=42 --target=50
+fitcheck --file=<path> --target=50
+fitcheck --fit=42 --target=50
 
 # Export to CSV
-fit-check --fit-id=42 --output=csv
+fitcheck --fit=42 --output=csv
 
 # Show multibuy format for restocking
-fit-check --file=<path> --output=multibuy
+fitcheck --file=<path> --output=multibuy
 
 # Export markdown for Discord
-fit-check --fit-id=42 --output=markdown
+fitcheck --fit=42 --output=markdown
 
 # Read from stdin
-cat fit.txt | fit-check --paste
+cat fit.txt | fitcheck --paste
+```
+
+#### Subcommand: needed ✓ IMPLEMENTED
+Show all items needed to reach ship targets across all fits:
+```bash
+# Show all items needed across all fits
+fitcheck needed
+
+# Show needed items for a specific ship
+fitcheck needed --ship=Maelstrom
+
+# Show needed items for fits below 50% of target
+fitcheck needed --target=0.5
+
+# Filter by fit ID
+fitcheck needed --fit=550
+
+# Check deployment market
+fitcheck needed --market=deployment
+```
+
+**Features:**
+- Groups results by fit with Rich sub-tables
+- Shows item name, current stock, fits on market, target percentage, and quantity needed
+- Filters: ship name, fit ID, target percentage threshold, market
+- Useful for planning restocking operations across entire doctrines
+
+#### Subcommand: module ✓ IMPLEMENTED
+Show which fits use a given module and their market status:
+```bash
+# Check module usage by type ID
+fitcheck module --id=11269
+
+# Check module usage by name (exact or partial match)
+fitcheck module --name="Multispectrum Energized Membrane II"
+
+# Check both markets simultaneously for comparison
+fitcheck module --id=11269 --market=both
+```
+
+**Features:**
+- Look up by type ID or type name (supports partial matching)
+- Shows all fits using the module with their market availability
+- When using `--market=both`, displays side-by-side comparison of primary and deployment markets
+- Useful for bulk purchasing decisions and identifying fits affected by module shortages
+
+#### Subcommand: list-fits ✓ IMPLEMENTED
+List all tracked doctrine fits:
+```bash
+# List all fits in primary market
+fitcheck list-fits
+
+# List fits in deployment market
+fitcheck list-fits --market=deployment
 ```
 
 ### Database Integration:
@@ -69,11 +125,18 @@ cat fit.txt | fit-check --paste
   - Looks up targets from `doctrine_fits` table by fit_name or ship_type_id
   - Uses SDE database for type name resolution
   - Fetches Jita prices for comparison
-- **With `--fit-id`**:
+- **With `--fit=<id>`**:
   - Looks up fit metadata from `doctrine_fits` table (fit_name, ship_name, target, etc.)
   - Retrieves pre-calculated market data from `doctrines` table (fits_on_mkt, total_stock, price)
   - Uses cached data from the last backend run for faster results
-  - Fetches Jita prices for comparison 
+  - Fetches Jita prices for comparison
+- **Subcommand `needed`**:
+  - Joins `doctrines` and `ship_targets` tables to calculate needed quantities
+  - Filters by ship name, fit ID, or target percentage as requested
+- **Subcommand `module`**:
+  - Joins `doctrines` and `doctrine_fits` tables on fit_id where type_id matches
+  - Resolves module identity via SDE database (supports name or ID lookup)
+  - When using `--market=both`, queries both market databases and merges results 
 
 ## Update-Fit Command ✓ IMPLEMENTED
 

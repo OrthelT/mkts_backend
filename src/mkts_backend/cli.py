@@ -3,7 +3,6 @@ import json
 import time
 import os
 from typing import Optional
-from sqlalchemy import text
 
 from mkts_backend.config.logging_config import configure_logging
 from mkts_backend.db.db_queries import get_table_length
@@ -23,7 +22,6 @@ from mkts_backend.processing.data_processing import (
     calculate_market_stats,
     calculate_doctrine_stats,
 )
-from sqlalchemy import text
 from mkts_backend.config.esi_config import ESIConfig
 from mkts_backend.esi.esi_requests import fetch_market_orders
 from mkts_backend.esi.async_history import run_async_history
@@ -35,6 +33,7 @@ from mkts_backend.config.market_context import MarketContext
 
 settings = load_settings(file_path="src/mkts_backend/config/settings.toml")
 logger = configure_logging(__name__)
+
 
 def process_market_orders(
     esi: ESIConfig,
@@ -317,7 +316,9 @@ def main(history: bool = False, market_alias: str = "primary"):
     print("=" * 80)
 
     # Process market orders
-    status = process_market_orders(esi, order_type="all", test_mode=False, market_ctx=market_ctx)
+    status = process_market_orders(
+        esi, order_type="all", test_mode=False, market_ctx=market_ctx
+    )
     if status:
         logger.debug("Market orders updated")
     else:
@@ -361,9 +362,17 @@ def main(history: bool = False, market_alias: str = "primary"):
         logger.error("Failed to update doctrines")
         exit()
 
+    env = os.environ.get("MKTS_ENVIRONMENT", settings["app"]["environment"])
+
     # Update Google Sheets if enabled and primary market
-    if settings["google_sheets"]["enabled"] and market_ctx.alias == "primary":
-        logger.info("Google Sheets are enabled in settings.toml. Updating Google Sheets")
+    if (
+        settings["google_sheets"]["enabled"]
+        and market_ctx.alias == "primary"
+        and env != "development"
+    ):
+        logger.info(
+            "Google Sheets are enabled in settings.toml. Updating Google Sheets"
+        )
         google_sheets_update_workflow(market_ctx=market_ctx)
     else:
         logger.info(

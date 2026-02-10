@@ -81,44 +81,95 @@ uv run mkts-backend --history
 uv run mkts-backend --market=deployment --history
 ```
 
+## CLI Entry Points
+
+The project provides three CLI entry points (defined in `pyproject.toml`):
+- **`mkts-backend`** / **`mkts`**: Main data collection and processing CLI
+- **`fitcheck`**: Standalone fit checking tool with subcommands
+
 ## CLI Commands
 
-### fit-check - Check Market Availability for Ship Fittings
+### fitcheck - Check Market Availability for Ship Fittings
 
 Display market availability and pricing for ship fits from EFT-formatted files or from pre-calculated doctrine data.
 
+#### Basic Fit Checking
+
 ```bash
 # Basic usage - check fit availability from EFT file
-uv run fit-check --file=path/to/fit.txt
+uv run fitcheck --file=path/to/fit.txt
 
 # Check fit by ID from doctrine_fits/doctrines tables (uses pre-calculated data)
-uv run fit-check --fit-id=42
+uv run fitcheck --fit=42
 
-# Check fit_id against specific market
-uv run fit-check --fit-id=42 --market=deployment
+# Check fit against specific market
+uv run fitcheck --fit=42 --market=deployment
 
 # Check against specific market with EFT file
-uv run fit-check --file=fit.txt --market=deployment
+uv run fitcheck --file=fit.txt --market=deployment
 
 # Override target quantity
-uv run fit-check --file=fit.txt --target=50
+uv run fitcheck --file=fit.txt --target=50
 
 # Export results to CSV
-uv run fit-check --fit-id=42 --output=csv
+uv run fitcheck --fit=42 --output=csv
 
 # Show multibuy format for restocking items below target
-uv run fit-check --file=fit.txt --output=multibuy
+uv run fitcheck --file=fit.txt --output=multibuy
 
 # Export markdown for Discord sharing
-uv run fit-check --fit-id=42 --output=markdown
+uv run fitcheck --fit=42 --output=markdown
 
 # Read from stdin
-cat fit.txt | uv run fit-check --paste
+cat fit.txt | uv run fitcheck --paste
 ```
 
-### update-fit - Update Doctrine Fits
+#### Subcommands
 
-Process EFT fit files (or pasted EFT text) and update doctrine tables. Supports interactive metadata input, paste mode, and multi-market targeting.
+**needed** - Show all items needed to reach ship targets across all fits:
+```bash
+# Show all items needed across all fits
+uv run fitcheck needed
+
+# Show needed items for a specific ship
+uv run fitcheck needed --ship=Maelstrom
+
+# Show needed items for fits below 50% of target
+uv run fitcheck needed --target=0.5
+
+# Filter by fit ID
+uv run fitcheck needed --fit=550
+
+# Check deployment market
+uv run fitcheck needed --market=deployment
+```
+
+**module** - Show which fits use a given module and their market status:
+```bash
+# Check module usage by type ID
+uv run fitcheck module --id=11269
+
+# Check module usage by name
+uv run fitcheck module --name="Multispectrum Energized Membrane II"
+
+# Check both markets simultaneously
+uv run fitcheck module --id=11269 --market=both
+```
+
+**list-fits** - List all tracked doctrine fits:
+```bash
+# List all fits in primary market
+uv run fitcheck list-fits
+
+# List fits in deployment market
+uv run fitcheck list-fits --market=deployment
+```
+
+### update-fit - Manage Doctrine Fits
+
+Process EFT fit files (or pasted EFT text) and manage doctrine fits. Supports interactive metadata input, paste mode, and multi-market targeting.
+
+#### Basic Usage
 
 ```bash
 # Update fit with metadata file
@@ -141,10 +192,11 @@ uv run mkts-backend fit-update add --paste --interactive
 uv run mkts-backend fit-update update --fit-id=313 --paste
 ```
 
-**Available Subcommands:**
+#### Subcommands
+
 - `add` - Add a NEW fit from an EFT file or pasted text
 - `update` - Update an existing fit's items from file or pasted text
-- `assign-market` - Change market assignment
+- `assign-market` - Change market assignment for an existing fit
 - `list-fits` - List all fits in tracking system
 - `list-doctrines` - List all available doctrines
 - `create-doctrine` - Create a new doctrine
@@ -152,31 +204,50 @@ uv run mkts-backend fit-update update --fit-id=313 --paste
 - `doctrine-remove-fit` - Remove fit(s) from a doctrine
 - `update-target` - Update the target quantity for a fit
 
+**Examples:**
 ```bash
 # Add existing fits to a doctrine (supports multiple)
-uv run mkts-backend update-fit doctrine-add-fit --doctrine-id=42 --fit-ids=313,314,315
+uv run mkts-backend fit-update doctrine-add-fit --doctrine-id=42 --fit-ids=313,314,315
 
 # Remove fits from a doctrine (reverse of doctrine-add-fit)
-uv run mkts-backend update-fit doctrine-remove-fit --doctrine-id=42 --fit-id=313
+uv run mkts-backend fit-update doctrine-remove-fit --doctrine-id=42 --fit-id=313
 
-# Update target quantity for a fit
+# Update target quantity for a fit (top-level command)
 uv run mkts-backend update-target --fit-id=313 --target=300
+
+# List all fits in primary market database
+uv run mkts-backend fit-update list-fits
+
+# List fits in deployment market
+uv run mkts-backend fit-update list-fits --market=deployment
+
+# Create a new doctrine
+uv run mkts-backend fit-update create-doctrine
+
+# Add a new fit with interactive prompts
+uv run mkts-backend fit-update add --paste --interactive
 ```
 
-**Input Modes:**
+**Input Modes (fitcheck):**
 - `--file=<path>`: Parse an EFT-formatted fit file and query live market data
-- `--fit-id=<id>`: Look up fit by ID from doctrine_fits table and display pre-calculated market data from doctrines table
+- `--fit=<id>`: Look up fit by ID from doctrine_fits/doctrines tables (pre-calculated data)
 - `--paste`: Open a multiline prompt to paste EFT fit text directly (uses prompt_toolkit)
+
+**Input Modes (update-fit):**
+- `--fit-file=<path>`: Path to EFT fit file (required)
+- `--fit-id=<id>`: Fit ID to update (required if no --meta-file)
+- `--meta-file=<path>`: Path to metadata JSON file
 
 **Features:**
 - Displays complete fit breakdown with market availability
 - Shows bottleneck items (lowest fits available)
 - Automatically retrieves target quantities from doctrine_fits table
 - Calculates quantity needed to reach target
+- Jita price comparison with overpriced item warnings
 - Exports to CSV for spreadsheet analysis
 - Generates Eve Multi-buy format for easy restocking
 - Falls back to live market data for items not on watchlist (when using --file)
-- Fast lookups using pre-calculated doctrine data (when using --fit-id)
+- Fast lookups using pre-calculated doctrine data (when using --fit=<id>)
 
 ## Architecture
 

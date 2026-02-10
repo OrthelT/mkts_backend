@@ -1,5 +1,10 @@
 # Documentation Merge Summary
 
+> **STATUS: COMPLETED - HISTORICAL RECORD**
+> This document describes a documentation consolidation effort completed in January 2026.
+> AGENTS.md is now the primary LLM documentation file, with CLAUDE.md serving as a redirect.
+> This file is kept for historical reference.
+
 ## Task Completed
 Successfully merged important content from CLAUDE.md into AGENTS.md to create a single, comprehensive documentation file for LLM coding agents.
 

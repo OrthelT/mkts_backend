@@ -1,4 +1,9 @@
-# Doctine Update Feature
+# Doctrine Update Feature
+
+> **STATUS: IMPLEMENTED AND ARCHIVED**
+> This document was a planning/implementation guide for the `update-fit` command.
+> The feature is now fully implemented. See README.md or AGENTS.md for current usage documentation.
+> This file is kept for historical reference.
 
 ## Goal
 Create simple functionality to parse an Eve Online doctrine fit from a text file in Eve Fitting Tool (EFT) format and update it in the appropriate database tables. It should be extendable to add new fits and new doctrines (which may include existing fits or new fits). These databases are the backend for two streamlit apps. 

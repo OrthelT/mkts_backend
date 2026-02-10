@@ -1,5 +1,10 @@
 # Flattening the Repository Structure
 
+> **STATUS: PLANNING DOCUMENT - NOT IMPLEMENTED**
+> This document outlines a potential repository restructuring to flatten the `src/` layout.
+> The repository still uses the `src/mkts_backend/` structure and this change has not been implemented.
+> This file is kept for future reference if the restructuring is desired.
+
 This document explains how to convert from the current `src/` layout to a flat layout.
 
 ## Current Structure

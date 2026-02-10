@@ -35,7 +35,10 @@ uv run mkts-backend validate --market=deployment  # Validate deployment market
 
 **Check market availability for a ship fit:**
 ```bash
-uv run fit-check --file=path/to/fit.txt --market=primary
+uv run fitcheck --file=path/to/fit.txt --market=primary
+uv run fitcheck --fit=42  # Check by fit ID
+uv run fitcheck needed    # Show all items needed across fits
+uv run fitcheck module --id=11269  # Show which fits use a module
 ```
 
 **Dependencies are managed with uv:**
@@ -128,9 +131,10 @@ Configuration is now managed through `settings.toml` with market-specific config
 - **Database:** `wcmktprod.db` with Turso sync
 
 ### Deployment Market (Optional)
-- **Name:** Nakah Market
-- **Region ID:** `10000001` (The Forge)
-- **System ID:** `30000072` (Nakah)
+- **Name:** B-9C24 Keepstar
+- **Region ID:** `10000023` (Pure Blind)
+- **System ID:** `30002029` (B-9C24)
+- **Structure ID:** `1046831245129`
 - **Database:** `wcmktnorth2.db` with Turso sync
 
 ### Configuration Files
@@ -212,38 +216,89 @@ TURSO_FITTING_TOKEN=<fitting_db_token>
 
 ## CLI Tools
 
-### fit-check Command
+### fitcheck Command
 
-The fit-check command displays market availability and pricing for ship fittings from EFT-formatted files or from pre-calculated doctrine data.
+The fitcheck command displays market availability and pricing for ship fittings from EFT-formatted files or from pre-calculated doctrine data.
 
-**Basic Usage:**
+**Basic Fit Checking:**
 ```bash
 # Check fit availability against primary market from EFT file
-uv run fit-check --file=path/to/fit.txt
+uv run fitcheck --file=path/to/fit.txt
 
 # Check fit by ID from doctrine_fits/doctrines tables (pre-calculated data)
-uv run fit-check --fit-id=42
+uv run fitcheck --fit=42
 
-# Check fit_id against specific market
-uv run fit-check --fit-id=42 --market=deployment
+# Check fit against specific market
+uv run fitcheck --fit=42 --market=deployment
 
 # Check against specific market with EFT file
-uv run fit-check --file=fit.txt --market=deployment
+uv run fitcheck --file=fit.txt --market=deployment
 
 # Override target quantity
-uv run fit-check --file=fit.txt --target=50
+uv run fitcheck --file=fit.txt --target=50
 
 # Export to CSV
-uv run fit-check --fit-id=42 --output=csv
+uv run fitcheck --fit=42 --output=csv
 
 # Show multibuy format for restocking
-uv run fit-check --file=fit.txt --output=multibuy
+uv run fitcheck --file=fit.txt --output=multibuy
 
 # Export markdown for Discord
-uv run fit-check --fit-id=42 --output=markdown
+uv run fitcheck --fit=42 --output=markdown
 
 # Combine options
-uv run fit-check --file=fit.txt --market=deployment --target=100 --output=csv
+uv run fitcheck --file=fit.txt --market=deployment --target=100 --output=csv
+```
+
+**Subcommand: needed** - Show all items needed to reach ship targets:
+```bash
+# Show all items needed across all fits
+uv run fitcheck needed
+
+# Show needed items for a specific ship
+uv run fitcheck needed --ship=Maelstrom
+
+# Show needed items for fits below 50% of target
+uv run fitcheck needed --target=0.5
+
+# Filter by fit ID
+uv run fitcheck needed --fit=550
+
+# Check deployment market
+uv run fitcheck needed --market=deployment
+```
+
+The `needed` subcommand displays a comprehensive overview of items needed for restocking across all tracked fits. Results are grouped by fit with Rich sub-tables showing:
+- Item name and type ID
+- Current stock levels
+- Fits available on market
+- Target percentage achieved
+- Quantity needed to reach target
+
+**Subcommand: module** - Show which fits use a given module:
+```bash
+# Check module usage by type ID
+uv run fitcheck module --id=11269
+
+# Check module usage by name (exact or partial match)
+uv run fitcheck module --name="Multispectrum Energized Membrane II"
+
+# Check both markets simultaneously for comparison
+uv run fitcheck module --id=11269 --market=both
+```
+
+The `module` subcommand helps identify which doctrine fits use a specific module and shows their market status. Useful for:
+- Planning bulk purchases of common modules
+- Identifying fits affected by module shortages
+- Comparing module availability across markets
+
+**Subcommand: list-fits** - List all tracked doctrine fits:
+```bash
+# List all fits in primary market
+uv run fitcheck list-fits
+
+# List fits in deployment market
+uv run fitcheck list-fits --market=deployment
 ```
 
 ### update-fit Command
@@ -316,10 +371,10 @@ uv run mkts-backend fit-update update --fit-id=313 --paste
   - `ship_targets` (optional with --update-targets)
   - `doctrines` (optional with --update-targets)
 
-**Input Modes:**
+**Input Modes (fitcheck):**
 - `--file=<path>`: Parse an EFT-formatted fit file and query live market data
-- `--fit-id=<id>`: Look up fit by ID from `doctrine_fits` table and display pre-calculated market data from `doctrines` table
-- `--paste`: Open a multiline prompt (via prompt_toolkit) to paste EFT fit text directly; for fit-check, reads from stdin
+- `--fit=<id>`: Look up fit by ID from `doctrine_fits` table and display pre-calculated market data from `doctrines` table
+- `--paste`: Open a multiline prompt to paste EFT fit text directly (uses prompt_toolkit); reads from stdin when invoked via `mkts-backend fit-check`
 
 **Display Features:**
 - **Header Section**: Shows fit name, ship name, ship type ID, total fit cost, fits available (bottleneck), and target quantity
@@ -374,9 +429,11 @@ uv run mkts-backend fit-update update --fit-id=313 --paste
 
 **Implementation Details:**
 - Location: `/home/orthel/workspace/github/mkts_backend/src/mkts_backend/cli_tools/fit_check.py`
-- Uses Rich library for beautiful console output
+- Uses Rich library for beautiful console output with tables, panels, and color coding
 - Handles missing items gracefully with fallback pricing
-- Supports file input (`--file`), stdin (`--paste`), and doctrine lookup (`--fit-id`)
+- Supports file input (`--file`), stdin (`--paste`), and doctrine lookup (`--fit=<id>`)
+- Three main subcommands: `needed`, `module`, and `list-fits`
+- Fetches Jita prices for comparison and highlights overpriced items (>120% Jita)
 
 ### update-fit Subcommands
 
@@ -608,8 +665,8 @@ turso_token_env = "TURSO_WCMKTPROD_TOKEN"
 
 [markets.deployment]  # Optional second market
 name = "Deployment Market Name"
-region_id = 10000001
-system_id = 30000072
+region_id = 10000023          # Pure Blind
+system_id = 30002029
 structure_id = 1046831245129  # Change to your structure ID
 database_alias = "wcmktnorth"
 database_file = "wcmktnorth2.db"

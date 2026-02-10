@@ -91,9 +91,9 @@ jobs:
           wcmktprod.db-info
           wcmktnorth2.db
           wcmktnorth2.db-info
-        key: turso-dbs-${{ matrix.market }}-${{ github.run_id }}
+        key: turso-dbs-v2-${{ matrix.market }}-${{ github.run_id }}
         restore-keys: |
-          turso-dbs-${{ matrix.market }}-
+          turso-dbs-v2-${{ matrix.market }}-
 
     - name: Log cache status
       run: |
@@ -176,7 +176,7 @@ jobs:
           wcmktprod.db-info
           wcmktnorth2.db
           wcmktnorth2.db-info
-        key: turso-dbs-${{ matrix.market }}-${{ github.run_id }}
+        key: turso-dbs-v2-${{ matrix.market }}-${{ github.run_id }}
 
     - name: Upload logs as artifacts
       uses: actions/upload-artifact@v4

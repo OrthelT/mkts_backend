@@ -25,7 +25,7 @@ def get_type_names_from_df(df: pd.DataFrame) -> pd.DataFrame:
     
     engine = sde_db.engine
     with engine.connect() as conn:
-        stmt = text("SELECT typeID, typeName, groupName, categoryName, categoryID FROM inv_info")
+        stmt = text("SELECT typeID, typeName, groupName, categoryName, categoryID FROM sdetypes")
         res = conn.execute(stmt)
         df = pd.DataFrame(res.fetchall(), columns=["typeID", "typeName", "groupName", "categoryName", "categoryID"])
         df = df.rename(columns={"typeID": "type_id", "typeName": "type_name", "groupName": "group_name", "categoryName": "category_name", "categoryID": "category_id"})
@@ -36,7 +36,7 @@ def get_type_name(type_id: int) -> str:
     db = DatabaseConfig("sde")
     engine = db.engine
     with engine.connect() as conn:
-        stmt = text("SELECT typeName FROM inv_info WHERE typeID = :type_id")
+        stmt = text("SELECT typeName FROM sdetypes WHERE typeID = :type_id")
         res = conn.execute(stmt, {"type_id": type_id})
         type_name = res.fetchone()[0]
     engine.dispose()

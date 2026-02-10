@@ -381,7 +381,7 @@ def update_history(
         placeholders = ','.join([':type_id_' + str(i) for i in range(len(unique_type_ids))])
         params = {'type_id_' + str(i): int(unique_type_ids[i]) for i in range(len(unique_type_ids))}
 
-        stmt = text(f"SELECT typeID, typeName FROM inv_info WHERE typeID IN ({placeholders})")
+        stmt = text(f"SELECT typeID, typeName FROM sdetypes WHERE typeID IN ({placeholders})")
         res = conn.execute(stmt, params)
         type_name_map = dict(res.fetchall())
     engine.dispose()
@@ -439,7 +439,10 @@ def update_market_orders(
     orders_df = convert_datetime_columns(orders_df, ['issued'])
     orders_df = add_timestamp(orders_df)
     orders_df = orders_df.infer_objects()
-    orders_df = orders_df.fillna(0)
+    numeric_cols = orders_df.select_dtypes(include=['number']).columns
+    string_cols = orders_df.select_dtypes(include=['object']).columns
+    orders_df[numeric_cols] = orders_df[numeric_cols].fillna(0)
+    orders_df[string_cols] = orders_df[string_cols].fillna('')
     orders_df = add_autoincrement(orders_df)
 
     valid_columns = MarketOrders.__table__.columns.keys()

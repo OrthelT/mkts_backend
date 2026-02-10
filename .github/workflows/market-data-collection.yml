@@ -83,8 +83,8 @@ jobs:
       id: db-cache
       with:
         path: |
-          sde.db
-          sde.db-info
+          sdelite.db
+          sdelite.db-info
           wcfitting.db
           wcfitting.db-info
           wcmktprod.db
@@ -168,8 +168,8 @@ jobs:
       if: always()
       with:
         path: |
-          sde.db
-          sde.db-info
+          sdelite.db
+          sdelite.db-info
           wcfitting.db
           wcfitting.db-info
           wcmktprod.db

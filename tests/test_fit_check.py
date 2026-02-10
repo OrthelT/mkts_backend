@@ -78,7 +78,7 @@ class TestFitCheckMarketData:
         conn = sqlite3.connect(str(db_path))
 
         conn.execute("""
-            CREATE TABLE inv_info (
+            CREATE TABLE sdetypes (
                 typeID INTEGER PRIMARY KEY,
                 typeName TEXT,
                 groupID INTEGER,
@@ -89,7 +89,7 @@ class TestFitCheckMarketData:
         """)
 
         conn.execute("""
-            INSERT INTO inv_info VALUES
+            INSERT INTO sdetypes VALUES
             (33157, 'Hurricane Fleet Issue', 6, 'Battlecruiser', 6, 'Ship'),
             (2048, 'Damage Control II', 7, 'Damage Control', 7, 'Module'),
             (519, 'Gyrostabilizer II', 8, 'Gyrostabilizer', 7, 'Module'),

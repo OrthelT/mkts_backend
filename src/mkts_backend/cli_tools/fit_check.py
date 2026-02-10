@@ -351,7 +351,7 @@ def _is_ship(
     Checks in order:
     1. If category_id is provided and equals 6 (Ship category)
     2. If type_id exists in ship_targets table
-    3. Lookup categoryID in sde.db inv_info table
+    3. Lookup categoryID in sdelite.db sdetypes table
 
     Args:
         type_id: The type ID to check
@@ -375,10 +375,10 @@ def _is_ship(
         if result:
             return True
 
-    # Check 3: Look up in SDE inv_info table
+    # Check 3: Look up in SDE sdetypes table
     sde_db = DatabaseConfig("sde")
     with sde_db.engine.connect() as conn:
-        query = text("SELECT categoryID FROM inv_info WHERE typeID = :type_id")
+        query = text("SELECT categoryID FROM sdetypes WHERE typeID = :type_id")
         result = conn.execute(query, {"type_id": type_id}).fetchone()
         if result and result[0] == 6:
             return True
@@ -457,7 +457,7 @@ def _get_type_name_from_sde(type_id: int) -> str:
     """Get type name from SDE database."""
     sde_db = DatabaseConfig("sde")
     with sde_db.engine.connect() as conn:
-        query = text("SELECT typeName FROM inv_info WHERE typeID = :type_id")
+        query = text("SELECT typeName FROM sdetypes WHERE typeID = :type_id")
         result = conn.execute(query, {"type_id": type_id}).fetchone()
         return result[0] if result else f"Unknown (ID: {type_id})"
 
@@ -900,7 +900,7 @@ def _resolve_module_identity(
     if type_id is not None:
         with sde_db.engine.connect() as conn:
             query = text(
-                "SELECT typeName FROM inv_info WHERE typeID = :type_id")
+                "SELECT typeName FROM sdetypes WHERE typeID = :type_id")
             result = conn.execute(query, {"type_id": type_id}).fetchone()
             if result:
                 return type_id, result[0]
@@ -910,7 +910,7 @@ def _resolve_module_identity(
         with sde_db.engine.connect() as conn:
             # Try exact match first
             query = text(
-                "SELECT typeID, typeName FROM inv_info WHERE typeName = :name"
+                "SELECT typeID, typeName FROM sdetypes WHERE typeName = :name"
             )
             result = conn.execute(query, {"name": type_name}).fetchone()
             if result:
@@ -918,7 +918,7 @@ def _resolve_module_identity(
 
             # Try partial match
             query = text(
-                "SELECT typeID, typeName FROM inv_info "
+                "SELECT typeID, typeName FROM sdetypes "
                 "WHERE typeName LIKE :pattern ORDER BY typeName LIMIT 10"
             )
             rows = conn.execute(

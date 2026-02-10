@@ -650,7 +650,7 @@ def get_fit_info(fit_id: int, remote: bool = False) -> Optional[dict]:
         with sde_engine.connect() as conn:
             ship_name = conn.execute(
                 text("""
-                SELECT typeName FROM inv_info WHERE typeID = :type_id
+                SELECT typeName FROM sdetypes WHERE typeID = :type_id
             """),
                 {"type_id": result[3]},
             ).scalar()

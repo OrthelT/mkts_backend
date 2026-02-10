@@ -131,7 +131,7 @@ def upsert_database(
     Returns:
         True if successful, False otherwise
     """
-    WIPE_REPLACE_TABLES = ["marketstats", "doctrines", "marketorders"]
+    WIPE_REPLACE_TABLES = ["marketstats", "doctrines"]
     tabname = table.__tablename__
     is_wipe_replace = tabname in WIPE_REPLACE_TABLES
     logger.info(f"Processing table: {tabname}, wipe_replace: {is_wipe_replace}")

@@ -144,7 +144,7 @@ Configuration is now managed through `settings.toml` with market-specific config
 
 ## External Dependencies
 
-- **EVE Static Data Export (SDE):** `sde.db` - game item/type information (synced from Turso)
+- **EVE Static Data Export (SDE):** `sdelite.db` - game item/type information (synced from Turso), uses `sdetypes` table for type lookups
 - **Custom dbtools:** External dependency package `mydbtools` for database utilities
 - **Turso/libsql:** For remote database synchronization (optional in dev, required in production)
 - **Google Sheets API:** For automated market data reporting (optional)
@@ -728,7 +728,7 @@ uv run mkts-backend
 # - wcmktprod.db (primary market database)
 # - wcmktnorth2.db (deployment market database, if configured)
 # - wcfitting.db (fittings/doctrines)
-# - sde.db (Eve static data export)
+# - sdelite.db (Eve static data export)
 ```
 
 **Database Schema**:

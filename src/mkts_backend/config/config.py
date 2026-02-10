@@ -46,8 +46,8 @@ class DatabaseConfig:
 
     _db_paths = {
         _testing_db_alias: _testing_db_file,
-        "sde": "sde.db",
-        "fittings": "wcfitting.db",
+        "sde": settings["db"]["shared"]["sde_file"],
+        "fittings": settings["db"]["shared"]["fittings_file"],
         _production_db_alias: _production_db_file,
         _deployment_db_alias: _deployment_db_file,
     }

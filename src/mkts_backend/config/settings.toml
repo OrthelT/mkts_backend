@@ -91,7 +91,7 @@ deployment_database_file = "wcmktnorth2.db"
 # Shared databases (same for all markets)
 [db.shared]
 sde_alias = "sde"
-sde_file = "sde.db"
+sde_file = "sdelite.db"
 fittings_alias = "fittings"
 fittings_file = "wcfitting.db"
 

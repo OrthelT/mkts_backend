@@ -22,15 +22,36 @@ def get_type_names_from_df(df: pd.DataFrame) -> pd.DataFrame:
     if not verify_db_exists:
         logger.error("SDE database is not up to date. Exiting...")
         sde_db.sync()
-    
+
+    input_type_ids = set(df["type_id"].unique())
+    rename_map = {"typeID": "type_id", "typeName": "type_name", "groupName": "group_name", "categoryName": "category_name", "categoryID": "category_id"}
+    cols = ["typeID", "typeName", "groupName", "categoryName", "categoryID"]
+    out_cols = ["type_id", "type_name", "group_name", "category_name", "category_id"]
+
     engine = sde_db.engine
     with engine.connect() as conn:
         stmt = text("SELECT typeID, typeName, groupName, categoryName, categoryID FROM sdetypes")
         res = conn.execute(stmt)
-        df = pd.DataFrame(res.fetchall(), columns=["typeID", "typeName", "groupName", "categoryName", "categoryID"])
-        df = df.rename(columns={"typeID": "type_id", "typeName": "type_name", "groupName": "group_name", "categoryName": "category_name", "categoryID": "category_id"})
+        result = pd.DataFrame(res.fetchall(), columns=cols).rename(columns=rename_map)
+
+        missing = input_type_ids - set(result["type_id"])
+        if missing:
+            placeholders = ','.join([f':id_{i}' for i in range(len(missing))])
+            params = {f'id_{i}': int(tid) for i, tid in enumerate(missing)}
+            fallback_stmt = text(f"""
+                SELECT t.typeID, t.typeName, g.groupName, c.categoryName, c.categoryID
+                FROM invTypes t
+                LEFT JOIN invGroups g ON t.groupID = g.groupID
+                LEFT JOIN invCategories c ON g.categoryID = c.categoryID
+                WHERE t.typeID IN ({placeholders})
+            """)
+            fb_res = conn.execute(fallback_stmt, params)
+            fb_df = pd.DataFrame(fb_res.fetchall(), columns=cols).rename(columns=rename_map)
+            if not fb_df.empty:
+                logger.info(f"Resolved {len(fb_df)} type names from invTypes fallback")
+                result = pd.concat([result, fb_df], ignore_index=True)
     engine.dispose()
-    return df[["type_id", "type_name", "group_name", "category_name", "category_id"]]
+    return result[out_cols]
 
 def get_type_name(type_id: int) -> str:
     db = DatabaseConfig("sde")

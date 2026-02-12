@@ -553,19 +553,33 @@ def save_esi_cache(results: list[dict], region_id: int, market_ctx: Optional["Ma
             logger.info("No cache entries to save")
             return
 
+        # Batch inserts into multi-row VALUES to minimize remote round trips.
+        # SQLite limit is 999 params; 5 params per row → 199 max, use 100 for safety.
+        chunk_size = 100
         with engine.connect() as conn:
-            for entry in entries:
-                conn.execute(
-                    text("""
-                        INSERT INTO esi_request_cache (type_id, region_id, etag, last_modified, last_checked)
-                        VALUES (:type_id, :region_id, :etag, :last_modified, :last_checked)
-                        ON CONFLICT(type_id, region_id) DO UPDATE SET
-                            etag = excluded.etag,
-                            last_modified = excluded.last_modified,
-                            last_checked = excluded.last_checked
-                    """),
-                    entry,
-                )
+            for i in range(0, len(entries), chunk_size):
+                chunk = entries[i : i + chunk_size]
+                # Build multi-row VALUES clause with unique param names per row
+                value_clauses = []
+                params = {}
+                for j, entry in enumerate(chunk):
+                    suffix = f"_{j}"
+                    value_clauses.append(
+                        f"(:type_id{suffix}, :region_id{suffix}, :etag{suffix}, "
+                        f":last_modified{suffix}, :last_checked{suffix})"
+                    )
+                    for key, val in entry.items():
+                        params[f"{key}{suffix}"] = val
+
+                sql = f"""
+                    INSERT INTO esi_request_cache (type_id, region_id, etag, last_modified, last_checked)
+                    VALUES {', '.join(value_clauses)}
+                    ON CONFLICT(type_id, region_id) DO UPDATE SET
+                        etag = excluded.etag,
+                        last_modified = excluded.last_modified,
+                        last_checked = excluded.last_checked
+                """
+                conn.execute(text(sql), params)
             conn.commit()
         logger.info(f"Saved {len(entries)} ESI cache entries for region {region_id}")
     except Exception as e:

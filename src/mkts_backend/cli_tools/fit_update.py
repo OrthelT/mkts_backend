@@ -1498,7 +1498,7 @@ def fit_update_command(
         )
 
     elif subcommand == "add":
-        if not eft_text and not file_path:
+        if not file_path:
             eft_text = get_multiline_input()
             file_path = None
 

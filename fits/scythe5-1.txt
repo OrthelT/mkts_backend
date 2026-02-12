@@ -1,0 +1,33 @@
+[Scythe,   WC - Shield Logi Scythe v5.1]
+
+Damage Control II
+Power Diagnostic System II
+Capacitor Power Relay II
+Capacitor Power Relay II
+Capacitor Power Relay II
+
+Multispectrum Shield Hardener II
+50MN Y-T8 Compact Microwarpdrive
+Large F-S9 Regolith Compact Shield Extender
+Large F-S9 Regolith Compact Shield Extender
+Medium Compact Pb-Acid Cap Battery
+
+Medium Murky Compact Remote Shield Booster
+Medium Murky Compact Remote Shield Booster
+Small Asymmetric Enduring Remote Shield Booster
+
+Medium Ancillary Current Router I
+Medium EM Shield Reinforcer I
+Medium Core Defense Field Extender I
+
+
+
+
+
+Light Armor Maintenance Bot I x5
+Light Shield Maintenance Bot I x4
+
+
+Nanite Repair Paste x50
+Standard Mindflood Booster x1
+

@@ -47,7 +47,7 @@ def parse_args(args: list[str]) -> dict | None:
             break
 
     # Handle --help: check for subcommand-specific help first
-    if "--help" in args:
+    if "--help" in args or "-h" in args:
         # Check if this is a subcommand help request
         subcommands_with_help = [
             "fit-check",
@@ -130,7 +130,7 @@ def parse_args(args: list[str]) -> dict | None:
 
     if "update-target" in args:
         # Check for subcommand help
-        if "--help" in args:
+        if "--help" in args or "-h" in args:
             display_update_target_help()
             exit(0)
         fit_id = None
@@ -174,7 +174,7 @@ def parse_args(args: list[str]) -> dict | None:
 
     if "update-fit" in args:
         # Check for subcommand help
-        if "--help" in args:
+        if "--help" in args or "-h" in args:
             display_update_fit_help()
             exit(0)
 
@@ -189,11 +189,11 @@ def parse_args(args: list[str]) -> dict | None:
         # Supports: --market=primary/deployment/both, --primary, --deployment, --both
         target_markets = ["primary"]  # default
         for arg in args:
-            if arg.startswith("--fit-file="):
+            if arg.startswith("--fit-file=") or arg.startswith("--file="):
                 fit_file = arg.split("=", 1)[1]
             elif arg.startswith("--meta-file="):
                 meta_file = arg.split("=", 1)[1]
-            elif arg.startswith("--fit-id=") or arg.startswith("--fit_id"):
+            elif arg.startswith("--fit-id=") or arg.startswith("--fit_id=") or arg.startswith("fit=") or arg.startswith("id="):
                 try:
                     fit_id = int(arg.split("=", 1)[1])
                 except ValueError:
@@ -205,12 +205,14 @@ def parse_args(args: list[str]) -> dict | None:
                     target_markets = ["primary", "deployment"]
                 elif market_val in ("primary", "deployment"):
                     target_markets = [market_val]
+                elif market_val.lower() == "north":
+                    target_markets = ["deployment"]
                 else:
                     print("Error: --market must be one of: primary, deployment, both")
                     return None
             elif arg == "--both":
                 target_markets = ["primary", "deployment"]
-            elif arg == "--deployment":
+            elif arg.lower() == "--deployment" or arg.lower() == "--north":
                 target_markets = ["deployment"]
             elif arg == "--primary":
                 target_markets = ["primary"]
@@ -325,7 +327,7 @@ def parse_args(args: list[str]) -> dict | None:
     # Handle fit-check command
     if "fit-check" in args:
         # Check for subcommand help
-        if "--help" in args:
+        if "--help" in args or "-h" in args:
             display_fit_check_help()
             exit(0)
 
@@ -337,7 +339,7 @@ def parse_args(args: list[str]) -> dict | None:
         fit_id = None
 
         for arg in args:
-            if arg.startswith("--file="):
+            if arg.startswith("--file=") or arg.startswith("--fit-file"):
                 file_path = arg.split("=", 1)[1]
             elif arg.startswith("--fit-id=") or arg.startswith("--fit_id="):
                 try:
@@ -398,7 +400,7 @@ def parse_args(args: list[str]) -> dict | None:
     # Handle fit-update command with subcommands
     if "fit-update" in args:
         # Check for subcommand help
-        if "--help" in args:
+        if "--help" in args or "-h" in args:
             display_fit_update_help()
             exit(0)
 
@@ -436,18 +438,21 @@ def parse_args(args: list[str]) -> dict | None:
 
         fit_ids_str = None
         for arg in args:
-            if arg.startswith("--file="):
+            if arg.startswith("--file=") or arg.startswith("--fit-file"):
                 file_path = arg.split("=", 1)[1]
             elif arg.startswith("--meta-file="):
                 meta_file = arg.split("=", 1)[1]
-            elif arg.startswith("--fit-id=") or arg.startswith("--fit_id="):
+            elif arg.startswith("--fit-id=") or arg.startswith("--fit_id=") or arg.startswith("--id="):
                 fit_ids_str = arg.split("=", 1)[1]
             elif arg.startswith("--target="):
                 # Target quantity for doctrine-add-fit
                 target_qty = int(arg.split("=", 1)[1])
             elif arg.startswith("--db-alias="):
                 db_alias = arg.split("=", 1)[1]
-            elif arg == "--north":
+            elif arg == "--north" or arg == "deployment":
+                db_alias = "wcmktnorth"
+                market_alias = "deployment"
+            elif arg.startswith("--market") and arg.split("=", 1)[1] == "deployment":
                 db_alias = "wcmktnorth"
                 market_alias = "deployment"
 

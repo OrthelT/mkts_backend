@@ -1318,7 +1318,7 @@ def _handle_needed(sub_args: List[str]) -> None:
     for arg in sub_args:
         if arg.startswith("--ship="):
             ship_filter = arg.split("=", 1)[1]
-        elif arg.startswith("--fit="):
+        elif arg.startswith("--fit=") or arg.startswith("--fit-id=") or arg.startswith("--fit_id=") or arg.startswith("--id="):
             try:
                 fit_filter = int(arg.split("=", 1)[1])
             except ValueError:
@@ -1332,7 +1332,9 @@ def _handle_needed(sub_args: List[str]) -> None:
                 return
         elif arg.startswith("--market="):
             market_alias = arg.split("=", 1)[1]
-        elif arg == "--deployment":
+            if market_alias == "north":
+                market_alias == "deployment"
+        elif arg == "--deployment" or arg == "--north":
             market_alias = "deployment"
         elif arg == "--primary":
             market_alias = "primary"
@@ -1617,17 +1619,17 @@ def main():
     paste_mode = False
 
     for arg in args:
-        if arg.startswith("--fit="):
+        if arg.startswith("--fit=") or arg.startswith("--fit-id=") or arg.startswith("--fit_id=") or arg.startswith("--id="):
             try:
                 fit_id = int(arg.split("=", 1)[1])
             except ValueError:
                 console.print("[red]Error: --fit must be an integer[/red]")
                 sys.exit(1)
-        elif arg.startswith("--file="):
+        elif arg.startswith("--file=") or arg.startswith("--fit-file"):
             file_path = arg.split("=", 1)[1]
         elif arg.startswith("--market="):
             market_alias = arg.split("=", 1)[1]
-        elif arg == "--deployment":
+        elif arg == "--deployment" or arg == "--north":
             market_alias = "deployment"
         elif arg == "--primary":
             market_alias = "primary"

@@ -70,7 +70,6 @@ This is a comprehensive Eve Online market data collection and analysis system co
 The primary orchestration file that coordinates all data collection and processing:
 - `fetch_market_orders()` - Gets current market orders from ESI API with OAuth
 - `fetch_history()` - Gets historical market data for watchlist items from primary region
-- `fetch_jita_history()` - Gets comparative historical data from The Forge region (Jita)
 - `calculate_market_stats()` - Computes statistics from orders and history
 - `calculate_doctrine_stats()` - Analyzes ship fitting availability
 - Regional order processing and system-specific market analysis
@@ -102,7 +101,6 @@ Handles Eve Online SSO authentication:
 
 ### Regional Market Processing (`nakah.py`)
 Specialized regional market data handling:
-- `get_region_orders()` - Fetches all market orders for a region
 - `process_system_orders()` - Processes orders for specific systems
 - `calculate_total_market_value()` - Calculates total market value excluding blueprints/skills
 - `calculate_total_ship_count()` - Counts ships available on the market
@@ -737,10 +735,8 @@ uv run mkts-backend
 - `marketstats`: Calculated statistics
 - `doctrines`: Fitting availability analysis
 - `watchlist`: Items being tracked
-- `region_orders`: Regional market data
 - `ship_targets`: Ship production targets
 - `doctrine_map`: Doctrine to fitting mappings
-- `doctrine_info`: Doctrine metadata
 - `doctrine_fits`: Doctrine fitting configurations with target quantities and market flags
   - Fields: `id`, `doctrine_name`, `fit_name`, `ship_type_id`, `doctrine_id`, `fit_id`, `ship_name`, `target`, `market_flag`
   - Used by fit-check to retrieve target quantities for fits

@@ -15,13 +15,13 @@ class TestFullMarketContextFlow:
     """Integration tests for complete market context flow."""
 
     def test_primary_market_flow_uses_correct_database(self, primary_market_context):
-        """Test that primary market operations use wcmktprod database."""
+        """Test that primary market operations use wcmkttest database in development."""
         from mkts_backend.config.config import DatabaseConfig
 
         db = DatabaseConfig(market_context=primary_market_context)
 
-        assert db.alias == "wcmktprod"
-        assert "wcmktprod" in db.path
+        assert db.alias == "wcmkttest"
+        assert "wcmkttest" in db.path
 
     def test_deployment_market_flow_uses_correct_database(self, deployment_market_context):
         """Test that deployment market operations use wcmktnorth database."""
@@ -47,7 +47,7 @@ class TestMarketContextConfigChain:
         esi = ESIConfig(market_context=primary_market_context)
         gsheets = GoogleSheetConfig(market_context=primary_market_context)
 
-        assert db.alias == "wcmktprod"
+        assert db.alias == "wcmkttest"
         assert esi.region_id == 10000003
         assert gsheets.google_sheet_url == primary_market_context.gsheets_url
 
@@ -266,12 +266,12 @@ class TestMarketContextEnvironmentVariables:
         url_env = primary_market_context.turso_url_env
         token_env = primary_market_context.turso_token_env
 
-        assert url_env == "TURSO_WCMKTPROD_URL"
-        assert token_env == "TURSO_WCMKTPROD_TOKEN"
+        assert url_env == "TURSO_WCMKTTEST_URL"
+        assert token_env == "TURSO_WCMKTTEST_TOKEN"
 
         # With mocked env vars
-        assert os.environ.get(url_env) == "libsql://test-primary.turso.io"
-        assert os.environ.get(token_env) == "test-primary-token"
+        assert os.environ.get(url_env) == "libsql://test-wcmkttest.turso.io"
+        assert os.environ.get(token_env) == "test-wcmkttest-token"
 
     def test_deployment_market_turso_env_vars(self, deployment_market_context, mock_env_vars):
         """Test deployment market resolves correct Turso environment variables."""
@@ -305,7 +305,7 @@ class TestConcurrentMarketOperations:
         # Verify alternating configs are correct
         for i, config in enumerate(configs):
             if i % 2 == 0:
-                assert config.alias == "wcmktprod"
+                assert config.alias == "wcmkttest"
             else:
                 assert config.alias == "wcmktnorth"
 
@@ -325,6 +325,6 @@ class TestConcurrentMarketOperations:
         # Verify all results are correct
         for market, alias in results:
             if market == "primary":
-                assert alias == "wcmktprod"
+                assert alias == "wcmkttest"
             else:
                 assert alias == "wcmktnorth"

@@ -18,8 +18,8 @@ class TestDatabaseConfigRouting:
 
         db = DatabaseConfig(market_context=primary_market_context)
 
-        assert db.alias == "wcmktprod"
-        assert "wcmktprod" in db.path
+        assert db.alias == "wcmkttest"
+        assert "wcmkttest" in db.path
 
     def test_database_config_uses_deployment_market_context(self, deployment_market_context):
         """Test DatabaseConfig uses deployment market context settings."""
@@ -60,7 +60,7 @@ class TestDatabaseConfigRouting:
         # Even if alias is provided, market_context should take precedence
         db = DatabaseConfig(alias="something_else", market_context=primary_market_context)
 
-        assert db.alias == "wcmktprod"
+        assert db.alias == "wcmkttest"
 
 
 class TestESIConfigRouting:
@@ -204,7 +204,7 @@ class TestDbHandlersRouting:
 
         db = _get_db(primary_market_context)
 
-        assert db.alias == "wcmktprod"
+        assert db.alias == "wcmkttest"
 
     def test_get_db_helper_with_deployment_context(self, deployment_market_context):
         """Test _get_db helper returns correct config for deployment market."""
@@ -233,7 +233,7 @@ class TestDbQueriesRouting:
 
         db = _get_db(primary_market_context)
 
-        assert db.alias == "wcmktprod"
+        assert db.alias == "wcmkttest"
 
     def test_get_db_helper_with_deployment_context(self, deployment_market_context):
         """Test _get_db helper returns correct config for deployment market."""
@@ -253,7 +253,7 @@ class TestDataProcessingRouting:
 
         db = _get_db(primary_market_context)
 
-        assert db.alias == "wcmktprod"
+        assert db.alias == "wcmkttest"
 
     def test_get_db_helper_with_deployment_context(self, deployment_market_context):
         """Test _get_db helper returns correct config for deployment market."""
@@ -306,8 +306,8 @@ class TestDatabaseIsolation:
         db = _get_db(primary_market_context)
 
         # Verify correct database was selected
-        assert db.alias == "wcmktprod"
-        assert "wcmktprod" in db.path
+        assert db.alias == "wcmkttest"
+        assert "wcmkttest" in db.path
 
     def test_deployment_operations_use_deployment_database(self, deployment_market_context):
         """Test that operations with deployment context use deployment database."""
@@ -329,8 +329,8 @@ class TestDatabaseIsolation:
         primary_db = DatabaseConfig(market_context=primary_market_context)
         deployment_db = DatabaseConfig(market_context=deployment_market_context)
 
-        # Primary should reference wcmktprod
-        assert "wcmktprod" in primary_db.path.lower() or "prod" in primary_db.path.lower()
+        # Primary should reference wcmkttest in development mode
+        assert "wcmkttest" in primary_db.path.lower() or "test" in primary_db.path.lower()
 
         # Deployment should reference wcmktnorth
         assert "wcmktnorth" in deployment_db.path.lower() or "north" in deployment_db.path.lower()
@@ -359,7 +359,7 @@ class TestCrossMarketIsolation:
         db3 = DatabaseConfig(market_context=primary_market_context)
 
         # Verify isolation
-        assert primary_alias == "wcmktprod"
+        assert primary_alias == "wcmkttest"
         assert deployment_alias == "wcmktnorth"
         assert db3.alias == primary_alias  # Back to primary
         assert db3.path == primary_path
@@ -379,7 +379,7 @@ class TestCrossMarketIsolation:
         h_deployment = handlers_get_db(deployment_market_context)
 
         # Verify each got the correct database
-        assert h_primary.alias == "wcmktprod"
+        assert h_primary.alias == "wcmkttest"
         assert q_deployment.alias == "wcmktnorth"
-        assert p_primary.alias == "wcmktprod"
+        assert p_primary.alias == "wcmkttest"
         assert h_deployment.alias == "wcmktnorth"

@@ -15,9 +15,14 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 @pytest.fixture
 def primary_market_context():
-    """Create a primary market context for testing."""
-    from mkts_backend.config.market_context import MarketContext
-    return MarketContext.from_settings("primary")
+    """Create a primary market context for testing (forces development mode)."""
+    from mkts_backend.config.market_context import MarketContext, _load_settings
+
+    settings = _load_settings()
+    settings["app"]["environment"] = "development"
+
+    with patch("mkts_backend.config.market_context._load_settings", return_value=settings):
+        return MarketContext.from_settings("primary")
 
 
 @pytest.fixture
@@ -31,9 +36,12 @@ def deployment_market_context():
 def mock_env_vars():
     """Mock environment variables for Turso database connections."""
     env_vars = {
-        # Primary market
+        # Primary market (production)
         "TURSO_WCMKTPROD_URL": "libsql://test-primary.turso.io",
         "TURSO_WCMKTPROD_TOKEN": "test-primary-token",
+        # Primary market (development/testing)
+        "TURSO_WCMKTTEST_URL": "libsql://test-wcmkttest.turso.io",
+        "TURSO_WCMKTTEST_TOKEN": "test-wcmkttest-token",
         # Deployment market
         "TURSO_WCMKTNORTH_URL": "libsql://test-deployment.turso.io",
         "TURSO_WCMKTNORTH_TOKEN": "test-deployment-token",

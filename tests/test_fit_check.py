@@ -165,21 +165,21 @@ class TestFitCheckDisplay:
         from mkts_backend.cli_tools.rich_display import format_isk
 
         assert format_isk(1_500_000_000) == "1.50B ISK"
-        assert format_isk(250_000_000) == "250.00M ISK"
+        assert format_isk(250_000_000) == "250.0M ISK"
 
     def test_format_isk_millions(self):
         """Test ISK formatting for millions."""
         from mkts_backend.cli_tools.rich_display import format_isk
 
-        assert format_isk(5_000_000) == "5.00M ISK"
-        assert format_isk(1_500_000) == "1.50M ISK"
+        assert format_isk(5_000_000) == "5.0M ISK"
+        assert format_isk(1_500_000) == "1.5M ISK"
 
     def test_format_isk_thousands(self):
         """Test ISK formatting for thousands."""
         from mkts_backend.cli_tools.rich_display import format_isk
 
-        assert format_isk(50_000) == "50.00K ISK"
-        assert format_isk(1_500) == "1.50K ISK"
+        assert format_isk(50_000) == "50.0K ISK"
+        assert format_isk(1_500) == "1.5K ISK"
 
     def test_format_isk_none(self):
         """Test ISK formatting for None value."""
@@ -196,11 +196,11 @@ class TestFitCheckDisplay:
         assert format_quantity(None) == "0"
 
     def test_format_fits(self):
-        """Test fits formatting."""
+        """Test fits formatting (rounded to whole numbers)."""
         from mkts_backend.cli_tools.rich_display import format_fits
 
-        assert format_fits(10.5) == "10.5"
-        assert format_fits(0.5) == "0.5"
+        assert format_fits(10.5) == "10"
+        assert format_fits(0.5) == "0"
         assert format_fits(None) == "N/A"
 
 

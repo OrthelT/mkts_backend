@@ -216,3 +216,231 @@ def captured_database_calls():
             self.calls = []
 
     return CallCapture()
+
+
+# ---------------------------------------------------------------------------
+# In-memory database fixtures for unit tests
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def in_memory_market_db(tmp_path):
+    """File-backed SQLite engine pre-populated with market test data.
+
+    Tables: watchlist, marketorders, market_history, doctrines, marketstats.
+    Returns (engine, db_path) — db_path is needed to create new engines
+    after the production code calls engine.dispose().
+    """
+    from sqlalchemy import create_engine, text as sa_text
+
+    # Use a temp file so the DB survives engine.dispose() calls in
+    # production code (in-memory DBs vanish when connections close).
+    db_path = tmp_path / "test_market.db"
+    engine = create_engine(f"sqlite:///{db_path}")
+    with engine.connect() as conn:
+        # -- watchlist --
+        conn.execute(sa_text("""
+            CREATE TABLE watchlist (
+                type_id INTEGER PRIMARY KEY,
+                type_name TEXT,
+                group_name TEXT,
+                category_name TEXT,
+                category_id INTEGER,
+                group_id INTEGER
+            )
+        """))
+        conn.execute(sa_text(
+            "INSERT INTO watchlist VALUES (34,'Tritanium','Mineral','Material',4,18)"
+        ))
+        conn.execute(sa_text(
+            "INSERT INTO watchlist VALUES (35,'Pyerite','Mineral','Material',4,18)"
+        ))
+        conn.execute(sa_text(
+            "INSERT INTO watchlist VALUES (36,'Mexallon','Mineral','Material',4,18)"
+        ))
+
+        # -- marketorders (sell orders for percentile tests) --
+        conn.execute(sa_text("""
+            CREATE TABLE marketorders (
+                order_id INTEGER PRIMARY KEY,
+                type_id INTEGER,
+                price REAL,
+                volume_remain INTEGER,
+                is_buy_order INTEGER
+            )
+        """))
+        # 10 sell orders for type_id=34 (prices 5.0..14.0)
+        for i in range(10):
+            conn.execute(sa_text(
+                f"INSERT INTO marketorders VALUES ({100+i}, 34, {5.0+i}, {1000-i*50}, 0)"
+            ))
+        # 1 sell order for type_id=35
+        conn.execute(sa_text(
+            "INSERT INTO marketorders VALUES (200, 35, 10.0, 500, 0)"
+        ))
+        # buy order (should be excluded)
+        conn.execute(sa_text(
+            "INSERT INTO marketorders VALUES (300, 34, 3.0, 200, 1)"
+        ))
+
+        # -- market_history --
+        conn.execute(sa_text("""
+            CREATE TABLE market_history (
+                date TEXT,
+                type_id TEXT,
+                type_name TEXT,
+                average REAL,
+                volume INTEGER,
+                highest REAL,
+                lowest REAL,
+                order_count INTEGER,
+                timestamp TEXT
+            )
+        """))
+        conn.execute(sa_text("""
+            INSERT INTO market_history
+            VALUES ('2026-02-10','34','Tritanium',8.5,2000,10.0,6.0,50,'2026-02-10 12:00:00')
+        """))
+        conn.execute(sa_text("""
+            INSERT INTO market_history
+            VALUES ('2026-02-11','34','Tritanium',9.0,1800,11.0,7.0,45,'2026-02-11 12:00:00')
+        """))
+        conn.execute(sa_text("""
+            INSERT INTO market_history
+            VALUES ('2026-02-10','35','Pyerite',10.0,500,12.0,8.0,20,'2026-02-10 12:00:00')
+        """))
+
+        # -- marketstats --
+        conn.execute(sa_text("""
+            CREATE TABLE marketstats (
+                type_id INTEGER PRIMARY KEY,
+                total_volume_remain INTEGER,
+                min_price REAL,
+                price REAL,
+                avg_price REAL,
+                avg_volume REAL,
+                group_id INTEGER,
+                type_name TEXT,
+                group_name TEXT,
+                category_id INTEGER,
+                category_name TEXT,
+                days_remaining REAL,
+                last_update TEXT
+            )
+        """))
+        conn.execute(sa_text("""
+            INSERT INTO marketstats
+            VALUES (34,5500,5.0,5.45,8.75,1900.0,18,'Tritanium','Mineral',4,'Material',2.9,'2026-02-12 00:00:00')
+        """))
+        conn.execute(sa_text("""
+            INSERT INTO marketstats
+            VALUES (35,500,10.0,10.0,10.0,500.0,18,'Pyerite','Mineral',4,'Material',1.0,'2026-02-12 00:00:00')
+        """))
+
+        # -- doctrines --
+        conn.execute(sa_text("""
+            CREATE TABLE doctrines (
+                id INTEGER PRIMARY KEY,
+                fit_id INTEGER,
+                ship_id INTEGER,
+                ship_name TEXT,
+                hulls INTEGER,
+                type_id INTEGER,
+                type_name TEXT,
+                fit_qty INTEGER,
+                fits_on_mkt REAL,
+                total_stock INTEGER,
+                price REAL,
+                avg_vol REAL,
+                days REAL,
+                group_id INTEGER,
+                group_name TEXT,
+                category_id INTEGER,
+                category_name TEXT,
+                timestamp TEXT
+            )
+        """))
+        conn.execute(sa_text("""
+            INSERT INTO doctrines
+            VALUES (1,1,587,'Rifter',0,34,'Tritanium',100,0,0,0,0,0,18,'Mineral',4,'Material',NULL)
+        """))
+        conn.execute(sa_text("""
+            INSERT INTO doctrines
+            VALUES (2,1,587,'Rifter',0,35,'Pyerite',50,0,0,0,0,0,18,'Mineral',4,'Material',NULL)
+        """))
+        conn.execute(sa_text("""
+            INSERT INTO doctrines
+            VALUES (3,2,24690,'Drake',0,34,'Tritanium',200,0,0,0,0,0,18,'Mineral',4,'Material',NULL)
+        """))
+
+        conn.commit()
+    yield db_path
+    engine.dispose()
+
+
+@pytest.fixture
+def in_memory_sde_db(tmp_path):
+    """File-backed SQLite engine with sdetypes and invTypes/invGroups/invCategories.
+
+    Known mappings: 34=Tritanium, 35=Pyerite, 36=Mexallon in sdetypes.
+    type_id 37 (Isogen) only exists in invTypes fallback tables.
+    """
+    from sqlalchemy import create_engine, text as sa_text
+
+    db_path = tmp_path / "test_sde.db"
+    engine = create_engine(f"sqlite:///{db_path}")
+    with engine.connect() as conn:
+        conn.execute(sa_text("""
+            CREATE TABLE sdetypes (
+                typeID INTEGER PRIMARY KEY,
+                typeName TEXT,
+                groupID INTEGER,
+                groupName TEXT,
+                categoryID INTEGER,
+                categoryName TEXT,
+                volume REAL,
+                metaGroupID INTEGER,
+                metaGroupName TEXT
+            )
+        """))
+        conn.execute(sa_text("INSERT INTO sdetypes VALUES (34,'Tritanium',18,'Mineral',4,'Material',0.01,1,'Tech I')"))
+        conn.execute(sa_text("INSERT INTO sdetypes VALUES (35,'Pyerite',18,'Mineral',4,'Material',0.01,1,'Tech I')"))
+        conn.execute(sa_text("INSERT INTO sdetypes VALUES (36,'Mexallon',18,'Mineral',4,'Material',0.01,1,'Tech I')"))
+
+        # Fallback tables
+        conn.execute(sa_text("""
+            CREATE TABLE invTypes (typeID INTEGER PRIMARY KEY, typeName TEXT, groupID INTEGER)
+        """))
+        conn.execute(sa_text("INSERT INTO invTypes VALUES (37,'Isogen',18)"))
+
+        conn.execute(sa_text("""
+            CREATE TABLE invGroups (groupID INTEGER PRIMARY KEY, groupName TEXT, categoryID INTEGER)
+        """))
+        conn.execute(sa_text("INSERT INTO invGroups VALUES (18,'Mineral',4)"))
+
+        conn.execute(sa_text("""
+            CREATE TABLE invCategories (categoryID INTEGER PRIMARY KEY, categoryName TEXT)
+        """))
+        conn.execute(sa_text("INSERT INTO invCategories VALUES (4,'Material')"))
+
+        conn.commit()
+    yield db_path
+    engine.dispose()
+
+
+@pytest.fixture
+def mock_esi_config():
+    """Mock ESIConfig with test URLs and headers (no real auth)."""
+    mock = MagicMock()
+    mock.alias = "primary"
+    mock.name = "Test Market"
+    mock.region_id = 10000003
+    mock.system_id = 30000240
+    mock.structure_id = 1035466617946
+    mock.market_orders_url = "https://esi.evetech.net/markets/structures/1035466617946"
+    mock.market_history_url = "https://esi.evetech.net/markets/10000003/history"
+    mock.user_agent = "test-agent"
+    mock.headers = {
+        "Accept": "application/json",
+        "Authorization": "Bearer test-token",
+    }
+    return mock

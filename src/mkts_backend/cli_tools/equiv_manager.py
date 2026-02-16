@@ -143,13 +143,18 @@ def _equiv_add_all(args: list[str], target_aliases: list[str]) -> bool:
 
     console.print(f"\n[bold]Target markets:[/bold] {', '.join(target_aliases)}")
 
+    success = True
     for alias in target_aliases:
         market_ctx = MarketContext.from_settings(alias)
         ensure_equiv_table(market_ctx)
         new_group_id = add_equiv_group(type_ids, market_ctx)
-        console.print(f"  [green]{alias}[/green]: created group {new_group_id}")
+        if new_group_id is None:
+            console.print(f"  [yellow]{alias}[/yellow]: skipped - type IDs already in an existing group")
+            success = False
+        else:
+            console.print(f"  [green]{alias}[/green]: created group {new_group_id}")
 
-    return True
+    return success
 
 
 def _equiv_remove_all(args: list[str], target_aliases: list[str]) -> bool:

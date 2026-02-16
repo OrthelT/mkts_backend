@@ -81,22 +81,59 @@ def get_next_equiv_group_id(market_ctx: Optional["MarketContext"] = None) -> int
         return result[0]
 
 
+def find_overlapping_group(
+    type_ids: list[int],
+    market_ctx: Optional["MarketContext"] = None,
+) -> Optional[int]:
+    """
+    Check if any existing group contains any of the given type_ids.
+
+    Returns the equiv_group_id if any type_id is already in a group,
+    or None if none of them are grouped yet.
+    """
+    db = _get_db(market_ctx)
+    # Build a parameterized IN clause
+    placeholders = ", ".join(f":tid_{i}" for i in range(len(type_ids)))
+    query = text(f"""
+        SELECT DISTINCT equiv_group_id
+        FROM module_equivalents
+        WHERE type_id IN ({placeholders})
+    """)
+    params = {f"tid_{i}": tid for i, tid in enumerate(type_ids)}
+
+    with db.engine.connect() as conn:
+        rows = conn.execute(query, params).fetchall()
+
+    if rows:
+        return rows[0][0]
+    return None
+
+
 def add_equiv_group(
     type_ids: list[int],
     market_ctx: Optional["MarketContext"] = None,
-) -> int:
+) -> int | None:
     """
     Add a new equivalence group.
 
     Resolves type names from SDE, inserts rows into module_equivalents.
+    Returns None if any of the type_ids already belong to an existing group.
 
     Args:
         type_ids: List of EVE type IDs to group as equivalents
         market_ctx: Optional market context
 
     Returns:
-        The new equiv_group_id
+        The new equiv_group_id, or None if blocked by overlap
     """
+    # Guard against duplicates
+    existing_gid = find_overlapping_group(type_ids, market_ctx)
+    if existing_gid is not None:
+        logger.warning(
+            f"Type IDs overlap with existing group {existing_gid}, skipping"
+        )
+        return None
+
     db = _get_db(market_ctx)
     equiv_group_id = get_next_equiv_group_id(market_ctx)
 

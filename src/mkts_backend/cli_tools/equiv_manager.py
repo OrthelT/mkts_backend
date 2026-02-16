@@ -25,18 +25,35 @@ logger = configure_logging(__name__)
 console = Console()
 
 
+def _get_target_markets(args: list[str], market_alias: str) -> list[str]:
+    """
+    Determine which markets to operate on.
+
+    Defaults to ALL markets since equivalents are universal game data.
+    Use --market=<alias> to target a single market.
+    """
+    for arg in args:
+        if arg.startswith("--market="):
+            return [arg.split("=", 1)[1]]
+    # Default: all available markets
+    return MarketContext.list_available()
+
+
 def equiv_command(args: list[str], market_alias: str = "primary") -> bool:
     """
     Route equiv subcommands.
 
+    Operates on ALL markets by default since module equivalents are
+    universal EVE game data. Use --market=<alias> to target one market.
+
     Args:
         args: Command arguments (after 'equiv')
-        market_alias: Market alias for database selection
+        market_alias: Market alias (overridden to all markets by default)
 
     Returns:
         True if command succeeded
     """
-    market_ctx = MarketContext.from_settings(market_alias)
+    target_aliases = _get_target_markets(args, market_alias)
 
     # Determine subcommand (first positional arg after "equiv")
     subcommand = None
@@ -50,11 +67,13 @@ def equiv_command(args: list[str], market_alias: str = "primary") -> bool:
         pass
 
     if subcommand == "list":
+        # List only needs one market (they should be identical)
+        market_ctx = MarketContext.from_settings(target_aliases[0])
         return _equiv_list(market_ctx)
     elif subcommand == "add":
-        return _equiv_add(args, market_ctx)
+        return _equiv_add_all(args, target_aliases)
     elif subcommand == "remove":
-        return _equiv_remove(args, market_ctx)
+        return _equiv_remove_all(args, target_aliases)
     else:
         _display_equiv_help()
         return True
@@ -91,8 +110,8 @@ def _equiv_list(market_ctx) -> bool:
     return True
 
 
-def _equiv_add(args: list[str], market_ctx) -> bool:
-    """Add a new equivalence group from type IDs."""
+def _equiv_add_all(args: list[str], target_aliases: list[str]) -> bool:
+    """Add a new equivalence group to all target markets."""
     type_ids_str = None
     for arg in args:
         if arg.startswith("--type-ids="):
@@ -113,9 +132,6 @@ def _equiv_add(args: list[str], market_ctx) -> bool:
         console.print("[red]Error: Need at least 2 type IDs for an equivalence group[/red]")
         return False
 
-    # Ensure table exists
-    ensure_equiv_table(market_ctx)
-
     # Preview what will be added
     console.print("\n[bold]Adding equivalence group:[/bold]")
     for tid in type_ids:
@@ -125,13 +141,19 @@ def _equiv_add(args: list[str], market_ctx) -> bool:
         else:
             console.print(f"  {tid}: [red]NOT FOUND in SDE[/red]")
 
-    new_group_id = add_equiv_group(type_ids, market_ctx)
-    console.print(f"\n[green]Created equivalence group {new_group_id}[/green]")
+    console.print(f"\n[bold]Target markets:[/bold] {', '.join(target_aliases)}")
+
+    for alias in target_aliases:
+        market_ctx = MarketContext.from_settings(alias)
+        ensure_equiv_table(market_ctx)
+        new_group_id = add_equiv_group(type_ids, market_ctx)
+        console.print(f"  [green]{alias}[/green]: created group {new_group_id}")
+
     return True
 
 
-def _equiv_remove(args: list[str], market_ctx) -> bool:
-    """Remove an equivalence group by ID."""
+def _equiv_remove_all(args: list[str], target_aliases: list[str]) -> bool:
+    """Remove an equivalence group from all target markets."""
     group_id = None
     for arg in args:
         if arg.startswith("--id="):
@@ -146,11 +168,16 @@ def _equiv_remove(args: list[str], market_ctx) -> bool:
         console.print("Usage: mkts-backend equiv remove --id=1")
         return False
 
-    count = remove_equiv_group(group_id, market_ctx)
-    if count > 0:
-        console.print(f"[green]Removed group {group_id} ({count} entries)[/green]")
-    else:
-        console.print(f"[yellow]No entries found for group {group_id}[/yellow]")
+    console.print(f"[bold]Target markets:[/bold] {', '.join(target_aliases)}")
+
+    for alias in target_aliases:
+        market_ctx = MarketContext.from_settings(alias)
+        count = remove_equiv_group(group_id, market_ctx)
+        if count > 0:
+            console.print(f"  [green]{alias}[/green]: removed group {group_id} ({count} entries)")
+        else:
+            console.print(f"  [yellow]{alias}[/yellow]: no entries for group {group_id}")
+
     return True
 
 
@@ -168,8 +195,12 @@ def _display_equiv_help():
     remove --id=<group_id>         Remove a group
 
 [bold]OPTIONS:[/bold]
-    --market=<alias>   Market to operate on (default: primary)
+    --market=<alias>   Target a single market (default: all markets)
     --help             Show this help
+
+[bold]NOTE:[/bold]
+    Module equivalents are universal EVE game data, so add/remove
+    operates on ALL markets by default. Use --market to target one.
 
 [bold]EXAMPLES:[/bold]
     mkts-backend equiv list

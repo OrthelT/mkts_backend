@@ -81,7 +81,7 @@ Manages all database operations:
   - `verify_db_exists()`: Ensures database and metadata are in consistent state
     - Handles 4 cases: neither exists, both exist, db without metadata, metadata without db
     - Automatically syncs from remote or nukes inconsistent states
-  - `sync()`: Syncs local database with remote Turso database
+  - `sync()`: Pulls remote Turso data into local database (one-way: cloud → local)
   - `nuke()`: Safely removes local database and metadata files
 - **db_handlers.py**: CRUD operations on market data tables
 - ORM-based data insertion with chunking for large datasets
@@ -145,6 +145,7 @@ Configuration is now managed through `settings.toml` with market-specific config
 - **EVE Static Data Export (SDE):** `sdelite.db` - game item/type information (synced from Turso), uses `sdetypes` table for type lookups
 - **Custom dbtools:** External dependency package `mydbtools` for database utilities
 - **Turso/libsql:** For remote database synchronization (optional in dev, required in production)
+  - **IMPORTANT:** libsql `sync()` is **one-way: cloud → local** (pull only). It does NOT push local writes to Turso cloud. To write data to Turso, use `DatabaseConfig` with a remote engine (direct HTTP connection to the Turso URL). The new Turso Database sync engine (currently in alpha) will add push capability; we will adopt it when the stable beta is released.
 - **Google Sheets API:** For automated market data reporting (optional)
 - **prompt_toolkit:** For multiline input prompts (paste mode in fit-update)
 
@@ -870,8 +871,13 @@ For production deployment with remote database access:
    ```python
    from mkts_backend.config.config import DatabaseConfig
 
+   # Pull from Turso cloud → local (libsql sync is one-way: cloud → local)
    db = DatabaseConfig("wcmkt")
-   db.sync()  # Syncs local database to Turso
+   db.sync()
+
+   # To push local data → Turso cloud, use a remote engine connection:
+   db_remote = DatabaseConfig("wcmkt", remote=True)
+   # Then execute writes against db_remote.engine
    ```
 
 ## Common Customizations

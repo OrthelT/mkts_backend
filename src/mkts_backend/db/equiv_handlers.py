@@ -276,6 +276,9 @@ def sync_equiv_to_remote(market_ctx: Optional["MarketContext"] = None) -> bool:
         logger.warning(f"No remote engine for {db.alias}, skipping remote sync: {e}")
         return False
 
+    # Ensure local table exists before reading
+    ensure_equiv_table(market_ctx)
+
     # Read all local rows
     with db.engine.connect() as conn:
         rows = conn.execute(text(

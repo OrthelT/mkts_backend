@@ -32,10 +32,85 @@ def _get_sde_db() -> DatabaseConfig:
 def resolve_type_name(type_id: int) -> Optional[str]:
     """Look up a type name from the SDE database."""
     sde_db = _get_sde_db()
-    query = text("SELECT typeName FROM invTypes WHERE typeID = :type_id")
+    query = text("SELECT typeName FROM sdetypes WHERE typeID = :type_id")
     with sde_db.engine.connect() as conn:
         result = conn.execute(query, {"type_id": type_id}).fetchone()
         return result[0] if result else None
+
+
+def resolve_type_id(name: str) -> list[tuple[int, str]]:
+    """
+    Look up type IDs by name from the SDE database.
+
+    Tries exact match first, then partial LIKE match.
+    Excludes blueprints (categoryID 9).
+    Returns list of (typeID, typeName) tuples, max 20 results.
+    """
+    sde_db = _get_sde_db()
+
+    # Exact match first
+    exact_query = text("""
+        SELECT typeID, typeName FROM sdetypes
+        WHERE typeName = :name AND categoryID != 9
+        LIMIT 20
+    """)
+    with sde_db.engine.connect() as conn:
+        rows = conn.execute(exact_query, {"name": name}).fetchall()
+        if rows:
+            return [(r[0], r[1]) for r in rows]
+
+    # Partial match
+    like_query = text("""
+        SELECT typeID, typeName FROM sdetypes
+        WHERE typeName LIKE :pattern AND categoryID != 9
+        ORDER BY typeName
+        LIMIT 20
+    """)
+    with sde_db.engine.connect() as conn:
+        rows = conn.execute(like_query, {"pattern": f"%{name}%"}).fetchall()
+        return [(r[0], r[1]) for r in rows]
+
+
+def find_equiv_by_attributes(type_id: int) -> list[dict]:
+    """
+    Find modules with identical dogma attributes (attribute fingerprinting).
+
+    Uses GROUP_CONCAT of attributeID:valueInt pairs as a fingerprint to find
+    all types sharing the same attribute set as the given type_id.
+
+    Returns list of dicts with typeID, typeName, groupName, metaGroupName.
+    """
+    sde_db = _get_sde_db()
+    query = text("""
+        WITH type_fingerprints AS (
+            SELECT typeID,
+                   GROUP_CONCAT(attributeID || ':' || valueInt, ',') as fingerprint
+            FROM dgmTypeAttributes
+            WHERE valueInt IS NOT NULL
+            GROUP BY typeID
+        )
+        SELECT tf.typeID, s.typeName, s.groupName, s.metaGroupName
+        FROM type_fingerprints tf
+        JOIN sdetypes s ON tf.typeID = s.typeID
+        WHERE tf.fingerprint = (
+            SELECT GROUP_CONCAT(attributeID || ':' || valueInt, ',') as fingerprint
+            FROM dgmTypeAttributes
+            WHERE typeID = :type_id AND valueInt IS NOT NULL
+        )
+        ORDER BY s.metaGroupName, s.typeName
+    """)
+    with sde_db.engine.connect() as conn:
+        rows = conn.execute(query, {"type_id": type_id}).fetchall()
+
+    return [
+        {
+            "typeID": r[0],
+            "typeName": r[1],
+            "groupName": r[2],
+            "metaGroupName": r[3],
+        }
+        for r in rows
+    ]
 
 
 def list_equiv_groups(market_ctx: Optional["MarketContext"] = None) -> list[dict]:

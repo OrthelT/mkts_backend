@@ -15,7 +15,7 @@ def display_cli_help():
   update-fit         Process an EFT fit file and update doctrine tables
   add_watchlist      Add items to watchlist by type IDs
   parse-items        Parse Eve structure data and create CSV with pricing
-  equiv              Manage module equivalence groups (list, add, remove)
+  equiv              Manage module equivalence groups (list, find, add, remove)
   sync               Sync the database (supports --market/--deployment)
   validate           Validate the database (supports --market/--deployment)
 

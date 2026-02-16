@@ -6,6 +6,7 @@ from mkts_backend.cli_tools.cli_help import (
     display_fit_update_help,
     display_update_target_help,
 )
+from mkts_backend.cli_tools.equiv_manager import equiv_command
 
 from mkts_backend.config.market_context import MarketContext
 from mkts_backend.config.config import DatabaseConfig
@@ -486,6 +487,15 @@ def parse_args(args: list[str]) -> dict | None:
             skip_targets=skip_targets,
             paste_mode=paste_mode,
         )
+        exit(0 if success else 1)
+
+    if "equiv" in args:
+        # Check for subcommand help
+        if "--help" in args or "-h" in args:
+            from mkts_backend.cli_tools.equiv_manager import _display_equiv_help
+            _display_equiv_help()
+            exit(0)
+        success = equiv_command(args, market_alias)
         exit(0 if success else 1)
 
     if "sync" in args:

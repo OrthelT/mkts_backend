@@ -1,0 +1,178 @@
+"""
+Module Equivalents CLI Manager
+
+CLI commands for managing the module_equivalents table:
+- list: Display all equivalence groups
+- add: Create a new group from type IDs
+- remove: Delete a group by ID
+"""
+
+from rich.console import Console
+from rich.table import Table
+from rich import box
+
+from mkts_backend.config.logging_config import configure_logging
+from mkts_backend.config.market_context import MarketContext
+from mkts_backend.db.equiv_handlers import (
+    list_equiv_groups,
+    add_equiv_group,
+    remove_equiv_group,
+    resolve_type_name,
+    ensure_equiv_table,
+)
+
+logger = configure_logging(__name__)
+console = Console()
+
+
+def equiv_command(args: list[str], market_alias: str = "primary") -> bool:
+    """
+    Route equiv subcommands.
+
+    Args:
+        args: Command arguments (after 'equiv')
+        market_alias: Market alias for database selection
+
+    Returns:
+        True if command succeeded
+    """
+    market_ctx = MarketContext.from_settings(market_alias)
+
+    # Determine subcommand (first positional arg after "equiv")
+    subcommand = None
+    try:
+        equiv_idx = args.index("equiv")
+        for arg in args[equiv_idx + 1:]:
+            if not arg.startswith("--"):
+                subcommand = arg
+                break
+    except ValueError:
+        pass
+
+    if subcommand == "list":
+        return _equiv_list(market_ctx)
+    elif subcommand == "add":
+        return _equiv_add(args, market_ctx)
+    elif subcommand == "remove":
+        return _equiv_remove(args, market_ctx)
+    else:
+        _display_equiv_help()
+        return True
+
+
+def _equiv_list(market_ctx) -> bool:
+    """List all equivalence groups."""
+    groups = list_equiv_groups(market_ctx)
+
+    if not groups:
+        console.print("[yellow]No equivalence groups found.[/yellow]")
+        return True
+
+    table = Table(
+        title="Module Equivalence Groups",
+        box=box.ROUNDED,
+        show_lines=True,
+    )
+    table.add_column("Group ID", style="cyan", justify="center")
+    table.add_column("Type ID", style="dim")
+    table.add_column("Module Name", style="green")
+
+    for group in groups:
+        gid = group["equiv_group_id"]
+        for i, member in enumerate(group["members"]):
+            table.add_row(
+                str(gid) if i == 0 else "",
+                str(member["type_id"]),
+                member["type_name"],
+            )
+
+    console.print(table)
+    console.print(f"\n[dim]{len(groups)} group(s) found[/dim]")
+    return True
+
+
+def _equiv_add(args: list[str], market_ctx) -> bool:
+    """Add a new equivalence group from type IDs."""
+    type_ids_str = None
+    for arg in args:
+        if arg.startswith("--type-ids="):
+            type_ids_str = arg.split("=", 1)[1]
+
+    if not type_ids_str:
+        console.print("[red]Error: --type-ids is required[/red]")
+        console.print("Usage: mkts-backend equiv add --type-ids=13984,17838,15705")
+        return False
+
+    try:
+        type_ids = [int(tid.strip()) for tid in type_ids_str.split(",") if tid.strip()]
+    except ValueError:
+        console.print("[red]Error: --type-ids must be comma-separated integers[/red]")
+        return False
+
+    if len(type_ids) < 2:
+        console.print("[red]Error: Need at least 2 type IDs for an equivalence group[/red]")
+        return False
+
+    # Ensure table exists
+    ensure_equiv_table(market_ctx)
+
+    # Preview what will be added
+    console.print("\n[bold]Adding equivalence group:[/bold]")
+    for tid in type_ids:
+        name = resolve_type_name(tid)
+        if name:
+            console.print(f"  {tid}: {name}")
+        else:
+            console.print(f"  {tid}: [red]NOT FOUND in SDE[/red]")
+
+    new_group_id = add_equiv_group(type_ids, market_ctx)
+    console.print(f"\n[green]Created equivalence group {new_group_id}[/green]")
+    return True
+
+
+def _equiv_remove(args: list[str], market_ctx) -> bool:
+    """Remove an equivalence group by ID."""
+    group_id = None
+    for arg in args:
+        if arg.startswith("--id="):
+            try:
+                group_id = int(arg.split("=", 1)[1])
+            except ValueError:
+                console.print("[red]Error: --id must be an integer[/red]")
+                return False
+
+    if group_id is None:
+        console.print("[red]Error: --id is required[/red]")
+        console.print("Usage: mkts-backend equiv remove --id=1")
+        return False
+
+    count = remove_equiv_group(group_id, market_ctx)
+    if count > 0:
+        console.print(f"[green]Removed group {group_id} ({count} entries)[/green]")
+    else:
+        console.print(f"[yellow]No entries found for group {group_id}[/yellow]")
+    return True
+
+
+def _display_equiv_help():
+    """Display help for the equiv subcommand."""
+    console.print("""
+[bold]equiv[/bold] - Manage module equivalence groups
+
+[bold]USAGE:[/bold]
+    mkts-backend equiv <subcommand> [options]
+
+[bold]SUBCOMMANDS:[/bold]
+    list                           List all equivalence groups
+    add --type-ids=<id1,id2,...>   Create a new group (resolves names from SDE)
+    remove --id=<group_id>         Remove a group
+
+[bold]OPTIONS:[/bold]
+    --market=<alias>   Market to operate on (default: primary)
+    --help             Show this help
+
+[bold]EXAMPLES:[/bold]
+    mkts-backend equiv list
+    mkts-backend equiv add --type-ids=13984,17838,15705,28528,14065,13982
+    mkts-backend equiv remove --id=1
+""")

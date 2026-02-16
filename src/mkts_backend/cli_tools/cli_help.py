@@ -15,6 +15,7 @@ def display_cli_help():
   update-fit         Process an EFT fit file and update doctrine tables
   add_watchlist      Add items to watchlist by type IDs
   parse-items        Parse Eve structure data and create CSV with pricing
+  equiv              Manage module equivalence groups (list, add, remove)
   sync               Sync the database (supports --market/--deployment)
   validate           Validate the database (supports --market/--deployment)
 
@@ -38,6 +39,7 @@ Examples:
   mkts-backend sync --deployment              # Sync deployment database
   mkts-backend validate --market=deployment   # Validate deployment database
   mkts-backend fit-check --file=fits/hfi.txt  # Check fit availability
+  mkts-backend equiv list                      # List all module equivalence groups
   mkts-backend fit-update list-fits           # List all doctrine fits
 
 """)

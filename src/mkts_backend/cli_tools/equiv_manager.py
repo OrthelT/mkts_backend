@@ -81,7 +81,7 @@ def _equiv_list(market_ctx) -> bool:
         gid = group["equiv_group_id"]
         for i, member in enumerate(group["members"]):
             table.add_row(
-                str(gid) if i == 0 else "",
+                str(gid),
                 str(member["type_id"]),
                 member["type_name"],
             )

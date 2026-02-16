@@ -21,6 +21,7 @@ from mkts_backend.db.equiv_handlers import (
     resolve_type_id,
     find_equiv_by_attributes,
     ensure_equiv_table,
+    sync_equiv_to_remote,
 )
 
 logger = configure_logging(__name__)

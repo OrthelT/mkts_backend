@@ -231,6 +231,7 @@ def add_equiv_group(
             })
             logger.info(f"Added {type_name} ({type_id}) to group {equiv_group_id}")
 
+    sync_equiv_to_remote(market_ctx)
     return equiv_group_id
 
 
@@ -256,7 +257,54 @@ def remove_equiv_group(
         result = conn.execute(delete_query, {"equiv_group_id": equiv_group_id})
         count = result.rowcount
         logger.info(f"Removed {count} rows from equiv group {equiv_group_id}")
-        return count
+
+    sync_equiv_to_remote(market_ctx)
+    return count
+
+
+def sync_equiv_to_remote(market_ctx: Optional["MarketContext"] = None) -> bool:
+    """
+    Push local module_equivalents table to Turso remote.
+
+    Replaces the entire remote table with local data since libsql sync()
+    is pull-only (cloud → local).
+    """
+    db = _get_db(market_ctx)
+    try:
+        remote = db.remote_engine
+    except (KeyError, Exception) as e:
+        logger.warning(f"No remote engine for {db.alias}, skipping remote sync: {e}")
+        return False
+
+    # Read all local rows
+    with db.engine.connect() as conn:
+        rows = conn.execute(text(
+            "SELECT equiv_group_id, type_id, type_name FROM module_equivalents"
+        )).fetchall()
+
+    # Ensure table exists on remote, then replace contents
+    create_query = text("""
+        CREATE TABLE IF NOT EXISTS module_equivalents (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            equiv_group_id INTEGER NOT NULL,
+            type_id INTEGER NOT NULL,
+            type_name VARCHAR(255) NOT NULL
+        )
+    """)
+    with remote.begin() as conn:
+        conn.execute(create_query)
+        conn.execute(text("DELETE FROM module_equivalents"))
+        if rows:
+            values = ",".join(
+                f"({r[0]},{r[1]},'{r[2].replace(chr(39), chr(39)+chr(39))}')"
+                for r in rows
+            )
+            conn.execute(text(
+                f"INSERT INTO module_equivalents (equiv_group_id, type_id, type_name) VALUES {values}"
+            ))
+
+    logger.info(f"Synced {len(rows)} equiv rows to remote ({db.alias})")
+    return True
 
 
 def ensure_equiv_table(market_ctx: Optional["MarketContext"] = None) -> bool:

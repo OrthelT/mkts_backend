@@ -235,7 +235,7 @@ def parse_args(args: list[str]) -> dict | None:
             print("Use 'mkts-backend update-fit --help' for usage information.")
             return None
 
-        remote = "--remote" in args
+        remote = "--remote" in args or any(arg.startswith("--remote=") for arg in args)
         clear_existing = "--no-clear" not in args
         dry_run = "--dry-run" in args
 
@@ -425,7 +425,7 @@ def parse_args(args: list[str]) -> dict | None:
         db_alias = "wcmkt"  # Database alias
         target_qty = 100  # Default target quantity for new fits
         interactive = "--interactive" in args
-        remote = "--remote" in args
+        remote = "--remote" in args or any(arg.startswith("--remote=") for arg in args)
         local_only = "--local-only" in args
         dry_run = "--dry-run" in args
         skip_targets = "--skip-targets" in args
@@ -459,9 +459,11 @@ def parse_args(args: list[str]) -> dict | None:
             elif arg == "--north" or arg == "deployment":
                 db_alias = "wcmktnorth"
                 market_alias = "deployment"
-            elif arg.startswith("--market") and arg.split("=", 1)[1] == "deployment":
-                db_alias = "wcmktnorth"
-                market_alias = "deployment"
+            elif arg.startswith("--market="):
+                market_val = arg.split("=", 1)[1]
+                market_alias = market_val
+                if market_val == "deployment":
+                    db_alias = "wcmktnorth"
 
         # Parse fit_id(s) - supports comma-separated for doctrine-add-fit
         if fit_ids_str:
@@ -507,14 +509,21 @@ def parse_args(args: list[str]) -> dict | None:
         exit(0 if success else 1)
 
     if "sync" in args:
-        # Use market_alias parsed from --market/--deployment/--primary flags
-        market_ctx = MarketContext.from_settings(market_alias)
-        db = DatabaseConfig(market_context=market_ctx)
-        print(f"Syncing database for market: {
-              market_ctx.name} ({market_ctx.alias})")
-        db.sync()
-        logger.info(f"Database synced: {db.alias}")
-        print(f"Database synced: {db.alias} ({db.path})")
+        # Determine which markets to sync
+        if "--both" in args or ("--market=both" in args):
+            sync_markets = ["primary", "deployment"]
+        else:
+            sync_markets = [market_alias]
+
+        for mkt in sync_markets:
+            market_ctx = MarketContext.from_settings(mkt)
+            db = DatabaseConfig(market_context=market_ctx)
+            print(f"Syncing database for market: {
+                  market_ctx.name} ({market_ctx.alias})")
+            db.sync()
+            logger.info(f"Database synced: {db.alias}")
+            print(f"Database synced: {db.alias} ({db.path})")
+
         exit()
         return None
 

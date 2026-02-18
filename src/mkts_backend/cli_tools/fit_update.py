@@ -478,6 +478,8 @@ def assign_market_command(
     """
     Assign a market flag to a fit.
 
+    Updates both wcmkt and wcmktnorth databases when remote=True.
+
     Args:
         fit_id: The fit ID to update
         market_flag: New market assignment
@@ -488,17 +490,38 @@ def assign_market_command(
         True if successful
     """
     try:
+        # Always update the primary (local) database
         success = update_fit_market_flag(
-            fit_id, market_flag, remote=remote, db_alias=db_alias
+            fit_id, market_flag, remote=False, db_alias=db_alias
         )
         if success:
             console.print(
-                f"[green]Successfully updated fit {fit_id} to market '{
-                    market_flag
-                }'[/green]"
+                f"[green]Updated fit {fit_id} to market '{market_flag}' (local {db_alias})[/green]"
             )
         else:
             console.print(f"[yellow]No fit found with ID {fit_id}[/yellow]")
+            return False
+
+        # When remote, push to both remote databases
+        if remote:
+            for target in ("wcmkt", "wcmktnorth"):
+                try:
+                    remote_ok = update_fit_market_flag(
+                        fit_id, market_flag, remote=True, db_alias=target
+                    )
+                    if remote_ok:
+                        console.print(
+                            f"[green]Updated market flag on remote ({target})[/green]"
+                        )
+                    else:
+                        console.print(
+                            f"[yellow]No remote rows for fit {fit_id} on {target}[/yellow]"
+                        )
+                except Exception as e:
+                    console.print(
+                        f"[yellow]Remote update skipped for {target}: {e}[/yellow]"
+                    )
+
         return success
     except ValueError as e:
         console.print(f"[red]Error: {e}[/red]")

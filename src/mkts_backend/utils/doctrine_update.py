@@ -974,25 +974,39 @@ def populate_friendly_names_from_json(
 
 
 def sync_friendly_names_to_remote(
-    json_path: str,
-    db_alias: str = "wcmkt",
+    source_alias: str = "wcmkt",
+    target_alias: str = "wcmkt",
 ) -> bool:
     """
-    Push friendly_name data to a remote Turso database.
-    Ensures column exists remotely, then bulk-updates from JSON.
+    Push friendly_name data from a local database to a remote Turso database.
+    Reads (fit_id, doctrine_id, friendly_name) from the local source, then
+    updates matching rows on the target remote.
 
     Args:
-        json_path: Path to doctrine_names.json
-        db_alias: Database alias (e.g. 'wcmkt' or 'wcmktnorth')
+        source_alias: Local database to read friendly_names from (default: wcmkt)
+        target_alias: Remote database to push to (default: wcmkt)
 
     Returns:
         True on success, False on failure
     """
-    db = DatabaseConfig(db_alias)
+    # Read local friendly_name data
+    source_engine = _get_engine(source_alias, remote=False)
+    with source_engine.connect() as conn:
+        rows = conn.execute(
+            text("SELECT fit_id, doctrine_id, friendly_name FROM doctrine_fits WHERE friendly_name IS NOT NULL")
+        ).fetchall()
+    source_engine.dispose()
+
+    if not rows:
+        logger.warning(f"No friendly_name data found in local {source_alias}")
+        return False
+
+    # Get remote engine for target
+    target_db = DatabaseConfig(target_alias)
     try:
-        remote_engine = db.remote_engine
+        remote_engine = target_db.remote_engine
     except (KeyError, Exception) as e:
-        logger.warning(f"No remote engine for {db_alias}, skipping remote sync: {e}")
+        logger.warning(f"No remote engine for {target_alias}, skipping remote sync: {e}")
         return False
 
     # Ensure column exists on remote
@@ -1003,38 +1017,31 @@ def sync_friendly_names_to_remote(
             if "friendly_name" not in col_names:
                 conn.execute(text("ALTER TABLE doctrine_fits ADD COLUMN friendly_name TEXT DEFAULT NULL"))
                 conn.commit()
-                logger.info(f"Added friendly_name column to remote doctrine_fits ({db_alias})")
+                logger.info(f"Added friendly_name column to remote doctrine_fits ({target_alias})")
     except Exception as e:
-        logger.error(f"Failed to ensure friendly_name column on remote {db_alias}: {e}")
+        logger.error(f"Failed to ensure friendly_name column on remote {target_alias}: {e}")
         return False
 
-    # Bulk-update from JSON
-    import json
-    with open(json_path, "r", encoding="utf-8") as f:
-        data = json.load(f)
-
+    # Bulk-update from local data
     updated = 0
     with remote_engine.connect() as conn:
-        for entry in data:
-            fname = entry.get("friendly_name")
-            if fname is None:
-                continue
+        for row in rows:
             result = conn.execute(
                 text(
                     "UPDATE doctrine_fits SET friendly_name = :name "
                     "WHERE fit_id = :fit_id AND doctrine_id = :doctrine_id"
                 ),
                 {
-                    "fit_id": entry["fit_id"],
-                    "doctrine_id": entry["doctrine_id"],
-                    "name": fname,
+                    "fit_id": row[0],
+                    "doctrine_id": row[1],
+                    "name": row[2],
                 },
             )
             updated += result.rowcount
         conn.commit()
 
     remote_engine.dispose()
-    logger.info(f"Synced {updated} friendly_name values to remote {db_alias}")
+    logger.info(f"Synced {updated} friendly_name values to remote {target_alias} (from local {source_alias})")
     return True
 
 

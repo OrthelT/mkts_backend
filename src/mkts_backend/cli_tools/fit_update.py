@@ -1443,16 +1443,17 @@ def update_friendly_name_command(
         console.print(f"[red]No rows found for doctrine_id {doctrine_id}[/red]")
         return False
 
-    # Also push to remote
-    try:
-        ensure_friendly_name_column(db_alias=db_alias, remote=True)
-        remote_ok = update_doctrine_friendly_name(doctrine_id, friendly_name, db_alias=db_alias, remote=True)
-        if remote_ok:
-            console.print(f"[green]Updated friendly_name on remote ({db_alias})[/green]")
-        else:
-            console.print(f"[yellow]No remote rows found for doctrine_id {doctrine_id}[/yellow]")
-    except Exception as e:
-        console.print(f"[yellow]Remote update skipped: {e}[/yellow]")
+    # Push to both remotes
+    for target in ("wcmkt", "wcmktnorth"):
+        try:
+            ensure_friendly_name_column(db_alias=target, remote=True)
+            remote_ok = update_doctrine_friendly_name(doctrine_id, friendly_name, db_alias=target, remote=True)
+            if remote_ok:
+                console.print(f"[green]Updated friendly_name on remote ({target})[/green]")
+            else:
+                console.print(f"[yellow]No remote rows for doctrine_id {doctrine_id} on {target}[/yellow]")
+        except Exception as e:
+            console.print(f"[yellow]Remote update skipped for {target}: {e}[/yellow]")
 
     return True
 
@@ -1472,12 +1473,13 @@ def populate_friendly_names_command(
     count = populate_friendly_names_from_json(json_path, db_alias=db_alias, remote=False)
     console.print(f"[green]Updated {count} rows locally ({db_alias})[/green]")
 
-    # Sync to remote
-    ok = sync_friendly_names_to_remote(json_path, db_alias=db_alias)
-    if ok:
-        console.print(f"[green]Synced friendly_names to remote ({db_alias})[/green]")
-    else:
-        console.print(f"[yellow]Remote sync skipped for {db_alias}[/yellow]")
+    # Sync local → both remotes (doctrine_fits should be identical on both)
+    for target in ("wcmkt", "wcmktnorth"):
+        ok = sync_friendly_names_to_remote(source_alias=db_alias, target_alias=target)
+        if ok:
+            console.print(f"[green]Synced friendly_names to remote ({target})[/green]")
+        else:
+            console.print(f"[yellow]Remote sync skipped for {target}[/yellow]")
 
     return True
 

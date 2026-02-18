@@ -140,7 +140,7 @@ def parse_args(args: list[str]) -> dict | None:
         remote = False
         target_alias = "wcmkt"
         for arg in args:
-            if arg.startswith("--fit-id="):
+            if arg.startswith("--fit-id=") or arg.startswith("--fit="):
                 fit_id = int(arg.split("=", 1)[1])
             elif arg.startswith("--target="):
                 target = int(arg.split("=", 1)[1])

@@ -437,6 +437,8 @@ def parse_args(args: list[str]) -> dict | None:
         else:
             paste_mode = False
 
+        friendly_name = None
+        doctrine_id = None
         fit_ids_str = None
         for arg in args:
             if arg.startswith("--file=") or arg.startswith("--fit-file"):
@@ -445,6 +447,10 @@ def parse_args(args: list[str]) -> dict | None:
                 meta_file = arg.split("=", 1)[1]
             elif arg.startswith("--fit-id=") or arg.startswith("--fit_id=") or arg.startswith("--id="):
                 fit_ids_str = arg.split("=", 1)[1]
+            elif arg.startswith("--name="):
+                friendly_name = arg.split("=", 1)[1]
+            elif arg.startswith("--doctrine-id="):
+                doctrine_id = int(arg.split("=", 1)[1])
             elif arg.startswith("--target="):
                 # Target quantity for doctrine-add-fit
                 target_qty = int(arg.split("=", 1)[1])
@@ -486,6 +492,8 @@ def parse_args(args: list[str]) -> dict | None:
             target=target_qty,
             skip_targets=skip_targets,
             paste_mode=paste_mode,
+            friendly_name=friendly_name,
+            doctrine_id=doctrine_id,
         )
         exit(0 if success else 1)
 

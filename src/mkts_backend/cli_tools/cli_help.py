@@ -150,6 +150,10 @@ SUBCOMMANDS:
     Target Management:
     update-target    Update the target quantity for a fit
 
+    Friendly Name Management:
+    update-friendly-name      Set the friendly display name for a fit
+    populate-friendly-names   Bulk populate friendly names from doctrine_names.json
+
     Doctrine Management:
     list-doctrines    List all available doctrines
     create-doctrine   Create a new doctrine (group of fits)
@@ -167,6 +171,8 @@ OPTIONS:
     --local-only         Use local database only
     --db-alias=<alias>   Target database: wcmkt, wcmktnorth
     --north              Shorthand for --db-alias=wcmktnorth
+    --name=<name>        Friendly display name (for update-friendly-name)
+    --doctrine-id=<id>   Doctrine ID (for update-friendly-name)
     --target=<qty>       Default target quantity for new fits (default: 100)
     --skip-targets       Preserve existing targets, skip target prompts
     --help               Show this help message
@@ -204,6 +210,13 @@ EXAMPLES:
 
     # Update target for fit
     mkts-backend fit-update update --fit-id=550 --target=300
+
+    # Set a doctrine's friendly name
+    mkts-backend fit-update update-friendly-name --doctrine-id=21 --name="Hurricane"
+
+    # Bulk populate friendly names from JSON (auto-syncs to remote)
+    mkts-backend fit-update populate-friendly-names
+    mkts-backend fit-update populate-friendly-names --north
 
 WORKFLOW:
     1. Create a doctrine:     fit-update create-doctrine

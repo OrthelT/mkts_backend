@@ -38,6 +38,10 @@ from mkts_backend.utils.doctrine_update import (
     remove_doctrine_map,
     remove_doctrines_for_fit,
     DoctrineFit,
+    ensure_friendly_name_column,
+    update_doctrine_friendly_name,
+    populate_friendly_names_from_json,
+    sync_friendly_names_to_remote,
 )
 from mkts_backend.utils.parse_fits import (
     update_fit_workflow,
@@ -95,14 +99,14 @@ def get_fits_list(db_alias: str = "wcmkt", remote: bool = False) -> List[dict]:
         try:
             result = conn.execute(
                 text("""
-                SELECT fit_id, TRIM(fit_name), ship_name, TRIM(doctrine_name), target, market_flag
+                SELECT fit_id, TRIM(fit_name), ship_name, TRIM(doctrine_name), target, market_flag, friendly_name
                 FROM doctrine_fits
                 ORDER BY ship_name, doctrine_name, fit_name
             """)
             )
             has_market_flag = True
         except Exception:
-            # Fallback query without market_flag
+            # Fallback query without market_flag/friendly_name
             result = conn.execute(
                 text("""
                 SELECT fit_id, fit_name, ship_name, doctrine_name, target
@@ -123,6 +127,9 @@ def get_fits_list(db_alias: str = "wcmkt", remote: bool = False) -> List[dict]:
                     "market_flag": row[5]
                     if has_market_flag and len(row) > 5
                     else "primary",
+                    "friendly_name": row[6]
+                    if has_market_flag and len(row) > 6
+                    else None,
                 }
             )
 
@@ -145,6 +152,7 @@ def display_fits_table(fits: List[dict]) -> None:
     table.add_column("Doctrine", style="green", min_width=20)
     table.add_column("Target", justify="right", width=8)
     table.add_column("Market", justify="center", width=12)
+    table.add_column("Friendly", style="yellow", width=18)
 
     for fit in fits:
         market_style = {
@@ -153,6 +161,8 @@ def display_fits_table(fits: List[dict]) -> None:
             "both": "blue",
         }.get(fit["market_flag"], "white")
 
+        friendly = fit.get("friendly_name") or "--"
+
         table.add_row(
             str(fit["fit_id"]),
             fit["fit_name"],
@@ -160,6 +170,7 @@ def display_fits_table(fits: List[dict]) -> None:
             fit["doctrine_name"],
             str(fit["target"]),
             f"[{market_style}]{fit['market_flag']}[/{market_style}]",
+            friendly,
         )
 
     console.print(table)
@@ -467,6 +478,8 @@ def assign_market_command(
     """
     Assign a market flag to a fit.
 
+    Updates both wcmkt and wcmktnorth databases when remote=True.
+
     Args:
         fit_id: The fit ID to update
         market_flag: New market assignment
@@ -477,17 +490,38 @@ def assign_market_command(
         True if successful
     """
     try:
+        # Always update the primary (local) database
         success = update_fit_market_flag(
-            fit_id, market_flag, remote=remote, db_alias=db_alias
+            fit_id, market_flag, remote=False, db_alias=db_alias
         )
         if success:
             console.print(
-                f"[green]Successfully updated fit {fit_id} to market '{
-                    market_flag
-                }'[/green]"
+                f"[green]Updated fit {fit_id} to market '{market_flag}' (local {db_alias})[/green]"
             )
         else:
             console.print(f"[yellow]No fit found with ID {fit_id}[/yellow]")
+            return False
+
+        # When remote, push to both remote databases
+        if remote:
+            for target in ("wcmkt", "wcmktnorth"):
+                try:
+                    remote_ok = update_fit_market_flag(
+                        fit_id, market_flag, remote=True, db_alias=target
+                    )
+                    if remote_ok:
+                        console.print(
+                            f"[green]Updated market flag on remote ({target})[/green]"
+                        )
+                    else:
+                        console.print(
+                            f"[yellow]No remote rows for fit {fit_id} on {target}[/yellow]"
+                        )
+                except Exception as e:
+                    console.print(
+                        f"[yellow]Remote update skipped for {target}: {e}[/yellow]"
+                    )
+
         return success
     except ValueError as e:
         console.print(f"[red]Error: {e}[/red]")
@@ -1417,6 +1451,62 @@ def update_target_command(
             return False
 
 
+def update_friendly_name_command(
+    doctrine_id: int,
+    friendly_name: str,
+    remote: bool = False,
+    db_alias: str = "wcmkt",
+) -> bool:
+    """Update friendly_name for all fits in a doctrine (local + remote)."""
+    ensure_friendly_name_column(db_alias=db_alias, remote=False)
+    ok = update_doctrine_friendly_name(doctrine_id, friendly_name, db_alias=db_alias, remote=False)
+    if ok:
+        console.print(f"[green]Updated friendly_name for doctrine_id {doctrine_id} to '{friendly_name}' (local)[/green]")
+    else:
+        console.print(f"[red]No rows found for doctrine_id {doctrine_id}[/red]")
+        return False
+
+    # Push to both remotes
+    for target in ("wcmkt", "wcmktnorth"):
+        try:
+            ensure_friendly_name_column(db_alias=target, remote=True)
+            remote_ok = update_doctrine_friendly_name(doctrine_id, friendly_name, db_alias=target, remote=True)
+            if remote_ok:
+                console.print(f"[green]Updated friendly_name on remote ({target})[/green]")
+            else:
+                console.print(f"[yellow]No remote rows for doctrine_id {doctrine_id} on {target}[/yellow]")
+        except Exception as e:
+            console.print(f"[yellow]Remote update skipped for {target}: {e}[/yellow]")
+
+    return True
+
+
+def populate_friendly_names_command(
+    json_path: str = "doctrine_names.json",
+    db_alias: str = "wcmkt",
+) -> bool:
+    """Bulk populate friendly_names from JSON — auto-syncs local + remote."""
+    import os
+    if not os.path.exists(json_path):
+        console.print(f"[red]JSON file not found: {json_path}[/red]")
+        return False
+
+    # Local update
+    ensure_friendly_name_column(db_alias=db_alias, remote=False)
+    count = populate_friendly_names_from_json(json_path, db_alias=db_alias, remote=False)
+    console.print(f"[green]Updated {count} rows locally ({db_alias})[/green]")
+
+    # Sync local → both remotes (doctrine_fits should be identical on both)
+    for target in ("wcmkt", "wcmktnorth"):
+        ok = sync_friendly_names_to_remote(source_alias=db_alias, target_alias=target)
+        if ok:
+            console.print(f"[green]Synced friendly_names to remote ({target})[/green]")
+        else:
+            console.print(f"[yellow]Remote sync skipped for {target}[/yellow]")
+
+    return True
+
+
 def fit_update_command(
     subcommand: str,
     fit_id: Optional[int] = None,
@@ -1432,6 +1522,8 @@ def fit_update_command(
     target: int = 100,
     skip_targets: bool = False,
     paste_mode: bool = False,
+    friendly_name: Optional[str] = None,
+    doctrine_id: Optional[int] = None,
 ) -> bool:
     """
     Main entry point for fit-update commands.
@@ -1445,7 +1537,9 @@ def fit_update_command(
         create-doctrine      - Create a new doctrine (group of fits)
         doctrine-add-fit     - Add existing fit(s) to a doctrine (supports multiple)
         doctrine-remove-fit  - Remove fit(s) from a doctrine (supports multiple)
-        update-target        - Update the target quantity for a fit
+        update-target             - Update the target quantity for a fit
+        update-friendly-name      - Set the friendly display name for a fit
+        populate-friendly-names   - Bulk populate friendly names from JSON
 
     Args:
         subcommand: The subcommand to run
@@ -1658,10 +1752,28 @@ def fit_update_command(
             remote=use_remote,
             db_alias=target_alias,
         )
+    elif subcommand == "update-friendly-name":
+        if doctrine_id is None:
+            console.print("[red]Error: --doctrine-id is required for update-friendly-name[/red]")
+            return False
+        if not friendly_name:
+            console.print("[red]Error: --name is required for update-friendly-name[/red]")
+            return False
+        return update_friendly_name_command(
+            doctrine_id, friendly_name, remote=use_remote, db_alias=target_alias,
+        )
+
+    elif subcommand == "populate-friendly-names":
+        return populate_friendly_names_command(
+            json_path="doctrine_names.json", db_alias=target_alias,
+        )
+
     else:
         console.print(f"[red]Unknown subcommand: {subcommand}[/red]")
         console.print(
-            "[dim]Available: add, update, assign-market, list-fits, list-doctrines, create-doctrine, doctrine-add-fit, doctrine-remove-fit, update-target[/dim]"
+            "[dim]Available: add, update, assign-market, list-fits, list-doctrines, "
+            "create-doctrine, doctrine-add-fit, doctrine-remove-fit, update-target, "
+            "update-friendly-name, populate-friendly-names[/dim]"
         )
         console.print(
             "[dim]Use --help for more information about a command.[/dim]")

@@ -196,11 +196,6 @@ def fill_nulls_from_history(stats: pd.DataFrame, market_ctx: Optional["MarketCon
                         except Exception as e:
                             logger.error(f"Error filling nulls for type_id {type_id}: {e}")
 
-                    else:
-                        logger.info(f"No history data found for type_id {type_id}")
-            else:
-                logger.info("No history data found for null type_ids")
-
     except Exception as e:
         logger.error(f"Error filling nulls from history: {e}")
     finally:

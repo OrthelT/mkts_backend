@@ -1125,30 +1125,17 @@ def module_command(
 
 def _query_needed_data(
     market_ctx: Optional[MarketContext] = None,
-    ship_filter: Optional[str] = None,
-    fit_filter: Optional[int] = None,
+    ship_filter: Optional[List[str]] = None,
+    fit_filter: Optional[List[int]] = None,
     targ_perc_filter: Optional[float] = None,
 ) -> List[Dict]:
     """
     Query needed items by joining doctrines and ship_targets tables.
 
-    Equivalent to the SQL view:
-        SELECT d.fit_id, d.ship_name, d.type_id, d.type_name,
-               t.ship_target AS target, t.fit_name,
-               d.fits_on_mkt, d.total_stock,
-               round((1.0 * d.fits_on_mkt) / NULLIF(t.ship_target, 0), 2) AS targ_perc,
-               CASE WHEN d.fits_on_mkt < t.ship_target
-                    THEN (NULLIF(t.ship_target, 0) - d.fits_on_mkt) * d.fit_qty
-                    ELSE 0
-               END AS qty_needed
-        FROM doctrines AS d
-        LEFT JOIN ship_targets AS t ON d.fit_id = t.fit_id
-        WHERE qty_needed > 0
-
     Args:
         market_ctx: Market context for database selection
-        ship_filter: Filter by ship name (case-insensitive substring match)
-        fit_filter: Filter by fit_id
+        ship_filter: Filter by ship names (case-insensitive substring match, any must match)
+        fit_filter: Filter by fit_ids (any must match)
         targ_perc_filter: Filter where targ_perc < this value
 
     Returns:
@@ -1162,6 +1149,7 @@ def _query_needed_data(
         query = text("""
             SELECT
                 d.fit_id,
+                d.ship_id,
                 d.ship_name,
                 d.type_id,
                 d.type_name,
@@ -1190,6 +1178,7 @@ def _query_needed_data(
         for row in rows:
             item = {
                 "fit_id": row.fit_id,
+                "ship_id": row.ship_id,
                 "ship_name": row.ship_name,
                 "type_id": row.type_id,
                 "type_name": row.type_name,
@@ -1201,10 +1190,10 @@ def _query_needed_data(
                 "qty_needed": row.qty_needed or 0,
             }
 
-            # Apply filters
-            if ship_filter and ship_filter.lower() not in item["ship_name"].lower():
+            # Apply filters (exact match — names are pre-resolved by _resolve_ship_filters)
+            if ship_filter and item["ship_name"] not in ship_filter:
                 continue
-            if fit_filter is not None and item["fit_id"] != fit_filter:
+            if fit_filter and item["fit_id"] not in fit_filter:
                 continue
             if targ_perc_filter is not None and item["targ_perc"] >= targ_perc_filter:
                 continue
@@ -1216,8 +1205,8 @@ def _query_needed_data(
 
 def needed_command(
     market_alias: str = "primary",
-    ship_filter: Optional[str] = None,
-    fit_filter: Optional[int] = None,
+    ship_filter: Optional[List[str]] = None,
+    fit_filter: Optional[List[int]] = None,
     targ_perc_filter: Optional[float] = None,
 ) -> bool:
     """
@@ -1225,8 +1214,8 @@ def needed_command(
 
     Args:
         market_alias: Market alias (primary, deployment)
-        ship_filter: Filter by ship name
-        fit_filter: Filter by fit_id
+        ship_filter: Filter by ship names (comma-separated or repeated flags)
+        fit_filter: Filter by fit_ids (comma-separated or repeated flags)
         targ_perc_filter: Filter where targ_perc < this value
 
     Returns:
@@ -1261,9 +1250,9 @@ def needed_command(
     console.print()
     filter_parts = []
     if ship_filter:
-        filter_parts.append(f"ship={ship_filter}")
-    if fit_filter is not None:
-        filter_parts.append(f"fit={fit_filter}")
+        filter_parts.append(f"ship={','.join(ship_filter)}")
+    if fit_filter:
+        filter_parts.append(f"fit={','.join(str(f) for f in fit_filter)}")
     if targ_perc_filter is not None:
         filter_parts.append(f"targ_perc<{targ_perc_filter}")
     filter_str = f" ({', '.join(filter_parts)})" if filter_parts else ""
@@ -1275,6 +1264,7 @@ def needed_command(
 
     # Render a sub-table for each fit group
     for fit_id, items in grouped.items():
+        ship_id = items[0].get("ship_id")
         ship_name = items[0]["ship_name"]
         fit_name = items[0]["fit_name"]
         target = items[0]["target"] or 0
@@ -1284,6 +1274,7 @@ def needed_command(
 
         table = create_needed_table(
             fit_id=fit_id,
+            ship_id=ship_id,
             ship_name=ship_name,
             fit_name=fit_name,
             min_fits=min_fits,
@@ -1303,6 +1294,77 @@ def needed_command(
     return True
 
 
+def _resolve_ship_filters(
+    ship_inputs: List[str],
+    market_ctx: Optional[MarketContext] = None,
+) -> Optional[List[str]]:
+    """
+    Resolve user ship name inputs to exact ship names via fuzzy matching.
+
+    For each input, finds substring matches among distinct ship names in
+    doctrine_fits. If one match, auto-selects. If multiple, prompts the
+    user to choose.
+
+    Args:
+        ship_inputs: Raw ship name fragments from CLI (e.g. ["Hurricane"])
+        market_ctx: Market context for database selection
+
+    Returns:
+        List of resolved exact ship names, or None if user cancels
+    """
+    from rich.prompt import Prompt
+
+    db_alias = market_ctx.database_alias if market_ctx else "wcmkt"
+    db = DatabaseConfig(db_alias)
+
+    with db.engine.connect() as conn:
+        query = text("SELECT DISTINCT ship_name FROM doctrine_fits ORDER BY ship_name")
+        all_ships = [row[0] for row in conn.execute(query).fetchall()]
+
+    resolved: List[str] = []
+
+    for fragment in ship_inputs:
+        matches = [s for s in all_ships if fragment.lower() in s.lower()]
+
+        if not matches:
+            console.print(f"[yellow]No ships matching '{fragment}'[/yellow]")
+            continue
+        elif len(matches) == 1:
+            resolved.append(matches[0])
+        else:
+            # Exact match takes priority (e.g. "Hurricane" matches "Hurricane" exactly)
+            exact = [s for s in matches if s.lower() == fragment.lower()]
+            if exact:
+                # Still show the options since the user might want a variant
+                pass
+
+            console.print(f"\n[bold]Ships matching '{fragment}':[/bold]")
+            console.print("  [dim]0[/dim]) All matches")
+            for i, name in enumerate(matches, 1):
+                console.print(f"  [dim]{i}[/dim]) {name}")
+
+            choice = Prompt.ask(
+                "Select",
+                default="0",
+            )
+
+            try:
+                idx = int(choice)
+            except ValueError:
+                console.print("[red]Invalid selection, skipping[/red]")
+                continue
+
+            if idx == 0:
+                resolved.extend(matches)
+            elif 1 <= idx <= len(matches):
+                resolved.append(matches[idx - 1])
+            else:
+                console.print("[red]Invalid selection, skipping[/red]")
+                continue
+
+    return resolved if resolved else None
+
+
 def _handle_needed(sub_args: List[str]) -> None:
     """
     Handle the needed subcommand.
@@ -1310,20 +1372,23 @@ def _handle_needed(sub_args: List[str]) -> None:
     Args:
         sub_args: Remaining arguments after 'needed'
     """
-    ship_filter = None
-    fit_filter = None
+    ship_filters: List[str] = []
+    fit_filters: List[int] = []
     targ_perc_filter = None
     market_alias = "primary"
 
     for arg in sub_args:
         if arg.startswith("--ship="):
-            ship_filter = arg.split("=", 1)[1]
+            val = arg.split("=", 1)[1]
+            ship_filters.extend(s.strip() for s in val.split(",") if s.strip())
         elif arg.startswith("--fit=") or arg.startswith("--fit-id=") or arg.startswith("--fit_id=") or arg.startswith("--id="):
-            try:
-                fit_filter = int(arg.split("=", 1)[1])
-            except ValueError:
-                console.print("[red]Error: --fit must be an integer[/red]")
-                return
+            val = arg.split("=", 1)[1]
+            for part in val.split(","):
+                try:
+                    fit_filters.append(int(part.strip()))
+                except ValueError:
+                    console.print(f"[red]Error: '{part.strip()}' is not a valid fit ID[/red]")
+                    return
         elif arg.startswith("--target="):
             try:
                 targ_perc_filter = float(arg.split("=", 1)[1])
@@ -1339,10 +1404,23 @@ def _handle_needed(sub_args: List[str]) -> None:
         elif arg == "--primary":
             market_alias = "primary"
 
+    # Resolve fuzzy ship names to exact matches
+    resolved_ships = None
+    if ship_filters:
+        try:
+            market_ctx = MarketContext.from_settings(market_alias)
+        except ValueError as e:
+            console.print(f"[red]Error: {e}[/red]")
+            return
+        resolved_ships = _resolve_ship_filters(ship_filters, market_ctx)
+        if resolved_ships is None:
+            console.print("[yellow]No matching ships found.[/yellow]")
+            return
+
     needed_command(
         market_alias=market_alias,
-        ship_filter=ship_filter,
-        fit_filter=fit_filter,
+        ship_filter=resolved_ships,
+        fit_filter=fit_filters or None,
         targ_perc_filter=targ_perc_filter,
     )
 
@@ -1414,15 +1492,17 @@ USAGE:
     fitcheck --fit=<id> [options]
     fitcheck --file=<path> [options]
     fitcheck --paste [options]
-    fitcheck needed [--ship=<name>] [--fit=<id>] [--target=<pct>]
+    fitcheck needed [--ship=<name,...>] [--fit=<id,...>] [--target=<pct>]
     fitcheck list-fits [--market=<alias>]
     fitcheck module --id=<type_id> [--market=<alias>]
     fitcheck module --name="<name>" [--market=<alias>]
 
 SUBCOMMANDS:
     needed               Show all items needed to reach ship targets
-        --ship=<name>        Filter by ship name (e.g. --ship=Maelstrom)
-        --fit=<id>           Filter by fit ID (e.g. --fit=550)
+        --ship=<name,...>    Filter by ship name(s), comma-separated
+                             (e.g. --ship=Maelstrom or --ship=Maelstrom,Hurricane)
+        --fit=<id,...>       Filter by fit ID(s), comma-separated
+                             (e.g. --fit=550 or --fit=550,551,552)
         --target=<pct>       Show only fits below this target % (e.g. --target=0.5)
         --market=<alias>     Market to check (default: primary)
 
@@ -1473,6 +1553,12 @@ EXAMPLES:
 
     # Show needed items for a specific ship
     fitcheck needed --ship=Maelstrom
+
+    # Show needed items for multiple ships
+    fitcheck needed --ship=Maelstrom,Hurricane
+
+    # Show needed items for specific fit IDs
+    fitcheck needed --fit=550,551,552
 
     # Show needed items for fits below 50% of target
     fitcheck needed --target=0.5

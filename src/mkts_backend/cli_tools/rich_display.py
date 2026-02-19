@@ -392,6 +392,7 @@ def create_needed_table(
     min_fits: float,
     target: int,
     items: List[Dict],
+    ship_id: Optional[int] = None,
 ) -> Table:
     """
     Create a Rich sub-table for a single fit's needed items.
@@ -404,6 +405,7 @@ def create_needed_table(
         target: Target quantity for this fit
         items: List of dicts with type_id, type_name, target, fits_on_mkt,
                total_stock, targ_perc, qty_needed
+        ship_id: Ship type ID for the header
 
     Returns:
         A Rich Table object for this fit group
@@ -411,10 +413,15 @@ def create_needed_table(
     fits_style = "green" if min_fits >= target else (
         "yellow" if min_fits >= target * 0.5 else "red")
 
+    id_parts = f"fit_id: {fit_id}"
+    if ship_id:
+        id_parts += f"; type_id: {ship_id}"
+
     table = Table(
         title=(
             f"[bold cyan]{ship_name}[/bold cyan]"
-            f" - [white]{fit_name}[/white]"
+            f" [dim]({id_parts})[/dim]"
+            f"\n[white]{fit_name}[/white]"
             f" ([{fits_style}]{int(min_fits)}[/{fits_style}])"
         ),
         box=box.SIMPLE_HEAVY,

@@ -29,6 +29,7 @@ uv run mkts-backend --check_tables --deployment  # Check deployment market table
 ```bash
 uv run mkts-backend sync              # Sync primary market database with Turso
 uv run mkts-backend sync --deployment # Sync deployment market database
+uv run mkts-backend sync --both       # Sync both primary and deployment markets
 uv run mkts-backend validate          # Validate primary market database sync status
 uv run mkts-backend validate --market=deployment  # Validate deployment market
 ```
@@ -87,10 +88,12 @@ Manages all database operations:
 - ORM-based data insertion with chunking for large datasets
 
 ### Data Models (`models.py`)
-SQLAlchemy ORM model definitions:
+SQLAlchemy ORM model definitions (at `src/mkts_backend/db/models.py`):
 - **Core Models:** `MarketOrders`, `MarketHistory`, `MarketStats`, `Doctrines`, `Watchlist`
-- **Regional Models:** `RegionOrders`, `JitaHistory` (comparative pricing from The Forge)
-- **Organizational Models:** `ShipTargets`, `DoctrineMap`, `DoctrineInfo`
+- **Organizational Models:** `ShipTargets`, `DoctrineMap`, `DoctrineFitItems`, `LeadShips`
+- **Utility Models:** `UpdateLog`, `ESIRequestCache`
+- **Module Equivalents:** `ModuleEquivalents` - maps interchangeable faction modules by `equiv_group_id`
+- `DoctrineFitItems` maps to `doctrine_fits` table; includes `friendly_name` field (nullable) added in Feb 2026
 - Tables stored in market-specific databases (e.g., `wcmktprod.db`, `wcmktnorth2.db`)
 
 ### OAuth Authentication (`ESI_OAUTH_FLOW.py` / `esi_auth.py`)
@@ -159,7 +162,7 @@ The complete data pipeline when running the application:
 4. **Market Orders**: Fetch current market orders for configured structure
 5. **Historical Data** (optional with `--history` flag):
    - Primary market history → `MarketHistory` table
-   - Jita comparative history (The Forge) → `JitaHistory` table (if configured)
+   - Jita comparative pricing fetched for watchlist items (if configured)
 6. **Statistics**: Calculate market statistics (price, volume, days remaining)
 7. **Doctrine Analysis**: Analyze ship fitting availability based on market data
 8. **Regional Processing**: Update regional orders for the market's region
@@ -212,6 +215,8 @@ TURSO_FITTING_TOKEN=<fitting_db_token>
 - **Async Processing:** High-performance concurrent API requests with rate limiting and backoff
 - **Error Handling:** Comprehensive logging and error recovery for API failures
 - **GitHub Actions Integration:** Automated scheduled data collection via workflows
+- **Module Equivalents:** Aggregate stock across interchangeable faction modules; managed via `equiv` CLI commands
+- **Friendly Names:** Per-doctrine display names stored in `doctrine_fits.friendly_name`; managed via `fit-update update-friendly-name`
 
 ## CLI Tools
 
@@ -355,6 +360,28 @@ uv run mkts-backend fit-update update --fit-id=313 --paste
 }
 ```
 
+**update-friendly-name Subcommand:**
+```bash
+# Set a friendly display name for all fits in a doctrine
+uv run mkts-backend fit-update update-friendly-name --doctrine-id=21 --name="Hurricane"
+
+# Target deployment market
+uv run mkts-backend fit-update update-friendly-name --doctrine-id=21 --name="Hurricane" --north
+```
+
+Pushes the `friendly_name` value to both local and remote databases automatically.
+
+**populate-friendly-names Subcommand:**
+```bash
+# Bulk populate from doctrine_names.json in working directory
+uv run mkts-backend fit-update populate-friendly-names
+
+# Target deployment database
+uv run mkts-backend fit-update populate-friendly-names --north
+```
+
+Reads a `doctrine_names.json` file and updates `friendly_name` for all matching doctrines, then syncs to remote.
+
 **Database Tables Updated:**
 - **wcfitting.db:**
   - `fittings_doctrine` - doctrine records (auto-created if missing)
@@ -364,7 +391,7 @@ uv run mkts-backend fit-update update --fit-id=313 --paste
   - `watch_doctrines` - watched doctrines (auto-added for new doctrines)
 
 - **wcmktprod.db / wcmktnorth2.db (based on --market flag):**
-  - `doctrine_fits` - fit metadata with market_flag
+  - `doctrine_fits` - fit metadata with market_flag and friendly_name
   - `doctrine_map` - doctrine-fit links
   - `watchlist` - items to track
   - `ship_targets` (optional with --update-targets)
@@ -442,12 +469,14 @@ The `update-fit` command supports multiple subcommands for managing fits and doc
 - `add` - Add a NEW fit from an EFT file or pasted text and assign to doctrine(s)
 - `update` - Update an existing fit's items from an EFT file or pasted text
 - `assign-market` - Change the market assignment for an existing fit
-- `list-fits` - List all fits in the doctrine tracking system
+- `list-fits` - List all fits in the doctrine tracking system (includes `friendly_name` column)
 - `list-doctrines` - List all available doctrines
 - `create-doctrine` - Create a new doctrine (group of fits)
 - `doctrine-add-fit` - Add existing fit(s) to a doctrine (supports multiple)
 - `doctrine-remove-fit` - Remove fit(s) from a doctrine (supports multiple)
 - `update-target` - Update the target quantity for a fit
+- `update-friendly-name` - Set the friendly display name for all fits in a doctrine
+- `populate-friendly-names` - Bulk populate friendly names from `doctrine_names.json`
 
 #### doctrine-add-fit Subcommand
 
@@ -528,6 +557,43 @@ uv run mkts-backend update-target --fit-id=313 --target=300 --market=deployment
 - Updates target in both `ship_targets` and `doctrine_fits` tables
 - Shows the previous and new target values
 - Validates the fit exists in the specified database before updating
+
+### equiv Command
+
+The `equiv` command manages module equivalence groups — sets of faction modules that are functionally identical and can substitute for each other in doctrine calculations.
+
+```bash
+# List all equivalence groups
+uv run mkts-backend equiv list
+
+# Find equivalent modules by type ID or name (uses attribute fingerprinting)
+uv run mkts-backend equiv find 13984
+uv run mkts-backend equiv find "Thermal Armor Hardener"
+
+# Find equivalents and automatically add them as a group
+uv run mkts-backend equiv find 13984 --add
+
+# Create a new equivalence group manually with specific type IDs
+uv run mkts-backend equiv add --type-ids=13984,17838,15705,28528,14065,13982
+
+# Remove an equivalence group by group ID
+uv run mkts-backend equiv remove --id=1
+
+# Target a single market (default: all markets)
+uv run mkts-backend equiv add --type-ids=13984,17838 --market=primary
+```
+
+**Notes:**
+- `add` and `remove` operate on **all markets by default** (equivalents are universal game data)
+- `find` uses SDE attribute fingerprinting (`dgmTypeAttributes`) to discover identical modules
+- Multiple name matches show a selection table; use `--type-id=<id>` to disambiguate
+- After changes, run `uv run mkts-backend sync` to push updates to Turso
+
+**Subcommands:**
+- `list` - Display all equivalence groups with member modules
+- `find <type_id|name> [--add]` - Auto-discover equivalent modules by attribute matching
+- `add --type-ids=<ids>` - Create a new group from comma-separated type IDs
+- `remove --id=<group_id>` - Remove all members from a group
 
 ---
 
@@ -739,10 +805,11 @@ uv run mkts-backend
 - `ship_targets`: Ship production targets
 - `doctrine_map`: Doctrine to fitting mappings
 - `doctrine_fits`: Doctrine fitting configurations with target quantities and market flags
-  - Fields: `id`, `doctrine_name`, `fit_name`, `ship_type_id`, `doctrine_id`, `fit_id`, `ship_name`, `target`, `market_flag`
+  - Fields: `id`, `doctrine_name`, `fit_name`, `ship_type_id`, `doctrine_id`, `fit_id`, `ship_name`, `target`, `market_flag`, `friendly_name`
   - Used by fit-check to retrieve target quantities for fits
   - `target`: Number of fits to maintain in stock
   - `market_flag`: Market assignment (primary, deployment, or both)
+  - `friendly_name`: Optional short display name for the doctrine (e.g., "Hurricane"); managed via `fit-update update-friendly-name` or `fit-update populate-friendly-names`
 
 **Database State Management**:
 The system uses `verify_db_exists()` to ensure database consistency:
@@ -1093,7 +1160,10 @@ Side Channel:
 - **gsheets_config.py**: Google Sheets integration
 - **config.py**: Database connection management
 - **cli_tools/prompter.py**: Multiline input prompter for paste mode (uses prompt_toolkit)
-- **cli_tools/fit_update.py**: Fit and doctrine management CLI commands
+- **cli_tools/fit_update.py**: Fit and doctrine management CLI commands (includes friendly name management)
+- **cli_tools/equiv_manager.py**: Module equivalents CLI commands (list, find, add, remove)
+- **cli_tools/args_parser.py**: CLI argument routing for all mkts-backend subcommands
+- **cli_tools/cli_help.py**: Help text for all CLI commands
 
 ## Version Compatibility
 

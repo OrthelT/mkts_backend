@@ -13,6 +13,8 @@ A comprehensive market data collection and analysis system for Eve Online that f
 - **Market Value Calculation**: Calculates total market value excluding blueprints/skills
 - **Ship Count Tracking**: Tracks ship availability on the market
 - **Multi-Database Support**: Local SQLite with optional remote Turso sync
+- **Module Equivalents**: Aggregate stock across interchangeable faction modules; managed via `equiv` CLI
+- **Friendly Names**: Per-doctrine display names for frontend; managed via `fit-update update-friendly-name`
 
 ## Quick Start
 
@@ -83,7 +85,7 @@ uv run mkts-backend --market=deployment --history
 
 ## CLI Entry Points
 
-The project provides three CLI entry points (defined in `pyproject.toml`):
+The project provides two CLI entry points (defined in `pyproject.toml`):
 - **`mkts-backend`** / **`mkts`**: Main data collection and processing CLI
 - **`fitcheck`**: Standalone fit checking tool with subcommands
 
@@ -197,12 +199,14 @@ uv run mkts-backend fit-update update --fit-id=313 --paste
 - `add` - Add a NEW fit from an EFT file or pasted text
 - `update` - Update an existing fit's items from file or pasted text
 - `assign-market` - Change market assignment for an existing fit
-- `list-fits` - List all fits in tracking system
+- `list-fits` - List all fits in tracking system (shows friendly_name column)
 - `list-doctrines` - List all available doctrines
 - `create-doctrine` - Create a new doctrine
 - `doctrine-add-fit` - Add existing fit(s) to a doctrine
 - `doctrine-remove-fit` - Remove fit(s) from a doctrine
 - `update-target` - Update the target quantity for a fit
+- `update-friendly-name` - Set the friendly display name for a doctrine
+- `populate-friendly-names` - Bulk populate friendly names from `doctrine_names.json`
 
 **Examples:**
 ```bash
@@ -226,6 +230,12 @@ uv run mkts-backend fit-update create-doctrine
 
 # Add a new fit with interactive prompts
 uv run mkts-backend fit-update add --paste --interactive
+
+# Set a friendly display name for a doctrine (syncs to remote automatically)
+uv run mkts-backend fit-update update-friendly-name --doctrine-id=21 --name="Hurricane"
+
+# Bulk populate friendly names from doctrine_names.json
+uv run mkts-backend fit-update populate-friendly-names
 ```
 
 **Input Modes (fitcheck):**
@@ -248,6 +258,33 @@ uv run mkts-backend fit-update add --paste --interactive
 - Generates Eve Multi-buy format for easy restocking
 - Falls back to live market data for items not on watchlist (when using --file)
 - Fast lookups using pre-calculated doctrine data (when using --fit=<id>)
+
+### equiv - Manage Module Equivalence Groups
+
+Manage groups of interchangeable faction modules (e.g., faction armor hardeners with identical stats).
+
+```bash
+# List all equivalence groups
+uv run mkts-backend equiv list
+
+# Find equivalent modules by type ID or partial name
+uv run mkts-backend equiv find 13984
+uv run mkts-backend equiv find "Thermal Armor Hardener"
+
+# Find and immediately add as an equivalence group
+uv run mkts-backend equiv find 13984 --add
+
+# Create a group with specific type IDs
+uv run mkts-backend equiv add --type-ids=13984,17838,15705,28528,14065,13982
+
+# Remove a group by group ID
+uv run mkts-backend equiv remove --id=1
+```
+
+**Notes:**
+- `add` and `remove` operate on **all markets by default**; use `--market=<alias>` for one market
+- `find` uses SDE attribute fingerprinting (`dgmTypeAttributes` table) to identify identical modules
+- After changes, sync to remote: `uv run mkts-backend sync`
 
 ## Architecture
 
@@ -314,11 +351,13 @@ Configuration is managed through `settings.toml` with support for multiple marke
 
 - **`ship_targets`**: Ship production targets and goals
 - **`doctrine_map`**: Mapping between doctrines and fittings
-- **`doctrine_info`**: Doctrine metadata and information
 - **`doctrine_fits`**: Doctrine fitting configurations with target quantities
-  - Stores fit_name, ship_type_id, target quantity, and market_flag
-  - Used by fit-check command to retrieve target quantities
-  - Market flag indicates which markets track this doctrine (primary, deployment, both)
+  - Fields: `id`, `doctrine_name`, `fit_name`, `ship_type_id`, `doctrine_id`, `fit_id`, `ship_name`, `target`, `market_flag`, `friendly_name`
+  - `friendly_name`: Optional short display name for the doctrine (e.g., "Hurricane"); managed via `fit-update update-friendly-name`
+  - `market_flag`: Market assignment (primary, deployment, or both)
+- **`module_equivalents`**: Interchangeable faction module groups
+  - Fields: `id`, `equiv_group_id`, `type_id`, `type_name`
+  - Managed via `equiv` CLI commands; synced to Turso for frontend consumption
 
 ## API Integration
 

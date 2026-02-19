@@ -106,3 +106,23 @@ enabled = true
 # Legacy URLs (prefer using market-specific URLs in [markets] sections)
 sheet_url = "https://docs.google.com/spreadsheets/d/1RmNJB9Yz4lG6kKKitGQ0zDuPbOiSe0ywn4SbSKabdwc/edit"
 sheet_url2 = "https://docs.google.com/spreadsheets/d/1sLr5VaUsHKfwZV_CA1K1o2bfywwzl4w-FGYWVnKmwKA/edit"
+
+# ============================================================================
+# CHARACTERS - For Asset Checks
+# ============================================================================
+
+[chareacters.dennis]
+name = "Dennis Bond"
+char_id = 2116424383
+
+[chareacters.orthel]
+name = "Orthel Toralen"
+char_id = 2116257395
+
+[characters.clearcomms]
+name = "Cpt Clear Comms"
+char_id = 2119110792
+
+
+
+

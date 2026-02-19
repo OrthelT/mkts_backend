@@ -111,17 +111,23 @@ sheet_url2 = "https://docs.google.com/spreadsheets/d/1sLr5VaUsHKfwZV_CA1K1o2bfyw
 # CHARACTERS - For Asset Checks
 # ============================================================================
 
-[chareacters.dennis]
+[characters.dennis]
 name = "Dennis Bond"
 char_id = 2116424383
+token_env = "REFRESH_TOKEN_DENNIS"
+short_name = "Den"
 
-[chareacters.orthel]
+[characters.orthel]
 name = "Orthel Toralen"
 char_id = 2116257395
+token_env = "REFRESH_TOKEN_ORTHEL"
+short_name = "Ort"
 
 [characters.clearcomms]
 name = "Cpt Clear Comms"
 char_id = 2119110792
+token_env = "REFRESH_TOKEN_CLEARCOMMS"
+short_name = "CC"
 
 
 

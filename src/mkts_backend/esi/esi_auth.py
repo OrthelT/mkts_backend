@@ -91,6 +91,58 @@ def get_token(requested_scope):
             return token
 
 
+def get_token_for_character(char_key: str, refresh_token: str, scope):
+    """
+    Get an OAuth token for a specific character.
+
+    Uses a per-character token cache file (token_<char_key>.json) and the
+    shared CLIENT_ID / SECRET_KEY credentials.
+
+    Args:
+        char_key: Character key (e.g. "dennis") — used for cache filename
+        refresh_token: The character's ESI refresh token
+        scope: OAuth scope(s) to request
+
+    Returns:
+        OAuth token dict
+
+    Raises:
+        ValueError: If CLIENT_ID or SECRET_KEY is missing
+        Exception: If token refresh fails
+    """
+    if not CLIENT_ID:
+        raise ValueError("CLIENT_ID environment variable is not set")
+    if not SECRET_KEY:
+        raise ValueError("SECRET_KEY environment variable is not set")
+
+    token_file = f"token_{char_key}.json"
+
+    # Try loading cached token
+    token = None
+    if os.path.exists(token_file):
+        with open(token_file, "r") as f:
+            token = json.load(f)
+
+    def _save(t):
+        with open(token_file, "w") as f:
+            json.dump(t, f)
+
+    if token and token.get("expires_at", 0) > time.time():
+        return token
+
+    # Refresh using the character's refresh token
+    logger.info(f"Refreshing token for character '{char_key}'")
+    rt = token.get("refresh_token", refresh_token) if token else refresh_token
+    token = OAuth2Session(CLIENT_ID, scope=scope).refresh_token(
+        TOKEN_URL,
+        refresh_token=rt,
+        client_id=CLIENT_ID,
+        client_secret=SECRET_KEY,
+    )
+    _save(token)
+    return token
+
+
 if __name__ == "__main__":
     pass
 

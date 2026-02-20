@@ -601,3 +601,56 @@ def create_module_usage_table(
         table.add_row(*row_data)
 
     return table
+
+
+def create_asset_table(
+    type_name: str,
+    type_id: int,
+    rows: List[Dict],
+    grand_total: int,
+) -> Table:
+    """
+    Create a vertical Rich table showing per-character asset quantities.
+
+    Args:
+        type_name: Resolved item name
+        type_id: Item type ID
+        rows: List of dicts with character, short_name, quantity
+        grand_total: Sum of all character quantities
+
+    Returns:
+        A Rich Table object ready for display
+    """
+    table = Table(
+        title=(
+            f"[bold cyan]{type_name}[/bold cyan]"
+            f" [dim](ID: {type_id})[/dim]"
+        ),
+        box=box.ROUNDED,
+        show_header=True,
+        header_style="bold magenta",
+        title_justify="left",
+        padding=(0, 2),
+    )
+
+    table.add_column("Character", style="white", min_width=20)
+    table.add_column("Quantity", justify="right", min_width=10)
+
+    for row in rows:
+        qty = row["quantity"]
+        if qty > 0:
+            qty_str = f"[green]{format_quantity(qty)}[/green]"
+        else:
+            qty_str = "[dim]0[/dim]"
+
+        table.add_row(row["character"], qty_str)
+
+    # Total row with separator
+    total_style = "bold yellow" if grand_total > 0 else "bold red"
+    table.add_section()
+    table.add_row(
+        "[bold white]Total[/bold white]",
+        f"[{total_style}]{format_quantity(grand_total)}[/{total_style}]",
+    )
+
+    return table

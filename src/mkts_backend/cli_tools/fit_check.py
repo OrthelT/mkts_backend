@@ -1208,6 +1208,7 @@ def needed_command(
     ship_filter: Optional[List[str]] = None,
     fit_filter: Optional[List[int]] = None,
     targ_perc_filter: Optional[float] = None,
+    show_assets: bool = False,
 ) -> bool:
     """
     Display needed items organized into sub-tables by fit.
@@ -1217,6 +1218,7 @@ def needed_command(
         ship_filter: Filter by ship names (comma-separated or repeated flags)
         fit_filter: Filter by fit_ids (comma-separated or repeated flags)
         targ_perc_filter: Filter where targ_perc < this value
+        show_assets: If True, fetch and display per-character asset columns
 
     Returns:
         True if successful, False otherwise
@@ -1237,6 +1239,14 @@ def needed_command(
     if not data:
         console.print("[yellow]No items needed - all fits are at or above target.[/yellow]")
         return True
+
+    # Fetch per-character assets if requested
+    char_assets = None
+    if show_assets:
+        from mkts_backend.esi.character_assets import fetch_all_character_assets
+
+        all_type_ids = list({item["type_id"] for item in data})
+        char_assets = fetch_all_character_assets(type_ids=all_type_ids)
 
     # Group by fit_id
     grouped = {}
@@ -1280,6 +1290,7 @@ def needed_command(
             min_fits=min_fits,
             target=target,
             items=items,
+            char_assets=char_assets,
         )
         console.print(table)
         console.print()
@@ -1376,6 +1387,7 @@ def _handle_needed(sub_args: List[str]) -> None:
     fit_filters: List[int] = []
     targ_perc_filter = None
     market_alias = "primary"
+    show_assets = False
 
     for arg in sub_args:
         if arg.startswith("--ship="):
@@ -1403,6 +1415,8 @@ def _handle_needed(sub_args: List[str]) -> None:
             market_alias = "deployment"
         elif arg == "--primary":
             market_alias = "primary"
+        elif arg == "--assets":
+            show_assets = True
 
     # Resolve fuzzy ship names to exact matches
     resolved_ships = None
@@ -1422,6 +1436,7 @@ def _handle_needed(sub_args: List[str]) -> None:
         ship_filter=resolved_ships,
         fit_filter=fit_filters or None,
         targ_perc_filter=targ_perc_filter,
+        show_assets=show_assets,
     )
 
 
@@ -1492,7 +1507,7 @@ USAGE:
     fitcheck --fit=<id> [options]
     fitcheck --file=<path> [options]
     fitcheck --paste [options]
-    fitcheck needed [--ship=<name,...>] [--fit=<id,...>] [--target=<pct>]
+    fitcheck needed [--ship=<name,...>] [--fit=<id,...>] [--target=<pct>] [--assets]
     fitcheck list-fits [--market=<alias>]
     fitcheck module --id=<type_id> [--market=<alias>]
     fitcheck module --name="<name>" [--market=<alias>]
@@ -1505,6 +1520,7 @@ SUBCOMMANDS:
                              (e.g. --fit=550 or --fit=550,551,552)
         --target=<pct>       Show only fits below this target % (e.g. --target=0.5)
         --market=<alias>     Market to check (default: primary)
+        --assets             Show per-character packaged asset columns
 
     list-fits            List all tracked doctrine fits
         --market=<alias>     Market database to query (default: primary)

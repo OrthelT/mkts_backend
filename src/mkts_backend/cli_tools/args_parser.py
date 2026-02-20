@@ -508,6 +508,59 @@ def parse_args(args: list[str]) -> dict | None:
         success = equiv_command(args, market_alias)
         exit(0 if success else 1)
 
+    if "assets" in args:
+        from mkts_backend.cli_tools.asset_check import asset_check_command
+
+        asset_type_id = None
+        asset_type_name = None
+        for arg in args:
+            if arg.startswith("--id="):
+                try:
+                    asset_type_id = int(arg.split("=", 1)[1])
+                except ValueError:
+                    print("Error: --id must be an integer")
+                    return None
+            elif arg.startswith("--name="):
+                asset_type_name = arg.split("=", 1)[1]
+
+        if asset_type_id is None and asset_type_name is None:
+            print("Error: --id=<type_id> or --name=<type_name> is required")
+            print("Usage: mkts-backend assets --id=11379")
+            print("       mkts-backend assets --name='Damage Control'")
+            return None
+
+        success = asset_check_command(type_id=asset_type_id, type_name=asset_type_name)
+        exit(0 if success else 1)
+
+    if "esi-auth" in args:
+        from mkts_backend.esi.esi_auth import authorize_character, REQUIRED_SCOPES
+        from mkts_backend.config.character_config import load_characters
+
+        char_key = None
+        for arg in args:
+            if arg.startswith("--char="):
+                char_key = arg.split("=", 1)[1]
+
+        if char_key:
+            authorize_character(char_key, REQUIRED_SCOPES)
+        else:
+            characters = load_characters()
+            print("Available characters:")
+            for i, char in enumerate(characters, 1):
+                print(f"  {i}. {char.name} (key: {char.key})")
+            choice = input("\nEnter character key (or number): ").strip()
+            if choice.isdigit():
+                idx = int(choice) - 1
+                if 0 <= idx < len(characters):
+                    char_key = characters[idx].key
+                else:
+                    print("Invalid selection.")
+                    exit(1)
+            else:
+                char_key = choice
+            authorize_character(char_key, REQUIRED_SCOPES)
+        exit(0)
+
     if "sync" in args:
         # Determine which markets to sync
         if "--both" in args or ("--market=both" in args):

@@ -393,6 +393,7 @@ def create_needed_table(
     target: int,
     items: List[Dict],
     ship_id: Optional[int] = None,
+    char_assets: Optional[List[tuple]] = None,
 ) -> Table:
     """
     Create a Rich sub-table for a single fit's needed items.
@@ -406,6 +407,8 @@ def create_needed_table(
         items: List of dicts with type_id, type_name, target, fits_on_mkt,
                total_stock, targ_perc, qty_needed
         ship_id: Ship type ID for the header
+        char_assets: Optional list of (CharacterConfig, {type_id: qty}) tuples.
+                     When provided, adds one column per character showing packaged qty.
 
     Returns:
         A Rich Table object for this fit group
@@ -439,6 +442,10 @@ def create_needed_table(
     table.add_column("Tgt%", justify="right", width=5)
     table.add_column("Need", justify="right", width=7)
 
+    if char_assets:
+        for char, _ in char_assets:
+            table.add_column(char.short_name, justify="right", width=5, style="cyan")
+
     for item in items:
         fits = item.get("fits_on_mkt", 0) or 0
         targ_perc = item.get("targ_perc", 0) or 0
@@ -461,6 +468,15 @@ def create_needed_table(
             f"[{perc_style}]{targ_perc:.0%}[/{perc_style}]",
             f"[red]{format_quantity(qty_needed)}[/red]" if qty_needed > 0 else "[dim]-[/dim]",
         ]
+
+        if char_assets:
+            type_id = item.get("type_id")
+            for _, assets_map in char_assets:
+                qty = assets_map.get(type_id, 0)
+                if qty > 0:
+                    row_data.append(format_quantity(qty))
+                else:
+                    row_data.append("[dim]-[/dim]")
 
         table.add_row(*row_data)
 
@@ -583,5 +599,58 @@ def create_module_usage_table(
         row_data.append(format_isk(price, include_suffix=False))
 
         table.add_row(*row_data)
+
+    return table
+
+
+def create_asset_table(
+    type_name: str,
+    type_id: int,
+    rows: List[Dict],
+    grand_total: int,
+) -> Table:
+    """
+    Create a vertical Rich table showing per-character asset quantities.
+
+    Args:
+        type_name: Resolved item name
+        type_id: Item type ID
+        rows: List of dicts with character, short_name, quantity
+        grand_total: Sum of all character quantities
+
+    Returns:
+        A Rich Table object ready for display
+    """
+    table = Table(
+        title=(
+            f"[bold cyan]{type_name}[/bold cyan]"
+            f" [dim](ID: {type_id})[/dim]"
+        ),
+        box=box.ROUNDED,
+        show_header=True,
+        header_style="bold magenta",
+        title_justify="left",
+        padding=(0, 2),
+    )
+
+    table.add_column("Character", style="white", min_width=20)
+    table.add_column("Quantity", justify="right", min_width=10)
+
+    for row in rows:
+        qty = row["quantity"]
+        if qty > 0:
+            qty_str = f"[green]{format_quantity(qty)}[/green]"
+        else:
+            qty_str = "[dim]0[/dim]"
+
+        table.add_row(row["character"], qty_str)
+
+    # Total row with separator
+    total_style = "bold yellow" if grand_total > 0 else "bold red"
+    table.add_section()
+    table.add_row(
+        "[bold white]Total[/bold white]",
+        f"[{total_style}]{format_quantity(grand_total)}[/{total_style}]",
+    )
 
     return table

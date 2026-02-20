@@ -38,18 +38,12 @@ def fetch_character_assets(char: CharacterConfig) -> Dict[int, int]:
         Dict mapping type_id to total packaged quantity.
         Returns empty dict on auth or request failure.
     """
-    refresh_token = os.getenv(char.token_env)
-    if not refresh_token:
-        logger.warning(
-            f"No refresh token for {char.name} "
-            f"(env var {char.token_env} not set)"
-        )
-        return {}
+    refresh_token = os.getenv(char.token_env, "")
 
     try:
         token = get_token_for_character(char.key, refresh_token, ASSETS_SCOPE)
     except Exception as e:
-        logger.error(f"Token refresh failed for {char.name}: {e}")
+        logger.error(f"Token fetch failed for {char.name}: {e}")
         return {}
 
     access_token = token.get("access_token", "")

@@ -136,6 +136,11 @@ def get_token_for_character(char_key: str, refresh_token: str, scope):
     # Refresh using the character's refresh token
     logger.info(f"Refreshing token for character '{char_key}'")
     rt = token.get("refresh_token", refresh_token) if token else refresh_token
+    if not rt:
+        raise ValueError(
+            f"No refresh token for '{char_key}' — "
+            f"run: mkts-backend esi-auth --char={char_key}"
+        )
     token = OAuth2Session(CLIENT_ID, scope=scope).refresh_token(
         TOKEN_URL,
         refresh_token=rt,
@@ -229,6 +234,9 @@ def authorize_character(char_key: str, scopes: list[str] | None = None):
         raise ValueError("SECRET_KEY environment variable is not set")
 
     scopes = scopes or REQUIRED_SCOPES
+
+    # Allow http://localhost callback — oauthlib enforces HTTPS by default
+    os.environ["OAUTHLIB_INSECURE_TRANSPORT"] = "1"
 
     oauth = OAuth2Session(CLIENT_ID, redirect_uri=CALLBACK_URI, scope=scopes)
     auth_url, state = oauth.authorization_url(AUTH_URL)

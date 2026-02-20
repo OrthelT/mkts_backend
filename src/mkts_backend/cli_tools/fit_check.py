@@ -453,6 +453,141 @@ def _get_fallback_data(
     return None
 
 
+def get_equiv_stock(
+    type_ids: List[int],
+    market_ctx: Optional[MarketContext] = None,
+) -> Dict[int, List[Dict]]:
+    """
+    Find equivalent modules with market stock for a list of type_ids.
+
+    Queries module_equivalents to find all type_ids sharing an equiv_group_id
+    with any item in the list, then looks up stock from marketstats.
+
+    Args:
+        type_ids: List of canonical type_ids from a fit
+        market_ctx: Market context for database selection
+
+    Returns:
+        Dict mapping canonical_type_id to list of equiv dicts:
+        {type_id: [{"type_id": x, "type_name": "...", "stock": n}, ...]}
+        Only includes equivalents with stock > 0.
+    """
+    if not type_ids:
+        return {}
+
+    db_alias = market_ctx.database_alias if market_ctx else "wcmkt"
+    db = DatabaseConfig(db_alias)
+
+    result: Dict[int, List[Dict]] = {}
+
+    with db.engine.connect() as conn:
+        # Check if module_equivalents table exists
+        try:
+            check = text("SELECT 1 FROM module_equivalents LIMIT 1")
+            conn.execute(check)
+        except Exception:
+            return {}
+
+        # Find equiv groups for all type_ids in one query
+        placeholders = ", ".join(f":id_{i}" for i in range(len(type_ids)))
+        params = {f"id_{i}": tid for i, tid in enumerate(type_ids)}
+
+        group_query = text(f"""
+            SELECT type_id, equiv_group_id
+            FROM module_equivalents
+            WHERE type_id IN ({placeholders})
+        """)
+        group_rows = conn.execute(group_query, params).fetchall()
+
+        if not group_rows:
+            return {}
+
+        # Map canonical type_id -> equiv_group_id
+        canonical_to_group = {row.type_id: row.equiv_group_id for row in group_rows}
+        group_ids = set(canonical_to_group.values())
+
+        # Get all members of those equiv groups
+        g_placeholders = ", ".join(f":g_{i}" for i in range(len(group_ids)))
+        g_params = {f"g_{i}": gid for i, gid in enumerate(group_ids)}
+
+        members_query = text(f"""
+            SELECT equiv_group_id, type_id, type_name
+            FROM module_equivalents
+            WHERE equiv_group_id IN ({g_placeholders})
+        """)
+        member_rows = conn.execute(members_query, g_params).fetchall()
+
+        # Build group_id -> list of (type_id, type_name)
+        group_members: Dict[int, List[tuple]] = defaultdict(list)
+        for row in member_rows:
+            group_members[row.equiv_group_id].append(
+                (row.type_id, row.type_name)
+            )
+
+        # Collect all equiv type_ids we need stock for (excluding canonicals)
+        canonical_set = set(type_ids)
+        equiv_type_ids = set()
+        for gid, members in group_members.items():
+            for tid, _ in members:
+                if tid not in canonical_set:
+                    equiv_type_ids.add(tid)
+
+        if not equiv_type_ids:
+            return {}
+
+        # Query marketstats for equiv stock
+        e_placeholders = ", ".join(f":e_{i}" for i in range(len(equiv_type_ids)))
+        e_params = {f"e_{i}": tid for i, tid in enumerate(equiv_type_ids)}
+
+        stock_query = text(f"""
+            SELECT type_id, total_volume_remain
+            FROM marketstats
+            WHERE type_id IN ({e_placeholders})
+        """)
+        stock_rows = conn.execute(stock_query, e_params).fetchall()
+        stock_map = {row.type_id: row.total_volume_remain or 0 for row in stock_rows}
+
+        # Build result: canonical_type_id -> equiv items with stock > 0
+        for canonical_tid, gid in canonical_to_group.items():
+            equivs = []
+            for tid, tname in group_members[gid]:
+                if tid == canonical_tid:
+                    continue
+                stock = stock_map.get(tid, 0)
+                if stock > 0:
+                    equivs.append({
+                        "type_id": tid,
+                        "type_name": tname,
+                        "stock": stock,
+                    })
+            if equivs:
+                result[canonical_tid] = equivs
+
+    return result
+
+
+def _apply_equiv_stock(market_data: List[Dict], equiv_stock: Dict[int, List[Dict]]) -> None:
+    """
+    Augment market_data items with equivalent module stock.
+
+    For each item that has equivalents, sums equiv stock into market_stock,
+    recalculates fits, and attaches equiv_items list.
+
+    Mutates market_data in place.
+    """
+    for item in market_data:
+        type_id = item.get("type_id")
+        equivs = equiv_stock.get(type_id)
+        if not equivs:
+            continue
+
+        equiv_total = sum(e["stock"] for e in equivs)
+        item["market_stock"] = item.get("market_stock", 0) + equiv_total
+        fit_qty = item.get("fit_qty", 1)
+        item["fits"] = (item["market_stock"] / fit_qty) if fit_qty > 0 else 0
+        item["equiv_items"] = equivs
+
+
 def _get_type_name_from_sde(type_id: int) -> str:
     """Get type name from SDE database."""
     sde_db = DatabaseConfig("sde")
@@ -570,6 +705,10 @@ def get_fit_market_status(
             }
         )
 
+    # Apply equivalent module stock
+    equiv_stock = get_equiv_stock(type_ids, market_ctx)
+    _apply_equiv_stock(market_data, equiv_stock)
+
     # Sort: ships first, then by fits available (lowest first to highlight bottlenecks)
     market_data.sort(key=lambda x: (
         not x["is_ship"], x["fits"], x["type_name"]))
@@ -638,6 +777,10 @@ def get_fit_market_status_by_id(
         item["jita_price"] = jita_price
         item["jita_fit_price"] = (
             jita_price * item["fit_qty"]) if jita_price else 0
+
+    # Apply equivalent module stock
+    equiv_stock = get_equiv_stock(type_ids, market_ctx)
+    _apply_equiv_stock(market_data, equiv_stock)
 
     # Sort: ships first, then by fits available (lowest first to highlight bottlenecks)
     market_data.sort(key=lambda x: (
@@ -1153,6 +1296,7 @@ def _query_needed_data(
                 d.ship_name,
                 d.type_id,
                 d.type_name,
+                d.fit_qty,
                 t.ship_target AS target,
                 t.fit_name,
                 d.fits_on_mkt,
@@ -1182,6 +1326,7 @@ def _query_needed_data(
                 "ship_name": row.ship_name,
                 "type_id": row.type_id,
                 "type_name": row.type_name,
+                "fit_qty": row.fit_qty or 1,
                 "target": row.target,
                 "fit_name": row.fit_name or "Unknown",
                 "fits_on_mkt": row.fits_on_mkt or 0,
@@ -1195,10 +1340,36 @@ def _query_needed_data(
                 continue
             if fit_filter and item["fit_id"] not in fit_filter:
                 continue
-            if targ_perc_filter is not None and item["targ_perc"] >= targ_perc_filter:
-                continue
 
             results.append(item)
+
+    # Apply equivalent module stock
+    all_type_ids = list({item["type_id"] for item in results})
+    equiv_stock = get_equiv_stock(all_type_ids, market_ctx)
+
+    for item in results:
+        equivs = equiv_stock.get(item["type_id"])
+        if not equivs:
+            continue
+
+        equiv_total = sum(e["stock"] for e in equivs)
+        item["total_stock"] = (item.get("total_stock", 0) or 0) + equiv_total
+        target_val = item.get("target", 0) or 0
+        fit_qty = item.get("fit_qty", 1) or 1
+
+        # Recalculate fits_on_mkt from updated total_stock
+        # doctrines stores fits_on_mkt = total_stock / fit_qty
+        item["fits_on_mkt"] = item["total_stock"] / fit_qty if fit_qty > 0 else 0
+        item["targ_perc"] = round(item["fits_on_mkt"] / target_val, 2) if target_val > 0 else 0
+        item["qty_needed"] = max(0, int((target_val - item["fits_on_mkt"]) * fit_qty)) if item["fits_on_mkt"] < target_val else 0
+        item["equiv_items"] = equivs
+
+    # Apply targ_perc filter after equiv adjustment
+    if targ_perc_filter is not None:
+        results = [item for item in results if item["targ_perc"] < targ_perc_filter]
+
+    # Remove items that no longer need anything after equiv adjustment
+    results = [item for item in results if item["qty_needed"] > 0]
 
     return results
 

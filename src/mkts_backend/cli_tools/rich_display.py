@@ -161,6 +161,27 @@ def create_fit_status_table(
 
         table.add_row(*row_data, end_section=is_ship)
 
+        # Add equiv sub-rows if present
+        equiv_items = item.get("equiv_items")
+        if equiv_items:
+            for equiv in equiv_items:
+                equiv_row = [
+                    "",  # blank Type ID
+                    f"[dim]  \u21b3 {equiv['type_name']}[/dim]",
+                    f"[dim]{format_quantity(equiv['stock'])}[/dim]",
+                    "[dim]-[/dim]",  # fit_qty
+                    "[dim]-[/dim]",  # fits
+                ]
+                if target is not None:
+                    equiv_row.append("[dim]-[/dim]")  # qty_needed
+                equiv_row.append("[dim]-[/dim]")  # price
+                equiv_row.append("[dim]-[/dim]")  # fit cost
+                if show_jita:
+                    equiv_row.append("[dim]-[/dim]")  # jita price
+                    equiv_row.append("[dim]-[/dim]")  # jita fit
+                equiv_row.append("")  # source
+                table.add_row(*equiv_row)
+
     return table
 
 
@@ -479,6 +500,24 @@ def create_needed_table(
                     row_data.append("[dim]-[/dim]")
 
         table.add_row(*row_data)
+
+        # Add equiv sub-rows if present
+        equiv_items = item.get("equiv_items")
+        if equiv_items:
+            for equiv in equiv_items:
+                equiv_row = [
+                    "",  # blank ID
+                    f"[dim]  \u21b3 {equiv['type_name']}[/dim]",
+                    f"[dim]{format_quantity(equiv['stock'])}[/dim]",
+                    "[dim]-[/dim]",  # fits
+                    "[dim]-[/dim]",  # tgt
+                    "[dim]-[/dim]",  # tgt%
+                    "[dim]-[/dim]",  # need
+                ]
+                if char_assets:
+                    for _ in char_assets:
+                        equiv_row.append("[dim]-[/dim]")
+                table.add_row(*equiv_row)
 
     return table
 

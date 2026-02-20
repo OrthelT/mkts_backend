@@ -69,6 +69,10 @@ def fetch_character_assets(char: CharacterConfig) -> Dict[int, int]:
 
         if resp.status_code == 403:
             logger.error(f"ESI 403 for {char.name} — token may lack scope")
+            print(
+                f"\nToken for {char.name} lacks required scope. Run:\n"
+                f"  mkts-backend esi-auth --char={char.key}\n"
+            )
             break
         if resp.status_code != 200:
             logger.error(

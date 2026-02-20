@@ -508,6 +508,35 @@ def parse_args(args: list[str]) -> dict | None:
         success = equiv_command(args, market_alias)
         exit(0 if success else 1)
 
+    if "esi-auth" in args:
+        from mkts_backend.esi.esi_auth import authorize_character, REQUIRED_SCOPES
+        from mkts_backend.config.character_config import load_characters
+
+        char_key = None
+        for arg in args:
+            if arg.startswith("--char="):
+                char_key = arg.split("=", 1)[1]
+
+        if char_key:
+            authorize_character(char_key, REQUIRED_SCOPES)
+        else:
+            characters = load_characters()
+            print("Available characters:")
+            for i, char in enumerate(characters, 1):
+                print(f"  {i}. {char.name} (key: {char.key})")
+            choice = input("\nEnter character key (or number): ").strip()
+            if choice.isdigit():
+                idx = int(choice) - 1
+                if 0 <= idx < len(characters):
+                    char_key = characters[idx].key
+                else:
+                    print("Invalid selection.")
+                    exit(1)
+            else:
+                char_key = choice
+            authorize_character(char_key, REQUIRED_SCOPES)
+        exit(0)
+
     if "sync" in args:
         # Determine which markets to sync
         if "--both" in args or ("--market=both" in args):

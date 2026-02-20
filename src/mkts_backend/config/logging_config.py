@@ -6,8 +6,6 @@ import os
 from typing import Optional, Dict
 import tomllib
 
-settings_file = "/home/orthel/workspace/github/mkts_backend/config/settings.toml"
-
 try:
     import colorlog
     COLOR_AVAILABLE = True
@@ -25,18 +23,24 @@ def _find_project_root(start_dir: str) -> str:
         cur = parent
     return os.path.abspath(os.path.join(start_dir, "..", "..", "..", ".."))
 
-def log_level_from_settings(file_path: str = settings_file):
-    with open(file_path, "rb") as f:
-        settings = tomllib.load(f)
-    # Allow environment variable to override app.environment for temporary switching
-    settings_level = settings["app"]["log_level"]
-    if settings_level:
-        return logging.getLevelName(settings_level)
-    else:
-        return logging.INFO
+def _default_settings_file() -> str:
+    project_root = _find_project_root(os.path.dirname(__file__))
+    return os.path.join(project_root, "config", "settings.toml")
 
-log_level = log_level_from_settings(settings_file)
-print(log_level)
+def log_level_from_settings(file_path: Optional[str] = None):
+    if file_path is None:
+        file_path = _default_settings_file()
+    try:
+        with open(file_path, "rb") as f:
+            settings = tomllib.load(f)
+        settings_level = settings["app"]["log_level"]
+        if settings_level:
+            return logging.getLevelName(settings_level)
+    except (FileNotFoundError, KeyError):
+        pass
+    return logging.INFO
+
+log_level = log_level_from_settings()
 
 def configure_logging(
     name: str,

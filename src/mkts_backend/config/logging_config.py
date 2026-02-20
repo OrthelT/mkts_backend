@@ -4,13 +4,15 @@ from logging import StreamHandler
 import sys
 import os
 from typing import Optional, Dict
+import tomllib
+
+settings_file = "/home/orthel/workspace/github/mkts_backend/config/settings.toml"
 
 try:
     import colorlog
     COLOR_AVAILABLE = True
 except ImportError:
     COLOR_AVAILABLE = False
-
 
 def _find_project_root(start_dir: str) -> str:
     cur = os.path.abspath(start_dir)
@@ -23,12 +25,24 @@ def _find_project_root(start_dir: str) -> str:
         cur = parent
     return os.path.abspath(os.path.join(start_dir, "..", "..", "..", ".."))
 
+def log_level_from_settings(file_path: str = settings_file):
+    with open(file_path, "rb") as f:
+        settings = tomllib.load(f)
+    # Allow environment variable to override app.environment for temporary switching
+    settings_level = settings["app"]["log_level"]
+    if settings_level:
+        return logging.getLevelName(settings_level)
+    else:
+        return logging.INFO
+
+log_level = log_level_from_settings(settings_file)
+print(log_level)
 
 def configure_logging(
     name: str,
     use_colors: bool = True,
-    console_level: int = logging.INFO,
-    file_level: int = logging.INFO,
+    console_level: int = log_level,
+    file_level: int = log_level,
     custom_colors: Optional[Dict[str, str]] = None,
 ):
     logger = logging.getLogger(name)

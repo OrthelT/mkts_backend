@@ -94,6 +94,7 @@ def resolve_type(
 def asset_check_command(
     type_id: Optional[int] = None,
     type_name: Optional[str] = None,
+    force_refresh: bool = False,
 ) -> bool:
     """
     Main entry point for the `assets` CLI subcommand.
@@ -118,7 +119,9 @@ def asset_check_command(
 
     # Fetch assets for all characters — no type_ids filter so we get everything,
     # then we filter to just our type
-    char_assets = fetch_all_character_assets(type_ids=[resolved_id])
+    char_assets = fetch_all_character_assets(
+        type_ids=[resolved_id], force_refresh=force_refresh
+    )
 
     # Build display data
     rows = []

@@ -1380,6 +1380,7 @@ def needed_command(
     fit_filter: Optional[List[int]] = None,
     targ_perc_filter: Optional[float] = None,
     show_assets: bool = False,
+    force_refresh: bool = False,
 ) -> bool:
     """
     Display needed items organized into sub-tables by fit.
@@ -1417,7 +1418,9 @@ def needed_command(
         from mkts_backend.esi.character_assets import fetch_all_character_assets
 
         all_type_ids = list({item["type_id"] for item in data})
-        char_assets = fetch_all_character_assets(type_ids=all_type_ids)
+        char_assets = fetch_all_character_assets(
+            type_ids=all_type_ids, force_refresh=force_refresh
+        )
 
     # Group by fit_id
     grouped = {}
@@ -1559,6 +1562,7 @@ def _handle_needed(sub_args: List[str]) -> None:
     targ_perc_filter = None
     market_alias = "primary"
     show_assets = False
+    force_refresh = False
 
     for arg in sub_args:
         if arg.startswith("--ship="):
@@ -1588,6 +1592,8 @@ def _handle_needed(sub_args: List[str]) -> None:
             market_alias = "primary"
         elif arg == "--assets":
             show_assets = True
+        elif arg == "--refresh":
+            force_refresh = True
 
     # Resolve fuzzy ship names to exact matches
     resolved_ships = None
@@ -1608,6 +1614,7 @@ def _handle_needed(sub_args: List[str]) -> None:
         fit_filter=fit_filters or None,
         targ_perc_filter=targ_perc_filter,
         show_assets=show_assets,
+        force_refresh=force_refresh,
     )
 
 
@@ -1692,6 +1699,7 @@ SUBCOMMANDS:
         --target=<pct>       Show only fits below this target % (e.g. --target=0.5)
         --market=<alias>     Market to check (default: primary)
         --assets             Show per-character packaged asset columns
+        --refresh            Bypass asset cache and re-fetch from ESI
 
     list-fits            List all tracked doctrine fits
         --market=<alias>     Market database to query (default: primary)

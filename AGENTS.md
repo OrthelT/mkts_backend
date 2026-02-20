@@ -42,6 +42,13 @@ uv run fitcheck needed    # Show all items needed across fits
 uv run fitcheck module --id=11269  # Show which fits use a module
 ```
 
+**Look up character assets:**
+```bash
+uv run mkts-backend assets --id=11379        # By type ID (cached for 1 hour)
+uv run mkts-backend assets --name='Damage Control'  # By name
+uv run mkts-backend assets --id=11379 --refresh     # Bypass cache, re-fetch from ESI
+```
+
 **Dependencies are managed with uv:**
 ```bash
 uv sync  # Install dependencies
@@ -91,8 +98,9 @@ Manages all database operations:
 SQLAlchemy ORM model definitions (at `src/mkts_backend/db/models.py`):
 - **Core Models:** `MarketOrders`, `MarketHistory`, `MarketStats`, `Doctrines`, `Watchlist`
 - **Organizational Models:** `ShipTargets`, `DoctrineMap`, `DoctrineFitItems`, `LeadShips`
-- **Utility Models:** `UpdateLog`, `ESIRequestCache`
+- **Utility Models:** `UpdateLog`, `ESIRequestCache`, `CharacterAssetCache`
 - **Module Equivalents:** `ModuleEquivalents` - maps interchangeable faction modules by `equiv_group_id`
+- **Asset Cache:** `CharacterAssetCache` - cached per-character ESI asset data with TTL (table auto-created on first use)
 - `DoctrineFitItems` maps to `doctrine_fits` table; includes `friendly_name` field (nullable) added in Feb 2026
 - Tables stored in market-specific databases (e.g., `wcmktprod.db`, `wcmktnorth2.db`)
 
@@ -217,6 +225,7 @@ TURSO_FITTING_TOKEN=<fitting_db_token>
 - **GitHub Actions Integration:** Automated scheduled data collection via workflows
 - **Module Equivalents:** Aggregate stock across interchangeable faction modules; managed via `equiv` CLI commands
 - **Friendly Names:** Per-doctrine display names stored in `doctrine_fits.friendly_name`; managed via `fit-update update-friendly-name`
+- **Asset Cache:** ESI character asset data cached locally in `character_asset_cache` table (1-hour TTL); used by `assets` and `fitcheck needed --assets` commands; bypass with `--refresh` flag
 
 ## CLI Tools
 
@@ -270,6 +279,12 @@ uv run fitcheck needed --fit=550
 
 # Check deployment market
 uv run fitcheck needed --market=deployment
+
+# Show per-character assets (cached for 1 hour)
+uv run fitcheck needed --assets
+
+# Force re-fetch assets from ESI (bypass cache)
+uv run fitcheck needed --assets --refresh
 ```
 
 The `needed` subcommand displays a comprehensive overview of items needed for restocking across all tracked fits. Results are grouped by fit with Rich sub-tables showing:
@@ -804,6 +819,7 @@ uv run mkts-backend
 - `watchlist`: Items being tracked
 - `ship_targets`: Ship production targets
 - `doctrine_map`: Doctrine to fitting mappings
+- `character_asset_cache`: Cached per-character ESI asset data (auto-created, 1-hour TTL)
 - `doctrine_fits`: Doctrine fitting configurations with target quantities and market flags
   - Fields: `id`, `doctrine_name`, `fit_name`, `ship_type_id`, `doctrine_id`, `fit_id`, `ship_name`, `target`, `market_flag`, `friendly_name`
   - Used by fit-check to retrieve target quantities for fits
@@ -1162,6 +1178,7 @@ Side Channel:
 - **cli_tools/prompter.py**: Multiline input prompter for paste mode (uses prompt_toolkit)
 - **cli_tools/fit_update.py**: Fit and doctrine management CLI commands (includes friendly name management)
 - **cli_tools/equiv_manager.py**: Module equivalents CLI commands (list, find, add, remove)
+- **esi/asset_cache.py**: Local SQLite cache for ESI character assets (1-hour TTL, auto-creates table)
 - **cli_tools/args_parser.py**: CLI argument routing for all mkts-backend subcommands
 - **cli_tools/cli_help.py**: Help text for all CLI commands
 

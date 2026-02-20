@@ -92,18 +92,13 @@ class DatabaseConfig:
             self.token = market_context.turso_token
             logger.info(f"DatabaseConfig initialized from MarketContext: {market_context.name}")
         else:
-            # Legacy alias-based initialization (backward compatibility)
-            if alias is None:
-                alias = "wcmkt"
-
-            if alias == "wcmkt":
-                # Check env var override first (class-level settings is cached at import time)
-                env = os.environ.get("MKTS_ENVIRONMENT", self.settings["app"]["environment"])
-                if env == "development":
-                    alias = self._testing_db_alias
-                else:
-                    alias = self._production_db_alias
-
+            env = os.environ.get("MKTS_ENVIRONMENT", self.settings["app"]["environment"])
+            if env == 'development':
+                alias = self._testing_db_alias
+            elif alias is None or alias in ["wcmkt", "primary"]:
+                alias = self._production_db_alias
+            elif alias in ["deployment", "north"]:
+                alias == self._deployment_db_alias
             if alias not in self._db_paths:
                 raise ValueError(
                     f"Unknown database alias '{alias}'. Available: {list(self._db_paths.keys())}"

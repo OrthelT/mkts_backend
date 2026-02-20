@@ -13,6 +13,7 @@ import requests
 
 from mkts_backend.config.character_config import CharacterConfig, load_characters
 from mkts_backend.config.logging_config import configure_logging
+from mkts_backend.esi.asset_cache import read_cache, write_cache
 from mkts_backend.esi.esi_auth import get_token_for_character
 
 logger = configure_logging(__name__)
@@ -24,20 +25,34 @@ ESI_ASSETS_URL = (
 ASSETS_SCOPE = "esi-assets.read_assets.v1"
 
 
-def fetch_character_assets(char: CharacterConfig) -> Dict[int, int]:
+def fetch_character_assets(
+    char: CharacterConfig,
+    force_refresh: bool = False,
+) -> Dict[int, int]:
     """
     Fetch packaged assets for a single character via ESI.
+
+    Checks the local SQLite cache first. If cached data is fresh (< 1 hour)
+    and force_refresh is False, returns cached data without hitting ESI.
 
     Paginates through all pages, filters to is_singleton=False (packaged),
     and sums quantities by type_id.
 
     Args:
         char: Character configuration with key, char_id, token_env
+        force_refresh: If True, bypass cache and fetch from ESI
 
     Returns:
         Dict mapping type_id to total packaged quantity.
         Returns empty dict on auth or request failure.
     """
+    # Check cache first
+    if not force_refresh:
+        cached = read_cache(char.char_id)
+        if cached is not None:
+            print(f"  [cache] Using cached assets for {char.name}")
+            return cached
+
     refresh_token = os.getenv(char.token_env, "")
 
     try:
@@ -83,21 +98,30 @@ def fetch_character_assets(char: CharacterConfig) -> Dict[int, int]:
 
         page += 1
 
+    result = dict(assets)
+
     logger.info(
         f"Fetched {sum(assets.values())} packaged items "
         f"({len(assets)} types) for {char.name}"
     )
-    return dict(assets)
+
+    # Cache the result for future calls
+    if result:
+        write_cache(char.char_id, result)
+
+    return result
 
 
 def fetch_all_character_assets(
     type_ids: Optional[List[int]] = None,
+    force_refresh: bool = False,
 ) -> List[tuple]:
     """
     Fetch assets for all configured characters.
 
     Args:
         type_ids: If provided, only include these type_ids in results.
+        force_refresh: If True, bypass cache and fetch from ESI.
 
     Returns:
         List of (CharacterConfig, {type_id: qty}) tuples, one per character.
@@ -107,7 +131,7 @@ def fetch_all_character_assets(
     results = []
 
     for char in characters:
-        assets = fetch_character_assets(char)
+        assets = fetch_character_assets(char, force_refresh=force_refresh)
 
         if type_ids is not None:
             assets = {tid: qty for tid, qty in assets.items() if tid in type_ids}

@@ -513,6 +513,7 @@ def parse_args(args: list[str]) -> dict | None:
 
         asset_type_id = None
         asset_type_name = None
+        force_refresh = "--refresh" in args
         for arg in args:
             if arg.startswith("--id="):
                 try:
@@ -529,7 +530,11 @@ def parse_args(args: list[str]) -> dict | None:
             print("       mkts-backend assets --name='Damage Control'")
             return None
 
-        success = asset_check_command(type_id=asset_type_id, type_name=asset_type_name)
+        success = asset_check_command(
+            type_id=asset_type_id,
+            type_name=asset_type_name,
+            force_refresh=force_refresh,
+        )
         exit(0 if success else 1)
 
     if "esi-auth" in args:

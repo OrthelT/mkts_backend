@@ -14,7 +14,7 @@ token_file = "file:token.json"
 [app]
 name = "WinterCo Markets"
 environment = "production" # "production" or "development"
-log_level = "info"
+log_level = "INFO" # INFO or DEBUG
 
 # ============================================================================
 # MARKETS CONFIGURATION

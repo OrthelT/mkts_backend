@@ -94,6 +94,7 @@ sde_alias = "sde"
 sde_file = "sdelite.db"
 fittings_alias = "fittings"
 fittings_file = "wcfitting.db"
+cli_cache_file = "cli_cache.db"  # Local-only cache for ESI assets (not synced to Turso)
 
 # ============================================================================
 # GOOGLE SHEETS CONFIGURATION

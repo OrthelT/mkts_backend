@@ -189,27 +189,6 @@ class ESIRequestCache(Base):
     last_modified: Mapped[str] = mapped_column(String, nullable=True)
     last_checked: Mapped[DateTime] = mapped_column(DateTime, nullable=True)
 
-class CharacterAssetCache(Base):
-    """
-    Cached aggregated character assets from ESI.
-
-    Stores {type_id: quantity} per character with a timestamp.
-    Cache is invalidated after CACHE_TTL_SECONDS (default 3600s).
-    Table creation is handled by asset_cache._ensure_table().
-    """
-    __tablename__ = "character_asset_cache"
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    char_id: Mapped[int] = mapped_column(Integer, index=True)
-    type_id: Mapped[int] = mapped_column(Integer)
-    quantity: Mapped[int] = mapped_column(Integer)
-    cached_at: Mapped[str] = mapped_column(String)
-
-    def __repr__(self) -> str:
-        return (
-            f"CharacterAssetCache(char_id={self.char_id!r}, type_id={self.type_id!r}, "
-            f"quantity={self.quantity!r}, cached_at={self.cached_at!r})"
-        )
-
 
 class ModuleEquivalents(Base):
     """

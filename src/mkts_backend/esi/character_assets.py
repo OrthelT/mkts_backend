@@ -67,6 +67,7 @@ def fetch_character_assets(
     assets: Dict[int, int] = defaultdict(int)
     page = 1
     max_pages = 1
+    fetch_complete = False
 
     while page <= max_pages:
         url = ESI_ASSETS_URL.format(char_id=char.char_id, page=page)
@@ -97,6 +98,9 @@ def fetch_character_assets(
                 assets[item["type_id"]] += item.get("quantity", 0)
 
         page += 1
+    else:
+        # Loop completed without break — all pages fetched
+        fetch_complete = True
 
     result = dict(assets)
 
@@ -105,9 +109,14 @@ def fetch_character_assets(
         f"({len(assets)} types) for {char.name}"
     )
 
-    # Cache the result for future calls
-    if result:
+    # Only cache complete fetches to avoid storing partial data
+    if result and fetch_complete:
         write_cache(char.char_id, result)
+    elif result and not fetch_complete:
+        logger.warning(
+            f"Skipping cache for {char.name}: partial fetch "
+            f"(got {page - 1}/{max_pages} pages)"
+        )
 
     return result
 

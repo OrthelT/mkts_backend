@@ -165,11 +165,10 @@ def parse_args(args: list[str]) -> dict | None:
         interactive = "--interactive" in args
         update_targets = "--update-targets" in args
 
-        market_val = parse_market_args(args)
-        if market_val == "both":
+        if market_alias == "both":
             target_markets = ["primary", "deployment"]
         else:
-            target_markets = [market_val]
+            target_markets = [market_alias]
 
         for arg in args:
             if arg.startswith("--fit-file=") or arg.startswith("--file="):

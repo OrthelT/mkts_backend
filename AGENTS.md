@@ -98,9 +98,9 @@ Manages all database operations:
 SQLAlchemy ORM model definitions (at `src/mkts_backend/db/models.py`):
 - **Core Models:** `MarketOrders`, `MarketHistory`, `MarketStats`, `Doctrines`, `Watchlist`
 - **Organizational Models:** `ShipTargets`, `DoctrineMap`, `DoctrineFitItems`, `LeadShips`
-- **Utility Models:** `UpdateLog`, `ESIRequestCache`, `CharacterAssetCache`
+- **Utility Models:** `UpdateLog`, `ESIRequestCache`
 - **Module Equivalents:** `ModuleEquivalents` - maps interchangeable faction modules by `equiv_group_id`
-- **Asset Cache:** `CharacterAssetCache` - cached per-character ESI asset data with TTL (table auto-created on first use)
+- **Asset Cache:** Stored in local-only `cli_cache.db` (not synced to Turso); schema managed by `asset_cache._ensure_table()`
 - `DoctrineFitItems` maps to `doctrine_fits` table; includes `friendly_name` field (nullable) added in Feb 2026
 - Tables stored in market-specific databases (e.g., `wcmktprod.db`, `wcmktnorth2.db`)
 
@@ -225,7 +225,7 @@ TURSO_FITTING_TOKEN=<fitting_db_token>
 - **GitHub Actions Integration:** Automated scheduled data collection via workflows
 - **Module Equivalents:** Aggregate stock across interchangeable faction modules; managed via `equiv` CLI commands
 - **Friendly Names:** Per-doctrine display names stored in `doctrine_fits.friendly_name`; managed via `fit-update update-friendly-name`
-- **Asset Cache:** ESI character asset data cached locally in `character_asset_cache` table (1-hour TTL); used by `assets` and `fitcheck needed --assets` commands; bypass with `--refresh` flag
+- **Asset Cache:** ESI character asset data cached in local-only `cli_cache.db` (1-hour TTL); used by `assets` and `fitcheck needed --assets` commands; bypass with `--refresh` flag
 
 ## CLI Tools
 
@@ -819,7 +819,7 @@ uv run mkts-backend
 - `watchlist`: Items being tracked
 - `ship_targets`: Ship production targets
 - `doctrine_map`: Doctrine to fitting mappings
-- `character_asset_cache`: Cached per-character ESI asset data (auto-created, 1-hour TTL)
+- `character_asset_cache`: Cached per-character ESI asset data (in `cli_cache.db`, auto-created, 1-hour TTL)
 - `doctrine_fits`: Doctrine fitting configurations with target quantities and market flags
   - Fields: `id`, `doctrine_name`, `fit_name`, `ship_type_id`, `doctrine_id`, `fit_id`, `ship_name`, `target`, `market_flag`, `friendly_name`
   - Used by fit-check to retrieve target quantities for fits

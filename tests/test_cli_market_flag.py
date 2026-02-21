@@ -161,14 +161,12 @@ class TestCliMarketContextPassthrough:
 class TestCliInvalidMarketHandling:
     """Tests for CLI handling of invalid market values."""
 
-    def test_invalid_market_in_args_still_parses(self):
-        """Test that invalid market value is parsed (validation happens later)."""
+    def test_invalid_market_in_args_exits(self):
+        """Test that invalid market value exits with error at parse time."""
         from mkts_backend.cli import parse_args
 
-        args = parse_args(["--market=invalid_market"])
-
-        # Parsing should succeed, validation happens at context creation
-        assert args["market"] == "invalid_market"
+        with pytest.raises(SystemExit):
+            parse_args(["--market=invalid_market"])
 
     def test_market_context_creation_fails_for_invalid_market(self):
         """Test that MarketContext.from_settings fails for invalid market."""

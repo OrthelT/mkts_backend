@@ -16,6 +16,7 @@ from sqlalchemy import text
 from mkts_backend.config.logging_config import configure_logging
 from mkts_backend.config import DatabaseConfig
 from mkts_backend.config.market_context import MarketContext
+from mkts_backend.cli_tools.market_args import parse_market_args
 from mkts_backend.utils.eft_parser import (
     parse_eft_file,
     parse_eft_string,
@@ -1560,7 +1561,7 @@ def _handle_needed(sub_args: List[str]) -> None:
     ship_filters: List[str] = []
     fit_filters: List[int] = []
     targ_perc_filter = None
-    market_alias = "primary"
+    market_alias = parse_market_args(sub_args)
     show_assets = False
     force_refresh = False
 
@@ -1582,14 +1583,6 @@ def _handle_needed(sub_args: List[str]) -> None:
             except ValueError:
                 console.print("[red]Error: --target must be a number (e.g. 0.5)[/red]")
                 return
-        elif arg.startswith("--market="):
-            market_alias = arg.split("=", 1)[1]
-            if market_alias == "north":
-                market_alias == "deployment"
-        elif arg == "--deployment" or arg == "--north":
-            market_alias = "deployment"
-        elif arg == "--primary":
-            market_alias = "primary"
         elif arg == "--assets":
             show_assets = True
         elif arg == "--refresh":
@@ -1627,10 +1620,7 @@ def _handle_list_fits(sub_args: List[str]) -> None:
     """
     from mkts_backend.cli_tools.fit_update import list_fits_command
 
-    market_alias = "primary"
-    for arg in sub_args:
-        if arg.startswith("--market="):
-            market_alias = arg.split("=", 1)[1]
+    market_alias = parse_market_args(sub_args)
 
     try:
         market_ctx = MarketContext.from_settings(market_alias)
@@ -1651,7 +1641,7 @@ def _handle_module(sub_args: List[str]) -> None:
     """
     type_id = None
     type_name = None
-    market_alias = "primary"
+    market_alias = parse_market_args(sub_args)
 
     for arg in sub_args:
         if arg.startswith("--id="):
@@ -1662,8 +1652,6 @@ def _handle_module(sub_args: List[str]) -> None:
                 return
         elif arg.startswith("--name="):
             type_name = arg.split("=", 1)[1]
-        elif arg.startswith("--market="):
-            market_alias = arg.split("=", 1)[1]
 
     if type_id is None and type_name is None:
         console.print(
@@ -1892,7 +1880,7 @@ def main():
     # Parse arguments
     file_path = None
     fit_id = None
-    market_alias = "primary"
+    market_alias = parse_market_args(args)
     target = None
     output_format = None
     show_jita = True
@@ -1908,12 +1896,6 @@ def main():
                 sys.exit(1)
         elif arg.startswith("--file=") or arg.startswith("--fit-file"):
             file_path = arg.split("=", 1)[1]
-        elif arg.startswith("--market="):
-            market_alias = arg.split("=", 1)[1]
-        elif arg == "--deployment" or arg == "--north":
-            market_alias = "deployment"
-        elif arg == "--primary":
-            market_alias = "primary"
         elif arg.startswith("--target="):
             try:
                 target = int(arg.split("=", 1)[1])

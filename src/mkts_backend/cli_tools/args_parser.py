@@ -7,6 +7,7 @@ from mkts_backend.cli_tools.cli_help import (
     display_update_target_help,
 )
 from mkts_backend.cli_tools.equiv_manager import equiv_command
+from mkts_backend.cli_tools.market_args import parse_market_args, MARKET_DB_MAP
 
 from mkts_backend.config.market_context import MarketContext
 from mkts_backend.config.config import DatabaseConfig
@@ -65,24 +66,7 @@ def parse_args(args: list[str]) -> dict | None:
             display_cli_help()
             exit()
 
-    # Parse --market flag (supports --market=<alias>, --primary, --deployment shorthands)
-    market_alias = "primary"  # default
-    for arg in args:
-        if arg.startswith("--market="):
-            market_choice = arg.split("=", 1)[1]
-            if market_choice == "north" or market_choice == "North":
-                market_alias = "deployment"
-            else:
-                market_alias = market_choice
-
-            break
-        elif arg == "--deployment" or arg == "--north":
-            market_alias = "deployment"
-            break
-        elif arg == "--primary":
-            market_alias = "primary"
-            break
-
+    market_alias = parse_market_args(args)
     return_args["market"] = market_alias
 
     if "--list-markets" in args:
@@ -136,26 +120,21 @@ def parse_args(args: list[str]) -> dict | None:
             exit(0)
         fit_id = None
         target = None
-        market_alias = "primary"
         remote = False
-        target_alias = "wcmkt"
+        target_alias = None
         for arg in args:
             if arg.startswith("--fit-id=") or arg.startswith("--fit="):
                 fit_id = int(arg.split("=", 1)[1])
             elif arg.startswith("--target="):
                 target = int(arg.split("=", 1)[1])
-            elif arg.startswith("--market="):
-                market_alias = arg.split("=", 1)[1]
             elif arg.startswith("--remote"):
                 remote = True
             elif arg.startswith("--db-alias="):
                 target_alias = arg.split("=", 1)[1]
-            elif arg.startswith("--north"):
-                target_alias = "wcmktnorth"
-            elif arg.startswith("--primary"):
-                target_alias = "wcmkt"
             elif arg.startswith("--local-only"):
                 remote = False
+        if target_alias is None:
+            target_alias = MARKET_DB_MAP.get(market_alias, "wcmkt")
         if not fit_id or not target:
             print("Error: --fit-id and --target are required for update-target command")
             print("Use 'mkts-backend update-target --help' for usage information.")
@@ -186,9 +165,12 @@ def parse_args(args: list[str]) -> dict | None:
         interactive = "--interactive" in args
         update_targets = "--update-targets" in args
 
-        # Parse market selection (default: primary)
-        # Supports: --market=primary/deployment/both, --primary, --deployment, --both
-        target_markets = ["primary"]  # default
+        market_val = parse_market_args(args)
+        if market_val == "both":
+            target_markets = ["primary", "deployment"]
+        else:
+            target_markets = [market_val]
+
         for arg in args:
             if arg.startswith("--fit-file=") or arg.startswith("--file="):
                 fit_file = arg.split("=", 1)[1]
@@ -200,23 +182,6 @@ def parse_args(args: list[str]) -> dict | None:
                 except ValueError:
                     print("Error: --fit-id must be an integer")
                     return None
-            elif arg.startswith("--market="):
-                market_val = arg.split("=", 1)[1].lower()
-                if market_val == "both":
-                    target_markets = ["primary", "deployment"]
-                elif market_val in ("primary", "deployment"):
-                    target_markets = [market_val]
-                elif market_val.lower() == "north":
-                    target_markets = ["deployment"]
-                else:
-                    print("Error: --market must be one of: primary, deployment, both")
-                    return None
-            elif arg == "--both":
-                target_markets = ["primary", "deployment"]
-            elif arg.lower() == "--deployment" or arg.lower() == "--north":
-                target_markets = ["deployment"]
-            elif arg == "--primary":
-                target_markets = ["primary"]
 
         # Validate required arguments
         if not fit_file:
@@ -268,15 +233,9 @@ def parse_args(args: list[str]) -> dict | None:
                 metadata_dict = collect_fit_metadata_interactive(
                     fit_id, fit_file)
 
-            # Map market aliases to database aliases
-            market_to_db = {
-                "primary": "wcmkt",
-                "deployment": "wcmktnorth",
-            }
-
             # Process for each target market
             for target_market in target_markets:
-                target_alias = market_to_db[target_market]
+                target_alias = MARKET_DB_MAP[target_market]
                 print(
                     f"\n--- Processing for {
                         target_market} market ({target_alias}) ---"
@@ -422,7 +381,7 @@ def parse_args(args: list[str]) -> dict | None:
         file_path = None
         meta_file = None
         fit_id = None
-        db_alias = "wcmkt"  # Database alias
+        db_alias = MARKET_DB_MAP.get(market_alias, "wcmkt")
         target_qty = 100  # Default target quantity for new fits
         interactive = "--interactive" in args
         remote = "--remote" in args or any(arg.startswith("--remote=") for arg in args)
@@ -456,14 +415,6 @@ def parse_args(args: list[str]) -> dict | None:
                 target_qty = int(arg.split("=", 1)[1])
             elif arg.startswith("--db-alias="):
                 db_alias = arg.split("=", 1)[1]
-            elif arg == "--north" or arg == "deployment":
-                db_alias = "wcmktnorth"
-                market_alias = "deployment"
-            elif arg.startswith("--market="):
-                market_val = arg.split("=", 1)[1]
-                market_alias = market_val
-                if market_val == "deployment":
-                    db_alias = "wcmktnorth"
 
         # Parse fit_id(s) - supports comma-separated for doctrine-add-fit
         if fit_ids_str:
@@ -568,7 +519,7 @@ def parse_args(args: list[str]) -> dict | None:
 
     if "sync" in args:
         # Determine which markets to sync
-        if "--both" in args or ("--market=both" in args):
+        if market_alias == "both":
             sync_markets = ["primary", "deployment"]
         else:
             sync_markets = [market_alias]

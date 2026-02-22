@@ -440,24 +440,33 @@ def interactive_add_fit(
         meta_path = f.name
 
     try:
-        # Call the existing workflow
-        update_fit_workflow(
-            fit_id=fit_id,
-            fit_file=fit_file,
-            fit_metadata_file=meta_path,
-            remote=remote,
-            clear_existing=True,
-            dry_run=False,
-            target_alias=target_alias,
-        )
+        # Determine which databases to update
+        if market_flag == "both":
+            target_aliases = ["wcmkt", "wcmktnorth"]
+        else:
+            target_aliases = [target_alias]
 
-        # Update market flag if needed
-        if market_flag != "primary":
-            update_fit_market_flag(
-                fit_id, market_flag, remote=remote, db_alias=target_alias
+        for alias in target_aliases:
+            # Call the existing workflow for each target database
+            update_fit_workflow(
+                fit_id=fit_id,
+                fit_file=fit_file,
+                fit_metadata_file=meta_path,
+                remote=remote,
+                clear_existing=True,
+                dry_run=False,
+                target_alias=alias,
             )
 
-        console.print(f"[green]Successfully added fit {fit_id}[/green]")
+            # Set market flag on this database
+            update_fit_market_flag(
+                fit_id, market_flag, remote=remote, db_alias=alias
+            )
+
+            console.print(
+                f"[green]Successfully added fit {fit_id} to {alias}[/green]"
+            )
+
         return True
 
     except Exception as e:
@@ -1001,6 +1010,12 @@ def doctrine_add_fit_command(
                 # Use provided target or default
                 fit_targets[fit["fit_id"]] = target
 
+    # Determine which databases to update
+    if market_flag == "both":
+        target_aliases = ["wcmkt", "wcmktnorth"]
+    else:
+        target_aliases = [db_alias]
+
     # Process all valid fits
     success_count = 0
     fail_count = 0
@@ -1009,50 +1024,50 @@ def doctrine_add_fit_command(
         fit_id = fit_info["fit_id"]
         fit_target = fit_targets.get(fit_id, target)  # Get per-fit target
         try:
-            # Link in fittings database
+            # Link in fittings database (shared, only done once)
             ensure_doctrine_link(doctrine_id, fit_id, remote=remote)
 
-            # Add to market database doctrine_fits table
             doctrine_fit = DoctrineFit(
                 doctrine_id=doctrine_id,
                 fit_id=fit_id,
                 target=fit_target,
             )
-            upsert_doctrine_fits(
-                doctrine_fit=doctrine_fit,
-                remote=remote,
-                db_alias=db_alias,
-                market_flag=market_flag,
-            )
 
-            # Add doctrine map entry
-            upsert_doctrine_map(doctrine_id, fit_id,
-                                remote=remote, db_alias=db_alias)
+            # Add to each target market database
+            for alias in target_aliases:
+                upsert_doctrine_fits(
+                    doctrine_fit=doctrine_fit,
+                    remote=remote,
+                    db_alias=alias,
+                    market_flag=market_flag,
+                )
 
-            # Update ship_targets table
-            upsert_ship_target(
-                fit_id=fit_id,
-                fit_name=doctrine_fit.fit_name,
-                ship_id=doctrine_fit.ship_type_id,
-                ship_name=doctrine_fit.ship_name,
-                ship_target=fit_target,
-                remote=remote,
-                db_alias=db_alias,
-            )
+                upsert_doctrine_map(doctrine_id, fit_id,
+                                    remote=remote, db_alias=alias)
 
-            # Refresh doctrines table with market data
-            refresh_doctrines_for_fit(
-                fit_id=fit_id,
-                ship_id=doctrine_fit.ship_type_id,
-                ship_name=doctrine_fit.ship_name,
-                remote=remote,
-                db_alias=db_alias,
-            )
+                upsert_ship_target(
+                    fit_id=fit_id,
+                    fit_name=doctrine_fit.fit_name,
+                    ship_id=doctrine_fit.ship_type_id,
+                    ship_name=doctrine_fit.ship_name,
+                    ship_target=fit_target,
+                    remote=remote,
+                    db_alias=alias,
+                )
 
+                refresh_doctrines_for_fit(
+                    fit_id=fit_id,
+                    ship_id=doctrine_fit.ship_type_id,
+                    ship_name=doctrine_fit.ship_name,
+                    remote=remote,
+                    db_alias=alias,
+                )
+
+            db_label = " + ".join(target_aliases)
             console.print(
                 f"[green]✓ Added fit {fit_id}: {doctrine_fit.fit_name} (target: {
                     fit_target
-                })[/green]"
+                }) [{db_label}][/green]"
             )
             success_count += 1
 
@@ -1615,15 +1630,23 @@ def fit_update_command(
 
             try:
                 metadata = parse_fit_metadata(meta_file)
-                result = update_fit_workflow(
-                    fit_id=metadata.fit_id,
-                    fit_file=file_path,
-                    fit_metadata_file=meta_file,
-                    remote=use_remote,
-                    clear_existing=True,
-                    dry_run=dry_run,
-                    target_alias=target_alias,
-                )
+
+                # Determine which databases to update
+                if market_flag == "both":
+                    aliases = ["wcmkt", "wcmktnorth"]
+                else:
+                    aliases = [target_alias]
+
+                for alias in aliases:
+                    result = update_fit_workflow(
+                        fit_id=metadata.fit_id,
+                        fit_file=file_path,
+                        fit_metadata_file=meta_file,
+                        remote=use_remote,
+                        clear_existing=True,
+                        dry_run=dry_run,
+                        target_alias=alias,
+                    )
 
                 if dry_run:
                     console.print("[yellow]DRY RUN complete[/yellow]")
@@ -1666,16 +1689,23 @@ def fit_update_command(
             )
 
         try:
-            result = update_fit_workflow(
-                fit_id=fit_id,
-                fit_file=file_path,
-                fit_metadata_file=meta_file,
-                remote=use_remote,
-                clear_existing=True,
-                dry_run=dry_run,
-                target_alias=target_alias,
-                metadata_override=meta_data_dict,
-            )
+            # Determine which databases to update
+            if market_flag == "both":
+                aliases = ["wcmkt", "wcmktnorth"]
+            else:
+                aliases = [target_alias]
+
+            for alias in aliases:
+                result = update_fit_workflow(
+                    fit_id=fit_id,
+                    fit_file=file_path,
+                    fit_metadata_file=meta_file,
+                    remote=use_remote,
+                    clear_existing=True,
+                    dry_run=dry_run,
+                    target_alias=alias,
+                    metadata_override=meta_data_dict,
+                )
 
             if dry_run:
                 console.print("[yellow]DRY RUN complete[/yellow]")

@@ -22,9 +22,10 @@ def display_cli_help():
   validate           Validate the database (supports --market/--deployment)
 
 Global Options (apply to main workflow and most commands):
-  --market=<alias>   Select market (primary, deployment). Default: primary
+  --market=<alias>   Select market (primary, deployment, both). Default: primary
   --primary          Shorthand for --market=primary
   --deployment       Shorthand for --market=deployment
+  --both             Shorthand for --market=both (process both markets in sequence)
   --env=<env>        Override app.environment temporarily (production, development)
   --history          Include history processing (main workflow)
   --check_tables     Check the tables in the database (supports --market)
@@ -37,7 +38,10 @@ Use 'mkts-backend <command> --help' for more information about a command.
 Examples:
   mkts-backend --history                      # Run main workflow with history
   mkts-backend --history --deployment         # Run for deployment market
+  mkts-backend --both --history               # Run both markets with history
+  mkts-backend --market=both                  # Run both markets (no history)
   mkts-backend --env=development              # Run against testing database
+  mkts-backend sync --both                    # Sync both databases
   mkts-backend sync --deployment              # Sync deployment database
   mkts-backend validate --market=deployment   # Validate deployment database
   mkts-backend fit-check --file=fits/hfi.txt  # Check fit availability

@@ -237,55 +237,16 @@ def update_google_sheet(
 
 
 
-def main(history: bool = False, market_alias: str = "primary"):
-    """
-    Main function to process market orders, history, market stats, and doctrines.
+def _run_market_pipeline(
+    market_ctx: MarketContext,
+    history: bool = False,
+) -> None:
+    """Run the full market data pipeline for a single market.
 
     Args:
+        market_ctx: The market context to process.
         history: Whether to include historical data processing.
-        market_alias: Market alias to process (e.g., "primary", "deployment").
     """
-    start_time = time.perf_counter()
-
-    # Validate environment credentials before proceeding
-    validation_result = validate_all()
-    if not validation_result["is_valid"]:
-        logger.error(validation_result["message"])
-        print(validation_result["message"])
-        if validation_result["missing_required"]:
-            print(
-                f"Missing required credentials: {', '.join(validation_result['missing_required'])}"
-            )
-            print("Please check your .env file or environment variables.")
-        sys.exit(1)
-    logger.info("Environment validation passed")
-
-    init_databases()
-    logger.debug("Databases initialized")
-    os.makedirs("data", exist_ok=True)
-    logger.debug(f"Data directory created: {os.path.abspath('data')}")
-    logger.debug("=" * 80)
-
-    # Parse command line arguments
-    if len(sys.argv) > 1:
-        args = parse_args(sys.argv)
-
-        if args is not None:
-            history = args.get("history", False)
-            market_alias = args.get("market", "primary")
-        else:
-            return
-
-    # Create MarketContext for the selected market
-    try:
-        market_ctx = MarketContext.from_settings(market_alias)
-        logger.info(f"MarketContext: {market_ctx}")
-    except ValueError as e:
-        logger.error(f"Invalid market: {e}")
-        print(f"Error: {e}")
-        print(f"Available markets: {', '.join(MarketContext.list_available())}")
-        sys.exit(1)
-
     logger.info("=" * 80)
     logger.info(f"Processing market: {market_ctx.name} ({market_ctx.alias})")
     logger.info(f"  Region: {market_ctx.region_id}")
@@ -379,9 +340,68 @@ def main(history: bool = False, market_alias: str = "primary"):
             "Google Sheets are disabled in settings.toml. Skipping Google Sheets update"
         )
 
+
+def main(history: bool = False, market_alias: str = "primary"):
+    """
+    Main function to process market orders, history, market stats, and doctrines.
+
+    Args:
+        history: Whether to include historical data processing.
+        market_alias: Market alias to process (e.g., "primary", "deployment", "both").
+    """
+    start_time = time.perf_counter()
+
+    # Validate environment credentials before proceeding
+    validation_result = validate_all()
+    if not validation_result["is_valid"]:
+        logger.error(validation_result["message"])
+        print(validation_result["message"])
+        if validation_result["missing_required"]:
+            print(
+                f"Missing required credentials: {', '.join(validation_result['missing_required'])}"
+            )
+            print("Please check your .env file or environment variables.")
+        sys.exit(1)
+    logger.info("Environment validation passed")
+
+    init_databases()
+    logger.debug("Databases initialized")
+    os.makedirs("data", exist_ok=True)
+    logger.debug(f"Data directory created: {os.path.abspath('data')}")
+    logger.debug("=" * 80)
+
+    # Parse command line arguments
+    if len(sys.argv) > 1:
+        args = parse_args(sys.argv)
+
+        if args is not None:
+            history = args.get("history", False)
+            market_alias = args.get("market", "primary")
+        else:
+            return
+
+    # Determine which markets to process
+    if market_alias == "both":
+        market_aliases = ["primary", "deployment"]
+    else:
+        market_aliases = [market_alias]
+
+    for alias in market_aliases:
+        try:
+            market_ctx = MarketContext.from_settings(alias)
+            logger.info(f"MarketContext: {market_ctx}")
+        except ValueError as e:
+            logger.error(f"Invalid market: {e}")
+            print(f"Error: {e}")
+            print(f"Available markets: {', '.join(MarketContext.list_available())}")
+            sys.exit(1)
+
+        _run_market_pipeline(market_ctx, history=history)
+
     logger.info("=" * 80)
+    label = " + ".join(market_aliases)
     logger.info(
-        f"Market job complete for {market_ctx.name} in {time.perf_counter() - start_time:.1f}s"
+        f"Market job complete for {label} in {time.perf_counter() - start_time:.1f}s"
     )
     logger.info("=" * 80)
 

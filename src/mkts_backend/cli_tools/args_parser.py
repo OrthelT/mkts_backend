@@ -574,8 +574,7 @@ def parse_args(args: list[str]) -> dict | None:
 
     # Handle add_watchlist command
     if "add_watchlist" in args:
-        add_watchlist(args)
-        exit()
+        add_watchlist(args, market_alias=market_alias)
 
     if "--history" in args or "--include-history" in args:
         return_args["history"] = True

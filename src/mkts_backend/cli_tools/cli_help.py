@@ -49,7 +49,7 @@ Examples:
   mkts-backend assets --id=11379                # Look up assets by type ID
   mkts-backend equiv list                       # List all module equivalence groups
   mkts-backend fit-update list-fits           # List all doctrine fits
-
+  mkts-backend add_watchlist --type_id=12345,67890,11111 # Add items to watchlist
 """)
 
 

@@ -4,26 +4,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 # Project Instructions
 
-## NEW TASK: simplify CLI and improve subargs parsing in fit_check.py
-I was trying to create a path to re-route calls to `fit-check assets` to `asset-check-command()`. I noticed that we are parsing subarguments after parsing sub-commands. Instead we are parsing sub-arguments in each sub-command handler that requires them. This is repetitive, prone to break and poor design -- probably a consequence of adding features incrementally. Let's do a simplification refactor:
-
-- Write tests for the various CLI commands. Keep the tests modular. Eventually we are going to spin this CLI off into its own code, so be mindful of entangling it too much with the backend database functionality. 
-- Centralize handeling of sub-arguments and any other repetitive code. Maybe a service or repository that could be available to many different sub-commands. 
-- Adopt a "no-wrong-door" policy towards user commands. Subcommands do not usually need to be tied to a command. `mkts-backend assets` and `fit-check assets` should both call `asset-check-command()`.  
-- If we can deduce what a user was trying to do, let's give them a helpful snippit with the correct syntax for their command that they can cut and paste and it just works. Git does this and I have always thought it was such a nice feature. For example, a user enters: 
-
-```bash
-   mkts-backend fit-check fit=442
-```
-```bash
-   [red]Did you mean? mkts-backend fit-check --fit=442\
-```
-(or something like that)
-
-### Workflow
--- Write a plan broken down into reasonable phases each of which fits within a single contect window.
--- run tests at the end of each phase
--- update documentation and leave handoff instructions for another Claude code instance once the phase is complete and tests are all passing. 
+## COMPLETED: CLI Simplification & Refactoring (Feb 2026)
+Centralized argument parsing, command registry, no-wrong-door routing, and "Did you mean?" suggestions. See `cli_refactor.md` in memory for architecture details.
 
 # Development Guide
 

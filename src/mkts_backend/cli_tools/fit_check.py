@@ -1562,35 +1562,21 @@ def _handle_needed(sub_args: List[str]) -> None:
     Args:
         sub_args: Remaining arguments after 'needed'
     """
-    ship_filters: List[str] = []
-    fit_filters: List[int] = []
-    targ_perc_filter = None
-    market_alias = parse_market_args(sub_args)
-    show_assets = False
-    force_refresh = False
+    from mkts_backend.cli_tools.arg_utils import ParsedArgs, ArgError
 
-    for arg in sub_args:
-        if arg.startswith("--ship="):
-            val = arg.split("=", 1)[1]
-            ship_filters.extend(s.strip() for s in val.split(",") if s.strip())
-        elif arg.startswith("--fit=") or arg.startswith("--fit-id=") or arg.startswith("--fit_id=") or arg.startswith("--id="):
-            val = arg.split("=", 1)[1]
-            for part in val.split(","):
-                try:
-                    fit_filters.append(int(part.strip()))
-                except ValueError:
-                    console.print(f"[red]Error: '{part.strip()}' is not a valid fit ID[/red]")
-                    return
-        elif arg.startswith("--target="):
-            try:
-                targ_perc_filter = float(arg.split("=", 1)[1])
-            except ValueError:
-                console.print("[red]Error: --target must be a number (e.g. 0.5)[/red]")
-                return
-        elif arg == "--assets":
-            show_assets = True
-        elif arg == "--refresh":
-            force_refresh = True
+    p = ParsedArgs(sub_args)
+    market_alias = parse_market_args(sub_args)
+    show_assets = p.has_flag("assets")
+    force_refresh = p.has_flag("refresh")
+
+    ship_filters = p.get_string_list("ship")
+
+    try:
+        fit_filters = p.get_int_list("fit", "fit-id", "fit_id", "id")
+        targ_perc_filter = p.get_float("target")
+    except ArgError as e:
+        console.print(f"[red]Error: {e}[/red]")
+        return
 
     # Resolve fuzzy ship names to exact matches
     resolved_ships = None
@@ -1643,19 +1629,18 @@ def _handle_module(sub_args: List[str]) -> None:
     Args:
         sub_args: Remaining arguments after 'module'
     """
-    type_id = None
-    type_name = None
+    from mkts_backend.cli_tools.arg_utils import ParsedArgs, ArgError
+
+    p = ParsedArgs(sub_args)
     market_alias = parse_market_args(sub_args)
 
-    for arg in sub_args:
-        if arg.startswith("--id="):
-            try:
-                type_id = int(arg.split("=", 1)[1])
-            except ValueError:
-                console.print("[red]Error: --id must be an integer[/red]")
-                return
-        elif arg.startswith("--name="):
-            type_name = arg.split("=", 1)[1]
+    try:
+        type_id = p.get_int("id")
+    except ArgError as e:
+        console.print(f"[red]Error: {e}[/red]")
+        return
+
+    type_name = p.get_string("name")
 
     if type_id is None and type_name is None:
         console.print(
@@ -1666,6 +1651,41 @@ def _handle_module(sub_args: List[str]) -> None:
 
     module_command(type_id=type_id, type_name=type_name,
                    market_alias=market_alias)
+
+
+def _handle_assets(sub_args: List[str]) -> None:
+    """
+    Handle the assets subcommand.
+
+    Args:
+        sub_args: Remaining arguments after 'assets'
+    """
+    from mkts_backend.cli_tools.arg_utils import ParsedArgs, ArgError
+    from mkts_backend.cli_tools.asset_check import asset_check_command
+
+    p = ParsedArgs(sub_args)
+    force_refresh = p.has_flag("refresh")
+
+    try:
+        type_id = p.get_int("id")
+    except ArgError as e:
+        console.print(f"[red]Error: {e}[/red]")
+        return
+
+    type_name = p.get_string("name")
+
+    if type_id is None and type_name is None:
+        console.print(
+            "[red]Error: --id=<type_id> or --name=<name> is required[/red]")
+        console.print("Usage: fitcheck assets --id=11379")
+        console.print("       fitcheck assets --name='Damage Control'")
+        return
+
+    asset_check_command(
+        type_id=type_id,
+        type_name=type_name,
+        force_refresh=force_refresh,
+    )
 
 
 def display_help():
@@ -1857,9 +1877,12 @@ def main():
     """
     Standalone CLI entry point for fitcheck command.
 
-    Usage: fitcheck --fit=<id> [options]
+    Uses the shared command registry for "no-wrong-door" dispatch — any
+    registered subcommand (including those normally accessed via
+    ``mkts-backend``) works from the ``fitcheck`` entry point too.
     """
     import sys
+    from mkts_backend.cli_tools.command_registry import get_registry
 
     args = sys.argv[1:]
 
@@ -1868,99 +1891,53 @@ def main():
         display_help()
         sys.exit(0)
 
-    # Subcommand routing - check before flag parsing
-    subcommands = {"list-fits", "module", "needed","assets"}
-    if args[0] in subcommands:
-        sub = args[0]
-        sub_args = args[1:]
-        if sub == "list-fits":
-            _handle_list_fits(sub_args)
-        elif sub == "module":
-            _handle_module(sub_args)
-        elif sub == "needed":
-            _handle_needed(sub_args)
-        elif sub == "assets":
-            pass
-            # todo - need to parse args first
-
-        sys.exit(0)
-
-    # Parse arguments
-    file_path = None
-    fit_id = None
     market_alias = parse_market_args(args)
-    target = None
-    output_format = None
-    show_jita = True
-    show_legend = True
-    paste_mode = False
-    type_id = None
-    type_name = None
-    force_refesh = None
 
-
-    for arg in args:
-        if arg.startswith("--fit=") or arg.startswith("--fit-id=") or arg.startswith("--fit_id=") or arg.startswith("--id="):
-            try:
-                fit_id = int(arg.split("=", 1)[1])
-            except ValueError:
-                console.print("[red]Error: --fit must be an integer[/red]")
-                sys.exit(1)
-        elif arg.startswith("--file=") or arg.startswith("--fit-file"):
-            file_path = arg.split("=", 1)[1]
-        elif arg.startswith("--target="):
-            try:
-                target = int(arg.split("=", 1)[1])
-            except ValueError:
-                console.print("[red]Error: --target must be an integer[/red]")
-                sys.exit(1)
-        elif arg.startswith("--output="):
-            output_format = arg.split("=", 1)[1].lower()
-            if output_format not in ("csv", "multibuy", "markdown"):
-                console.print(
-                    "[red]Error: --output must be one of: csv, multibuy, markdown[/red]"
+    # Registry-based subcommand dispatch (no-wrong-door)
+    registry = get_registry()
+    if args and not args[0].startswith("--"):
+        entry = registry.resolve(args[0])
+        if entry:
+            sub_args = args[1:]
+            # Check for bare key=value args (missing --)
+            from mkts_backend.cli_tools.arg_utils import check_bare_args
+            bare = check_bare_args(sub_args, registry.all_names())
+            if bare:
+                corrected = " ".join(
+                    (f"--{a}" if not a.startswith("--") and "=" in a and a not in registry.all_names() else a)
+                    for a in sub_args
                 )
+                console.print(f"[yellow]Did you mean?[/yellow] fitcheck {args[0]} {corrected}")
                 sys.exit(1)
-        elif arg == "--no-jita":
-            show_jita = False
-        elif arg == "--no-legend":
-            show_legend = False
-        elif arg == "--paste":
-            paste_mode = True
-        elif arg == "--type-id":
-            type_id = arg.split("=",1)[1]
-        elif arg == "--type-name":
-            type_name = arg.split("=",1)[1]
-        elif arg == "--force-refresh":
-            force_refesh = True
-    
-    # Validate input
-    if not file_path and fit_id is None and not paste_mode:
-        console.print(
-            "[red]Error: --fit=<id>, --file=<path>, or --paste is required[/red]"
+            success = entry.handler(sub_args, market_alias)
+            sys.exit(0 if success else 1)
+
+        # Unknown subcommand — suggest closest match
+        from mkts_backend.cli_tools.arg_utils import suggest_command
+        suggestion = suggest_command(args[0], registry.all_names())
+        if suggestion:
+            rest = " ".join(args[1:])
+            hint = f"fitcheck {suggestion}"
+            if rest:
+                hint += f" {rest}"
+            console.print(f"Unknown command: '{args[0]}'")
+            console.print(f"[yellow]Did you mean?[/yellow] {hint}")
+            sys.exit(1)
+
+    # Check for bare key=value in direct invocation (e.g. fitcheck fit=42)
+    from mkts_backend.cli_tools.arg_utils import check_bare_args
+    bare = check_bare_args(args, registry.all_names())
+    if bare:
+        corrected = " ".join(
+            (f"--{a}" if not a.startswith("--") and "=" in a else a)
+            for a in args
         )
-        console.print("Use 'fitcheck --help' for usage information.")
+        console.print(f"[yellow]Did you mean?[/yellow] fitcheck {corrected}")
         sys.exit(1)
 
-    # Handle paste mode
-    eft_text = None
-    if paste_mode:
-        from mkts_backend.cli_tools.fit_update import get_multiline_input
-
-        eft_text = get_multiline_input()
-
-    # Run the command
-    success = fit_check_command(
-        file_path=file_path,
-        eft_text=eft_text,
-        fit_id=fit_id,
-        market_alias=market_alias,
-        show_legend=show_legend,
-        target=target,
-        output_format=output_format,
-        show_jita=show_jita,
-    )
-
+    # No subcommand matched — treat as direct fit-check invocation
+    entry = registry.resolve("fit-check")
+    success = entry.handler(args, market_alias)
     sys.exit(0 if success else 1)
 
 

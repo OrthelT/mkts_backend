@@ -7,20 +7,23 @@ CLI help commands.
 This module contains functions for displaying help messages for the CLI commands.
 """
 
+def _build_command_list() -> str:
+    """Auto-generate the command list from the registry."""
+    from mkts_backend.cli_tools.command_registry import get_registry
+
+    reg = get_registry()
+    lines = []
+    for entry in reg.all_commands():
+        name = entry.name
+        aliases = f" ({', '.join(entry.aliases)})" if entry.aliases else ""
+        lines.append(f"  {name:<20s}{entry.description}{aliases}")
+    return "\n".join(lines)
+
+
 def display_cli_help():
     console.print("\nUsage: mkts-backend [command] [options]\n")
-    console.print("""Commands:
-  fit-check          Display market availability for an EFT fit file
-  fit-update         Interactive tool for managing fits and doctrines
-  update-fit         Process an EFT fit file and update doctrine tables
-  add_watchlist      Add items to watchlist by type IDs
-  parse-items        Parse Eve structure data and create CSV with pricing
-  assets             Look up character assets by type ID or name
-  equiv              Manage module equivalence groups (list, find, add, remove)
-  esi-auth           Re-authorize ESI tokens with expanded scopes
-  sync               Sync the database (supports --market/--deployment)
-  validate           Validate the database (supports --market/--deployment)
-
+    console.print(f"Commands:\n{_build_command_list()}")
+    console.print("""
 Global Options (apply to main workflow and most commands):
   --market=<alias>   Select market (primary, deployment, both). Default: primary
   --primary          Shorthand for --market=primary

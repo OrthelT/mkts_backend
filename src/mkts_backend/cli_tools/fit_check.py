@@ -36,6 +36,7 @@ from mkts_backend.cli_tools.rich_display import (
     print_markdown_export,
     print_overpriced_items,
 )
+from mkts_backend.cli_tools.asset_check import asset_check_command
 
 logger = configure_logging(__name__)
 
@@ -1479,6 +1480,9 @@ def needed_command(
 
     return True
 
+def __handle_assets(type_id: int, type_name: str, force_refresh = False):
+    asset_check_command(type_id, type_name, force_refresh)
+    
 
 def _resolve_ship_filters(
     ship_inputs: List[str],
@@ -1865,7 +1869,7 @@ def main():
         sys.exit(0)
 
     # Subcommand routing - check before flag parsing
-    subcommands = {"list-fits", "module", "needed"}
+    subcommands = {"list-fits", "module", "needed","assets"}
     if args[0] in subcommands:
         sub = args[0]
         sub_args = args[1:]
@@ -1875,6 +1879,10 @@ def main():
             _handle_module(sub_args)
         elif sub == "needed":
             _handle_needed(sub_args)
+        elif sub == "assets":
+            pass
+            # todo - need to parse args first
+
         sys.exit(0)
 
     # Parse arguments
@@ -1886,6 +1894,10 @@ def main():
     show_jita = True
     show_legend = True
     paste_mode = False
+    type_id = None
+    type_name = None
+    force_refesh = None
+
 
     for arg in args:
         if arg.startswith("--fit=") or arg.startswith("--fit-id=") or arg.startswith("--fit_id=") or arg.startswith("--id="):
@@ -1915,7 +1927,13 @@ def main():
             show_legend = False
         elif arg == "--paste":
             paste_mode = True
-
+        elif arg == "--type-id":
+            type_id = arg.split("=",1)[1]
+        elif arg == "--type-name":
+            type_name = arg.split("=",1)[1]
+        elif arg == "--force-refresh":
+            force_refesh = True
+    
     # Validate input
     if not file_path and fit_id is None and not paste_mode:
         console.print(

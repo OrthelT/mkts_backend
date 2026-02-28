@@ -151,7 +151,7 @@ class DatabaseConfig:
     @property
     def sqlite_local_connect(self):
         if self._sqlite_local_connect is None:
-            self._sqlite_local_connect = libsql.connect(self.path)
+            self._sqlite_local_connect = libsql.connect(self.path) 
         return self._sqlite_local_connect
 
     def sync(self):
@@ -161,7 +161,7 @@ class DatabaseConfig:
         raw_info = self.read_db_info()
         start_info = json.loads(raw_info) if raw_info else None
         logger.info("\n--------------------------------")
-        logger.info(f"========== START SYNC {self.alias} ==========")
+        logger.info(f"========== START SYNC {self.alias} ({self.path}) ==========")
         logger.info(f"Start sync for {self.alias} at {self.path}")
         if start_info is not None:
             logger.info("--------------------------------")
@@ -180,9 +180,8 @@ class DatabaseConfig:
         conn.close()
 
         end_time = perf_counter()
-        
+        logger.info(f"Database: {self.alias} ({self.path})")        
         logger.info(f"Sync time: {end_time - start_time:.1f} seconds")
-        logger.info(f"Sync time: {(end_time - start_time)/60:.1f} minutes")
         logger.info(f"Sync end time: {datetime.now()}")
         logger.info(f"========== END SYNC {self.alias} ==========")
         logger.info("--------------------------------\n")

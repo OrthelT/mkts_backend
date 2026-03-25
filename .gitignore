@@ -12,6 +12,7 @@ wheels/
 .env
 logs/
 *.json
+!api/**/*.json
 *.csv
 market_orders.sqlite
 archive/

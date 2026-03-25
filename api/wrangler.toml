@@ -1,0 +1,17 @@
+name = "mkts-api"
+main = "src/index.ts"
+compatibility_date = "2024-12-01"
+
+[vars]
+# Non-secret config
+CORS_ORIGIN = "*"
+RATE_LIMIT_MAX = 60          # requests per minute per IP
+DEFAULT_PAGE_SIZE = "100"
+MAX_PAGE_SIZE = "500"
+
+# Secrets (set via `wrangler secret put <NAME>`):
+#   TURSO_PRIMARY_URL
+#   TURSO_PRIMARY_TOKEN
+#   TURSO_DEPLOYMENT_URL
+#   TURSO_DEPLOYMENT_TOKEN
+#   API_KEY  (optional - for authenticated access)

@@ -4,6 +4,7 @@
 
 - Node.js 18+
 - A Cloudflare account (free tier is fine)
+- Turso CLI (`curl -sSfL https://get.tur.so/install.sh | bash`)
 
 ## Initial Setup
 
@@ -12,31 +13,48 @@ cd api
 npm install
 ```
 
-## Configure Secrets
+## Database Migration
 
-Set your Turso credentials and API key as Cloudflare secrets:
+Auth tables (api_keys, standings, character_affiliations) live in the **primary** Turso database. Run the migration:
 
 ```bash
-# Turso databases (use the URLs/tokens from your existing .env)
+turso db shell <your-primary-db> < migrations/001_auth_tables.sql
+```
+
+### Seed Data
+
+Add an API key for a character:
+```sql
+INSERT INTO api_keys (api_key, character_id, character_name)
+VALUES ('your-generated-key-here', 2116257395, 'Orthel Toralen');
+```
+
+Add alliance standings:
+```sql
+-- WinterCo and allies at standing 10
+INSERT INTO standings (entity_id, entity_type, entity_name, standing)
+VALUES (99003214, 'alliance', 'Fraternity.', 10);
+```
+
+Generate API keys with: `python -c "import secrets; print(secrets.token_urlsafe(32))"`
+
+## Configure Secrets
+
+```bash
 npx wrangler secret put TURSO_PRIMARY_URL
 npx wrangler secret put TURSO_PRIMARY_TOKEN
 npx wrangler secret put TURSO_DEPLOYMENT_URL
 npx wrangler secret put TURSO_DEPLOYMENT_TOKEN
-
-# API key — generate something random and share with your users
-npx wrangler secret put API_KEY
 ```
 
 ## Local Development
 
 ```bash
-# Create a .dev.vars file with your secrets for local testing
 cat > .dev.vars << 'EOF'
-TURSO_PRIMARY_URL=libsql://your-db.turso.io
+TURSO_PRIMARY_URL=libsql://your-primary-db.turso.io
 TURSO_PRIMARY_TOKEN=your-token
 TURSO_DEPLOYMENT_URL=libsql://your-deployment-db.turso.io
 TURSO_DEPLOYMENT_TOKEN=your-deployment-token
-API_KEY=your-dev-api-key
 EOF
 
 npm run dev
@@ -47,50 +65,75 @@ npm run dev
 
 ```bash
 npm run deploy
-# Outputs: https://mkts-api.<your-subdomain>.workers.dev
 ```
 
 ## Custom Domain (GoDaddy)
 
 1. **Add your domain to Cloudflare** (free plan):
-   - In Cloudflare dashboard → "Add a site" → enter your domain
-   - Cloudflare gives you two nameservers (e.g. `anna.ns.cloudflare.com`)
-   - In GoDaddy → DNS Management → change nameservers to the Cloudflare ones
+   - Cloudflare dashboard → "Add a site" → enter your domain
+   - Cloudflare gives you two nameservers
+   - GoDaddy → DNS Management → change nameservers to the Cloudflare ones
    - Wait for propagation (~10-60 min)
 
 2. **Route your Worker to a subdomain**:
-   - In Cloudflare dashboard → Workers & Pages → mkts-api → Settings → Domains & Routes
+   - Cloudflare dashboard → Workers & Pages → mkts-api → Settings → Domains & Routes
    - Add a custom domain, e.g. `api.yourdomain.com`
-   - Cloudflare handles SSL automatically
+   - SSL is handled automatically
 
-## Usage
+## Auth Flow
 
-All requests require the `X-API-Key` header:
+1. Request includes `X-API-Key` header
+2. Worker looks up the key in `api_keys` → gets `character_id`
+3. Worker looks up `character_id` in `character_affiliations` → gets `alliance_id`
+4. Worker looks up `alliance_id` in `standings` → gets standing value
+5. If alliance not found or standing < threshold (default 5) → **403 Forbidden**
+
+A cron trigger runs every 6 hours to refresh character affiliations from the ESI
+`POST /characters/affiliation/` endpoint. New characters will have their
+affiliation populated within 6 hours of their API key being created.
+
+## API Endpoints
+
+All data endpoints require `X-API-Key`. Responses include market config headers:
+
+| Header | Example |
+|---|---|
+| `X-Market-Alias` | `primary` |
+| `X-Market-Name` | `4-HWWF Keepstar` |
+| `X-Market-Region-Id` | `10000003` |
+| `X-Market-System-Id` | `30000240` |
+| `X-Market-Structure-Id` | `1035466617946` |
+
+### Usage
 
 ```bash
-# Get API info
-curl -H "X-API-Key: your-key" https://api.yourdomain.com/
+KEY="your-api-key"
 
-# Market stats (all items)
-curl -H "X-API-Key: your-key" https://api.yourdomain.com/stats
+# API index (no auth required)
+curl https://api.yourdomain.com/
 
-# Filter by type_ids
-curl -H "X-API-Key: your-key" "https://api.yourdomain.com/stats?type_ids=34,35,36"
+# Primary market stats
+curl -H "X-API-Key: $KEY" https://api.yourdomain.com/primary/stats
 
-# Orders (sell only)
-curl -H "X-API-Key: your-key" "https://api.yourdomain.com/orders?type_ids=34&sell=true"
+# Primary market stats filtered by type IDs
+curl -H "X-API-Key: $KEY" "https://api.yourdomain.com/primary/stats?type_ids=34,35,36"
 
-# History (last 7 days)
-curl -H "X-API-Key: your-key" "https://api.yourdomain.com/history?type_ids=34,35&days=7"
+# Deployment market sell orders
+curl -H "X-API-Key: $KEY" "https://api.yourdomain.com/deployment/orders?sell=true&type_ids=34"
 
-# Deployment market instead of primary
-curl -H "X-API-Key: your-key" "https://api.yourdomain.com/stats?market=deployment"
+# Primary history (last 7 days)
+curl -H "X-API-Key: $KEY" "https://api.yourdomain.com/primary/history?type_ids=34,35&days=7"
 
 # Pagination
-curl -H "X-API-Key: your-key" "https://api.yourdomain.com/orders?limit=50&offset=100"
+curl -H "X-API-Key: $KEY" "https://api.yourdomain.com/primary/orders?limit=50&offset=100"
 ```
 
-## Rate Limits
+## Configuration
 
-- 60 requests per minute per IP (configurable in wrangler.toml)
-- Returns HTTP 429 when exceeded
+| Setting | Location | Default |
+|---|---|---|
+| `STANDINGS_THRESHOLD` | `wrangler.toml` | `5` |
+| `RATE_LIMIT_MAX` | `wrangler.toml` | `60` req/min/IP |
+| `DEFAULT_PAGE_SIZE` | `wrangler.toml` | `100` |
+| `MAX_PAGE_SIZE` | `wrangler.toml` | `500` |
+| Cron schedule | `wrangler.toml` | Every 6 hours |

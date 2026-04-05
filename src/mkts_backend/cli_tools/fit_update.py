@@ -2317,8 +2317,26 @@ def doctrine_remove_fit_command(
             remove_doctrine_fits(doctrine_id, fit_id,
                                  remote=remote, db_alias=db_alias)
 
-            # Step 4: Remove from fittings_doctrine_fittings
-            remove_doctrine_link(doctrine_id, fit_id, remote=remote)
+            # Step 4: Remove from fittings_doctrine_fittings ONLY if the fit
+            # is no longer in this doctrine on ANY market database.
+            still_in_other_market = False
+            for other_alias in ["wcmkt", "wcmktnorth"]:
+                if other_alias == db_alias:
+                    continue
+                other_fits = get_doctrine_fits_from_market(
+                    doctrine_id, db_alias=other_alias, remote=remote
+                )
+                if fit_id in other_fits:
+                    still_in_other_market = True
+                    break
+
+            if not still_in_other_market:
+                remove_doctrine_link(doctrine_id, fit_id, remote=remote)
+            else:
+                logger.info(
+                    f"Fit {fit_id} still in doctrine {doctrine_id} on another market; "
+                    f"keeping fittings link"
+                )
 
             console.print(
                 f"[green]✓ Removed fit {fit_id}: {fit_info['fit_name']} ({
@@ -2828,7 +2846,7 @@ def fit_update_command(
         else:
             fit_ids_list = None  # Will prompt in interactive mode
         return doctrine_remove_fit_command(
-            doctrine_id=None,  # Will prompt in interactive mode
+            doctrine_id=doctrine_id,
             fit_ids=fit_ids_list,
             remote=use_remote,
             interactive=interactive or True,  # Default to interactive

@@ -3,7 +3,8 @@ import csv
 from mkts_backend.config.logging_config import configure_logging
 from mkts_backend.utils.db_utils import add_missing_items_to_watchlist
 from mkts_backend.cli_tools.market_args import MARKET_DB_MAP
-
+from mkts_backend.cli_tools.prompter import get_multiline_input
+from mkts_backend.utils.get_type_info import get_type_from_list
 logger = configure_logging(__name__)
 
 
@@ -18,6 +19,14 @@ def _read_type_ids_from_csv(path: str) -> list[int]:
                 type_ids.append(int(val))
     return type_ids
 
+def parse_pasted_input(paste):
+    type_info_list = get_type_from_list([item.strip() for item in paste if item.strip()])
+    type_ids = [type_info.type_id for type_info in type_info_list]
+    if type_ids:
+        type_ids_str = ",".join(str(tid) for tid in type_ids)
+        return type_ids_str
+    else:
+        return None
 
 def add_watchlist(args: list[str], market_alias: str = "primary") -> None:
     """Add items to the watchlist for the specified market(s).
@@ -27,7 +36,6 @@ def add_watchlist(args: list[str], market_alias: str = "primary") -> None:
         market_alias: Normalized market alias from parse_market_args
                       ("primary", "deployment", or "both").
     """
-    # Find --type_id or --file parameter
     type_ids_str = None
     file_path = None
     for arg in args:
@@ -35,25 +43,30 @@ def add_watchlist(args: list[str], market_alias: str = "primary") -> None:
             type_ids_str = arg.split("=", 1)[1]
         elif arg.startswith("--file="):
             file_path = arg.split("=", 1)[1]
+        elif arg.startswith("--paste"):
+            paste = get_multiline_input()
+            if not paste:
+                logger.error("No paste input provided")
+                print("Error: No paste input provided")
+                return False
+            with open("paste.txt", "w") as f:
+                f.write(paste)
+            file_path = "paste.txt"
 
     if type_ids_str and file_path:
         print("Error: --type_id and --file are mutually exclusive")
         return None
 
     if file_path:
-        try:
-            type_ids = _read_type_ids_from_csv(file_path)
-            if not type_ids:
-                print(f"Error: No type IDs found in {file_path}")
-                return None
-            type_ids_str = ",".join(str(tid) for tid in type_ids)
-            print(f"Loaded {len(type_ids)} type IDs from {file_path}")
-        except FileNotFoundError:
-            print(f"Error: File not found: {file_path}")
+        with open(file_path, "r") as f:
+            paste = f.readlines()
+        type_ids_str = parse_pasted_input(paste)
+        if not type_ids_str:
+            print("Error: No valid type IDs provided")
             return None
-        except (ValueError, KeyError) as e:
-            print(f"Error reading CSV: {e}")
-            return None
+        else:
+            print(f"Processing add_watchlist command for {len(type_ids_str)} items")
+            
 
     if not type_ids_str:
         print("Error: --type_id or --file parameter is required for add_watchlist command")
@@ -72,10 +85,12 @@ def add_watchlist(args: list[str], market_alias: str = "primary") -> None:
     else:
         target_aliases = [MARKET_DB_MAP.get(market_alias, "wcmkt")]
 
+    type_ids = [int(tid.strip()) for tid in type_ids_str.split(',') if tid.strip()]
+
     all_ok = True
     for db_alias in target_aliases:
         print(f"Adding to watchlist on {db_alias} (remote={remote})...")
-        success = process_add_watchlist(type_ids_str, remote=remote, db_alias=db_alias)
+        success = process_add_watchlist(type_ids, remote=remote, db_alias=db_alias)
         if not success:
             all_ok = False
 
@@ -84,8 +99,7 @@ def add_watchlist(args: list[str], market_alias: str = "primary") -> None:
         print(f"Watchlist update complete for {label}")
     exit()
 
-
-def process_add_watchlist(type_ids_str: str, remote: bool = False, db_alias: str = "wcmkt"):
+def process_add_watchlist(type_ids: list[int], remote: bool = False, db_alias: str = "wcmkt"):
     """
     Process the add_watchlist command to add items to the watchlist.
 
@@ -94,30 +108,14 @@ def process_add_watchlist(type_ids_str: str, remote: bool = False, db_alias: str
         remote: Whether to use remote database
         db_alias: Target database alias
     """
+    print("Processing add_watchlist command")
     try:
         # Parse comma-separated type IDs
-        type_ids = [int(tid.strip()) for tid in type_ids_str.split(',') if tid.strip()]
-
         if not type_ids:
             logger.error("No valid type IDs provided")
             print("Error: No valid type IDs provided")
-            return False
-
-        logger.info(f"Adding {len(type_ids)} items to watchlist ({db_alias}): {type_ids}")
-        print(f"Adding {len(type_ids)} items to watchlist ({db_alias}): {type_ids}")
-
-        # Call add_missing_items_to_watchlist with all type IDs at once
-        result = add_missing_items_to_watchlist(type_ids, remote=remote, db_alias=db_alias)
-
-        # Check if the operation was successful
-        if result.startswith("Error"):
-            logger.error(f"Failed to add items to watchlist: {result}")
-            print(f"Error: {result}")
-            return False
-        else:
-            logger.info(f"Successfully processed watchlist addition: {result}")
-            print(result)
-            return True
+            return None
+        return add_missing_items_to_watchlist(type_ids, remote=remote, db_alias=db_alias)
 
     except ValueError as e:
         logger.error(f"Invalid type ID format: {e}")

@@ -110,11 +110,9 @@ Handles Eve Online SSO authentication:
 - Token refresh and storage in `token.json`
 - Manages OAuth flow for initial authorization
 
-### Regional Market Processing (`nakah.py`)
-Specialized regional market data handling:
-- `process_system_orders()` - Processes orders for specific systems
-- `calculate_total_market_value()` - Calculates total market value excluding blueprints/skills
-- `calculate_total_ship_count()` - Counts ships available on the market
+### Regional Market Processing (`esi/esi_requests.py`)
+Regional market data fetching:
+- `fetch_region_orders()` - Fetches all market orders for a region by order type
 
 ### Google Sheets Integration (`google_sheets_utils.py` / `gsheets_config.py`)
 Automated spreadsheet updates:
@@ -154,7 +152,7 @@ Configuration is now managed through `settings.toml` with market-specific config
 ## External Dependencies
 
 - **EVE Static Data Export (SDE):** `sdelite.db` - game item/type information (synced from Turso), uses `sdetypes` table for type lookups
-- **Custom dbtools:** External dependency package `mydbtools` for database utilities
+- **Custom dbtools:** Database utility functions in `utils/db_utils.py`
 - **Turso/libsql:** For remote database synchronization (optional in dev, required in production)
   - **IMPORTANT:** libsql `sync()` is **one-way: cloud → local** (pull only). It does NOT push local writes to Turso cloud. To write data to Turso, use `DatabaseConfig` with a remote engine (direct HTTP connection to the Turso URL). The new Turso Database sync engine (currently in alpha) will add push capability; we will adopt it when the stable beta is released.
 - **Google Sheets API:** For automated market data reporting (optional)
@@ -173,10 +171,8 @@ The complete data pipeline when running the application:
    - Jita comparative pricing fetched for watchlist items (if configured)
 6. **Statistics**: Calculate market statistics (price, volume, days remaining)
 7. **Doctrine Analysis**: Analyze ship fitting availability based on market data
-8. **Regional Processing**: Update regional orders for the market's region
-9. **System Analysis**: Process system-specific orders and calculate market value/ship count
-10. **Google Sheets** (if enabled): Update spreadsheets with system market data
-11. **Storage**: Store all results in local database with automatic Turso sync
+8. **Google Sheets** (if enabled): Update spreadsheets with market data (primary market only, non-dev)
+9. **Storage**: Store all results in local database with automatic Turso sync
 
 ## Environment Variables Required
 
@@ -296,7 +292,7 @@ process_market_orders (cli.py)
 
 ## CLI Tools
 This project includes an extensive set of CLI tools.
-- See `docs/cli_tools.md` for details on CLI tools and usage. 
+- See `docs/cli-tools.md` for details on CLI tools and usage. 
 
 ## User Implementation Guide
 
@@ -633,7 +629,7 @@ For production deployment with remote database access:
 
 To switch to a different market structure:
 
-1. Update `esi_config.py` with new structure/region/system IDs
+1. Update `settings.toml` with new structure/region/system IDs
 2. Verify your ESI application has access (may need to re-authenticate)
 3. Clear old market data or create new database
 4. Run data collection: `uv run mkts-backend`

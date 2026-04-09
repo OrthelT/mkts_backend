@@ -56,6 +56,8 @@ TURSO_WCMKTPROD_URL=turso db url (production)
 TURSO_WCMKTPROD_TOKEN=turso db auth token (production)
 TURSO_WCMKTTEST_URL=turso db url (development/optional)
 TURSO_WCMKTTEST_TOKEN=turso db token (development/optional)
+TURSO_WCMKTNORTH_URL=turso db url (deployment market/optional)
+TURSO_WCMKTNORTH_TOKEN=turso db token (deployment market/optional)
 TURSO_FITTING_URL=turso fitting db url
 TURSO_FITTING_TOKEN=turso fitting db token
 TURSO_SDE_URL=turso sde db url
@@ -286,6 +288,66 @@ uv run mkts-backend equiv remove --id=1
 - `find` uses SDE attribute fingerprinting (`dgmTypeAttributes` table) to identify identical modules
 - After changes, sync to remote: `uv run mkts-backend sync`
 
+### sync / validate - Database Sync and Validation
+
+```bash
+# Sync primary market database with Turso
+uv run mkts-backend sync
+
+# Sync deployment market database
+uv run mkts-backend sync --market=deployment
+
+# Sync both markets
+uv run mkts-backend sync --market=both
+
+# Validate primary market database sync status
+uv run mkts-backend validate
+
+# Validate deployment market
+uv run mkts-backend validate --market=deployment
+```
+
+### assets - Character Asset Lookup
+
+Look up character assets by type ID or name. Results are cached locally for 1 hour.
+
+```bash
+# Look up by type ID
+uv run mkts-backend assets --id=11379
+
+# Look up by name
+uv run mkts-backend assets --name='Damage Control'
+
+# Bypass cache and re-fetch from ESI
+uv run mkts-backend assets --id=11379 --refresh
+```
+
+### esi-auth - ESI Token Authorization
+
+Re-authorize ESI tokens with expanded scopes. Presents an interactive character selection.
+
+```bash
+# Authorize a specific character
+uv run mkts-backend esi-auth --char=dennis
+
+# Interactive character selection
+uv run mkts-backend esi-auth
+```
+
+### parse-items - Structure Data Parser
+
+Parse Eve structure data and create CSV with pricing.
+
+```bash
+uv run mkts-backend parse-items --input=structure_data.txt --output=market_prices.csv
+```
+
+### add-watchlist - Add Items to Watchlist
+
+```bash
+uv run mkts-backend add-watchlist <type_id1> <type_id2> ...
+```
+
 ## Architecture
 
 ### Core Components
@@ -304,10 +366,8 @@ uv run mkts-backend equiv remove --id=1
 3. **Historical Data**: Optionally fetch historical data for watchlist items
 4. **Statistics**: Calculate market statistics (price, volume, days remaining)
 5. **Doctrine Analysis**: Analyze ship fitting availability based on market data
-6. **Regional Processing**: Update regional orders for deployment region
-7. **System Analysis**: Process system-specific orders and calculate market metrics
-8. **Google Sheets**: Update spreadsheets with system market data
-9. **Storage**: Store all results in local database with optional cloud sync
+6. **Google Sheets**: Update spreadsheets with market data (primary market, non-dev only)
+7. **Storage**: Store all results in local database with optional cloud sync
 
 ## Configuration
 
@@ -385,7 +445,7 @@ The project uses modern Python dependencies managed with uv:
 - **Requests**: HTTP client for API calls
 - **libsql**: SQLite with sync capabilities
 - **gspread**: Google Sheets API integration
-- **mydbtools**: Custom database utilities
+- **prompt-toolkit**: Multiline input prompts for paste mode
 
 ### Logging
 

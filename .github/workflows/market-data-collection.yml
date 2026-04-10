@@ -2,7 +2,7 @@ name: Market Data Collection
 
 on:
   schedule:
-    # Run every 2 hours without flags
+    # Run every hour without flags
     - cron: '20 */1 * * *'
 
   workflow_dispatch: # Allow manual triggering

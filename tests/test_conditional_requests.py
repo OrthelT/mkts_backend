@@ -169,6 +169,11 @@ class TestLoadAndSaveESICache:
 # call_one tests
 # ---------------------------------------------------------------------------
 
+def _make_limiter():
+    from aiolimiter import AsyncLimiter
+    return AsyncLimiter(300, time_period=60.0)
+
+
 class TestCallOne304Handling:
     @pytest.mark.asyncio
     async def test_304_returns_none_data(self):
@@ -183,11 +188,13 @@ class TestCallOne304Handling:
         mock_client.get = AsyncMock(return_value=mock_response)
 
         sema = asyncio.Semaphore(50)
+        limiter = _make_limiter()
 
         cache_entry = {"etag": '"abc123"', "last_modified": "Wed, 01 Jan 2025 00:00:00 GMT"}
 
         result = await call_one(
             mock_client, type_id=34, length=1, region_id=10000003,
+            limiter=limiter,
             sema=sema,
             headers={"User-Agent": "test"},
             cache_entry=cache_entry,
@@ -211,9 +218,11 @@ class TestCallOne304Handling:
         mock_client.get = AsyncMock(return_value=mock_response)
 
         sema = asyncio.Semaphore(50)
+        limiter = _make_limiter()
 
         await call_one(
             mock_client, type_id=34, length=1, region_id=10000003,
+            limiter=limiter,
             sema=sema,
             headers={"User-Agent": "test"},
             cache_entry={"etag": '"test"', "last_modified": None},
@@ -238,9 +247,11 @@ class TestCallOne304Handling:
         mock_client.get = AsyncMock(return_value=mock_response)
 
         sema = asyncio.Semaphore(50)
+        limiter = _make_limiter()
 
         result = await call_one(
             mock_client, type_id=34, length=1, region_id=10000003,
+            limiter=limiter,
             sema=sema,
             headers={"User-Agent": "test"},
         )
@@ -266,9 +277,11 @@ class TestConditionalHeaderInjection:
         mock_client.get = AsyncMock(return_value=mock_response)
 
         sema = asyncio.Semaphore(50)
+        limiter = _make_limiter()
 
         await call_one(
             mock_client, type_id=34, length=1, region_id=10000003,
+            limiter=limiter,
             sema=sema,
             headers={"User-Agent": "test"},
             cache_entry={"etag": '"cached_etag"', "last_modified": None},
@@ -292,9 +305,11 @@ class TestConditionalHeaderInjection:
         mock_client.get = AsyncMock(return_value=mock_response)
 
         sema = asyncio.Semaphore(50)
+        limiter = _make_limiter()
 
         await call_one(
             mock_client, type_id=34, length=1, region_id=10000003,
+            limiter=limiter,
             sema=sema,
             headers={"User-Agent": "test"},
             cache_entry={"etag": None, "last_modified": "Wed, 01 Jan 2025 00:00:00 GMT"},
@@ -319,9 +334,11 @@ class TestConditionalHeaderInjection:
         mock_client.get = AsyncMock(return_value=mock_response)
 
         sema = asyncio.Semaphore(50)
+        limiter = _make_limiter()
 
         await call_one(
             mock_client, type_id=34, length=1, region_id=10000003,
+            limiter=limiter,
             sema=sema,
             headers={"User-Agent": "test"},
             cache_entry=None,

@@ -562,6 +562,17 @@ def assign_market_command(
     try:
         rows = _get_doctrine_fits_rows(fit_id, db_alias, False, doctrine_id)
         if not rows:
+            # Fit may live in the other market database — search all aliases
+            for fallback in ("wcmktprod", "wcmktnorth"):
+                if fallback == db_alias:
+                    continue
+                rows = _get_doctrine_fits_rows(fit_id, fallback, False, doctrine_id)
+                if rows:
+                    logger.info(
+                        f"Fit {fit_id} not in {db_alias}, found in {fallback}"
+                    )
+                    break
+        if not rows:
             console.print(f"[yellow]No doctrine_fits rows found for fit {fit_id}"
                            + (f" in doctrine {doctrine_id}" if doctrine_id else "") + "[/yellow]")
             return {}
@@ -628,6 +639,14 @@ def assign_doctrine_market(
     all_plans = []
     for fid in fit_ids:
         rows = _get_doctrine_fits_rows(fid, db_alias, False, doctrine_id)
+        if not rows:
+            for fallback in ("wcmktprod", "wcmktnorth"):
+                if fallback == db_alias:
+                    continue
+                rows = _get_doctrine_fits_rows(fid, fallback, False, doctrine_id)
+                if rows:
+                    logger.info(f"Fit {fid} not in {db_alias}, found in {fallback}")
+                    break
         for row in rows:
             rf = _get_remote_market_flags(row["fit_id"], row["doctrine_id"]) if remote else None
             all_plans.append(_plan_market_action(row, market_flag, mode="assign", remote_flags=rf))
@@ -1160,6 +1179,16 @@ def unassign_market_command(
     try:
         rows = _get_doctrine_fits_rows(fit_id, db_alias, remote, doctrine_id)
         if not rows:
+            for fallback in ("wcmktprod", "wcmktnorth"):
+                if fallback == db_alias:
+                    continue
+                rows = _get_doctrine_fits_rows(fit_id, fallback, remote, doctrine_id)
+                if rows:
+                    logger.info(
+                        f"Fit {fit_id} not in {db_alias}, found in {fallback}"
+                    )
+                    break
+        if not rows:
             console.print(f"[yellow]No doctrine_fits rows found for fit {fit_id}"
                            + (f" in doctrine {doctrine_id}" if doctrine_id else "") + "[/yellow]")
             return {}
@@ -1220,6 +1249,14 @@ def unassign_doctrine_market(
     all_plans = []
     for fid in fit_ids:
         rows = _get_doctrine_fits_rows(fid, db_alias, remote, doctrine_id)
+        if not rows:
+            for fallback in ("wcmktprod", "wcmktnorth"):
+                if fallback == db_alias:
+                    continue
+                rows = _get_doctrine_fits_rows(fid, fallback, remote, doctrine_id)
+                if rows:
+                    logger.info(f"Fit {fid} not in {db_alias}, found in {fallback}")
+                    break
         for row in rows:
             all_plans.append(_plan_market_action(row, market_to_remove, mode="unassign"))
 

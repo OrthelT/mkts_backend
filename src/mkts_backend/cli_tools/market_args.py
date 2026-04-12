@@ -17,9 +17,11 @@ VALID_MARKET_ALIASES: set[str] = {"primary", "deployment", "both"}
 def parse_market_args(args: list[str], default: str = "primary") -> str:
     """Scan args for market flags and return a normalized market alias.
 
-    Recognizes --market=<value>, --deployment, --north, --primary, --both.
+    Recognizes --market=<value>, --deployment, --north, --primary, --both,
+    and bare positional aliases (e.g. ``deployment`` without ``--``).
     Returns 'primary', 'deployment', or 'both'.
     """
+    # First pass: explicit --flags take priority
     for arg in args:
         if arg.startswith("--market="):
             val = arg.split("=", 1)[1].lower()
@@ -34,4 +36,12 @@ def parse_market_args(args: list[str], default: str = "primary") -> str:
             return "primary"
         if arg == "--both":
             return "both"
+    # Second pass: bare positional aliases (e.g. ``mkts-backend deployment ...``)
+    _POSITIONAL_ALIASES = VALID_MARKET_ALIASES | set(MARKET_SYNONYMS)
+    for arg in args:
+        if arg.startswith("-"):
+            continue
+        resolved = MARKET_SYNONYMS.get(arg, arg)
+        if resolved in VALID_MARKET_ALIASES:
+            return resolved
     return default

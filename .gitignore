@@ -64,3 +64,5 @@ docs/find-equiv.md
 src/mkts_backend/utils/doctrine_fit_ids.py
 curl-request.txt
 target_updates.sql
+factionmap.sql mktcheck.sql target_updates.sql
+*.sql

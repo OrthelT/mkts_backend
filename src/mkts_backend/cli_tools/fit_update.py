@@ -61,6 +61,7 @@ from mkts_backend.utils.parse_fits import (
     get_doctrine_ids_for_fit,
 )
 from mkts_backend.cli_tools.prompter import get_multiline_input
+from mkts_backend.utils.db_utils import add_missing_items_to_watchlist
 
 logger = configure_logging(__name__)
 console = Console()
@@ -956,6 +957,21 @@ def _provision_market_db(
             ship_type_id=p["ship_type_id"],
             ship_name=p["ship_name"],
         )
+        # Ensure all fit components exist in the target database's watchlist
+        fittings_db = DatabaseConfig("fittings")
+        fittings_engine = fittings_db.engine
+        try:
+            with fittings_engine.connect() as conn:
+                item_rows = conn.execute(
+                    text("SELECT DISTINCT type_id FROM fittings_fittingitem WHERE fit_id = :fit_id"),
+                    {"fit_id": p["fit_id"]},
+                ).fetchall()
+            component_ids = [r.type_id for r in item_rows]
+            component_ids.append(p["ship_type_id"])
+            add_missing_items_to_watchlist(component_ids, remote=remote, db_alias=alias)
+        finally:
+            fittings_engine.dispose()
+
         upsert_doctrine_fits(doctrine_fit, remote=remote, db_alias=alias, market_flag=new_flag, engine=engine)
         upsert_doctrine_map(p["doctrine_id"], p["fit_id"], remote=remote, db_alias=alias, engine=engine)
         upsert_ship_target(

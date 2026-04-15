@@ -28,6 +28,7 @@ from sqlalchemy.exc import OperationalError, DatabaseError
 
 from mkts_backend.config.logging_config import configure_logging
 from mkts_backend.config import DatabaseConfig
+from mkts_backend.config.market_context import MarketContext
 from mkts_backend.utils.eft_parser import parse_eft_file, parse_eft_string
 from mkts_backend.utils.doctrine_update import (
     update_fit_market_flag,
@@ -65,6 +66,67 @@ from mkts_backend.utils.db_utils import add_missing_items_to_watchlist
 
 logger = configure_logging(__name__)
 console = Console()
+
+
+def _configured_market_db_aliases() -> List[str]:
+    """Return the per-market database aliases from settings.toml.
+
+    Callers should use this instead of naming market DB aliases inline,
+    which would silently miss markets added later.
+    """
+    aliases: List[str] = []
+    for market in MarketContext.list_available():
+        try:
+            db_alias = MarketContext.from_settings(market).database_alias
+        except Exception as e:
+            raise RuntimeError(
+                f"Failed to resolve DB alias for market '{market}' while "
+                f"enumerating configured markets: {e}"
+            ) from e
+        if db_alias not in aliases:
+            aliases.append(db_alias)
+    return aliases
+
+
+def _discover_fits_across_markets(
+    doctrine_id: int, remote: bool
+) -> tuple[List[int], List[str], List[tuple[str, str]]]:
+    """Query every configured market for fits in ``doctrine_id``.
+
+    Returns ``(fit_ids, queried_aliases, skipped)`` where ``skipped`` pairs an
+    alias with the error message that caused it to be excluded. Per-alias
+    failures are logged and skipped so a single unreachable DB does not
+    abort an otherwise-serviceable assign/unassign.
+    """
+    fit_ids: List[int] = []
+    queried: List[str] = []
+    skipped: List[tuple[str, str]] = []
+    for source_alias in _configured_market_db_aliases():
+        try:
+            rows = get_doctrine_fits_from_market(doctrine_id, source_alias, remote)
+        except Exception as e:
+            logger.warning(
+                "Skipping market '%s' during fit discovery for doctrine %s: %s",
+                source_alias, doctrine_id, e,
+            )
+            skipped.append((source_alias, str(e)))
+            continue
+        queried.append(source_alias)
+        for fid in rows:
+            if fid not in fit_ids:
+                fit_ids.append(fid)
+    return fit_ids, queried, skipped
+
+
+def _render_no_fits_message(doctrine_id: int, queried: List[str], skipped: List[tuple[str, str]]) -> None:
+    """Render the 'no fits found' warning, distinguishing queried vs skipped."""
+    parts = [f"No fits found for doctrine {doctrine_id}"]
+    if queried:
+        parts.append(f"in ({', '.join(queried)})")
+    if skipped:
+        skipped_str = ", ".join(f"{a}: {msg}" for a, msg in skipped)
+        parts.append(f"(skipped: {skipped_str})")
+    console.print(f"[yellow]{' '.join(parts)}[/yellow]")
 
 
 def get_available_doctrines(remote: bool = False) -> List[dict]:
@@ -622,11 +684,11 @@ def assign_doctrine_market(
         )
         return False
 
-    fit_ids = get_doctrine_fits_from_market(doctrine_id, db_alias, remote)
+    # Discover fits across every configured market, not just the destination,
+    # so assign works when the doctrine exists only in a non-target DB.
+    fit_ids, queried_aliases, skipped = _discover_fits_across_markets(doctrine_id, remote)
     if not fit_ids:
-        console.print(
-            f"[yellow]No fits found for doctrine {doctrine_id} in {db_alias}[/yellow]"
-        )
+        _render_no_fits_message(doctrine_id, queried_aliases, skipped)
         return False
 
     # Get doctrine name for display
@@ -1250,9 +1312,10 @@ def unassign_doctrine_market(
         )
         return False
 
-    fit_ids = get_doctrine_fits_from_market(doctrine_id, db_alias, remote)
+    # Symmetric with assign: discover fits across every configured market.
+    fit_ids, queried_aliases, skipped = _discover_fits_across_markets(doctrine_id, remote)
     if not fit_ids:
-        console.print(f"[yellow]No fits found for doctrine {doctrine_id} in {db_alias}[/yellow]")
+        _render_no_fits_message(doctrine_id, queried_aliases, skipped)
         return False
 
     # Get doctrine name for display

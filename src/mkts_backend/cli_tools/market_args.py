@@ -13,7 +13,6 @@ MARKET_SYNONYMS: dict[str, str] = {
 
 VALID_MARKET_ALIASES: set[str] = {"primary", "deployment", "both"}
 
-# Sentinel returned by resolve_market_alias when the user gave no market flag.
 _UNSPECIFIED = "__unspecified__"
 
 
@@ -27,13 +26,14 @@ def expand_market_alias(alias: str) -> list[str]:
     return [alias]
 
 
-def resolve_market_alias(args: list[str], default: str) -> str:
-    """Like ``parse_market_args`` but returns ``default`` only when the user
-    gave no market flag at all. Lets callers distinguish "unspecified" from
-    an explicit ``--primary``.
+def resolve_market_alias(args: list[str]) -> str | None:
+    """Return the explicit market alias if the user specified one, else ``None``.
+
+    Distinguishes "user gave no flag" from "user explicitly picked --primary",
+    which the subcommand-default logic in ``parse_args`` needs.
     """
     resolved = parse_market_args(args, default=_UNSPECIFIED)
-    return default if resolved == _UNSPECIFIED else resolved
+    return None if resolved == _UNSPECIFIED else resolved
 
 
 def parse_market_args(args: list[str], default: str = "primary") -> str:

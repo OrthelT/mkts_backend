@@ -29,6 +29,7 @@ class CommandEntry:
     handler: HandlerFn
     aliases: list[str] = field(default_factory=list)
     description: str = ""
+    default_market: str = "primary"
 
     @property
     def all_names(self) -> set[str]:
@@ -49,12 +50,14 @@ class CommandRegistry:
         *,
         aliases: list[str] | None = None,
         description: str = "",
+        default_market: str = "primary",
     ) -> None:
         entry = CommandEntry(
             name=name,
             handler=handler,
             aliases=aliases or [],
             description=description,
+            default_market=default_market,
         )
         self._commands.append(entry)
         for n in entry.all_names:
@@ -464,25 +467,14 @@ def _register_all(reg: CommandRegistry) -> None:
 
     # ── sync ────────────────────────────────────────────────────
     def _handle_sync(args: list[str], market_alias: str) -> bool:
-        import sys
         from mkts_backend.config.market_context import MarketContext
         from mkts_backend.config.config import DatabaseConfig
         from mkts_backend.config.logging_config import configure_logging
-        from mkts_backend.cli_tools.market_args import (
-            resolve_market_alias,
-            expand_market_alias,
-        )
+        from mkts_backend.cli_tools.market_args import expand_market_alias
 
         logger = configure_logging(__name__)
 
-        # Sync defaults to both markets when the user gave no market flag.
-        # Re-resolve from full argv so flags before OR after the subcommand
-        # are both honored; ``market_alias`` alone can't distinguish silent
-        # vs. explicit ``--primary``.
-        effective = resolve_market_alias(sys.argv[1:], default="both")
-        sync_markets = expand_market_alias(effective)
-
-        for mkt in sync_markets:
+        for mkt in expand_market_alias(market_alias):
             market_ctx = MarketContext.from_settings(mkt)
             db = DatabaseConfig(market_context=market_ctx)
             print(f"Syncing database for market: {market_ctx.name} ({market_ctx.alias})")
@@ -492,7 +484,12 @@ def _register_all(reg: CommandRegistry) -> None:
 
         return True
 
-    reg.register("sync", _handle_sync, description="Sync the database (both markets by default)")
+    reg.register(
+        "sync",
+        _handle_sync,
+        description="Sync the database (both markets by default)",
+        default_market="both",
+    )
 
     # ── validate ────────────────────────────────────────────────
     def _handle_validate(args: list[str], market_alias: str) -> bool:
@@ -517,22 +514,19 @@ def _register_all(reg: CommandRegistry) -> None:
 
     # ── update-markets ──────────────────────────────────────────
     def _handle_update_markets(args: list[str], market_alias: str) -> bool:
-        import sys
         from mkts_backend.cli_tools.arg_utils import ParsedArgs
-        from mkts_backend.cli_tools.market_args import resolve_market_alias
         from mkts_backend.cli import run_market_update
 
-        # Default to both markets unless the user explicitly picked one.
-        effective = resolve_market_alias(sys.argv[1:], default="both")
         p = ParsedArgs(args)
         history = p.has_flag("history", "include-history")
-        return run_market_update(history=history, market_alias=effective)
+        return run_market_update(history=history, market_alias=market_alias)
 
     reg.register(
         "update-markets",
         _handle_update_markets,
         aliases=["update"],
         description="Run full market-data update pipeline (both markets by default)",
+        default_market="both",
     )
 
     # ── parse-items ─────────────────────────────────────────────

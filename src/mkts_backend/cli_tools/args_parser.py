@@ -1,5 +1,5 @@
 from mkts_backend.cli_tools.cli_help import display_cli_help
-from mkts_backend.cli_tools.market_args import parse_market_args
+from mkts_backend.cli_tools.market_args import resolve_market_alias
 from mkts_backend.cli_tools.arg_utils import ParsedArgs, suggest_command, check_bare_args
 from mkts_backend.cli_tools.command_registry import get_registry
 
@@ -45,7 +45,8 @@ def parse_args(args: list[str]) -> dict | None:
             display_cli_help()
             exit()
 
-    market_alias = parse_market_args(args)
+    user_market = resolve_market_alias(args)
+    market_alias = user_market or "primary"
     return_args["market"] = market_alias
 
     if p.has_flag("list-markets"):
@@ -102,7 +103,8 @@ def parse_args(args: list[str]) -> dict | None:
                 )
                 print(f"\033[93mDid you mean?\033[0m mkts-backend {arg} {corrected}")
                 exit(1)
-            success = entry.handler(sub_args, market_alias)
+            effective_market = user_market or entry.default_market
+            success = entry.handler(sub_args, effective_market)
             exit(0 if success else 1)
 
     # ── Unknown positional? Suggest closest command ─────────────
@@ -119,7 +121,8 @@ def parse_args(args: list[str]) -> dict | None:
             print(f"\033[93mDid you mean?\033[0m {hint}")
             exit(1)
 
-    # No subcommand matched; a lone market flag is no longer a shortcut
-    # for the update pipeline — use ``mkts-backend update-markets`` instead.
+    # A lone market flag is not a shortcut for any subcommand.
+    print("Error: no subcommand given.")
+    print("\033[93mDid you mean?\033[0m mkts-backend update-markets")
     display_cli_help()
-    exit()
+    exit(2)

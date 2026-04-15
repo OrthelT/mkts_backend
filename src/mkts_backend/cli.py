@@ -448,17 +448,16 @@ def _run_market_pipeline(
         )
 
 
-def main(history: bool = False, market_alias: str = "primary"):
-    """
-    Main function to process market orders, history, market stats, and doctrines.
+def run_market_update(history: bool = False, market_alias: str = "both") -> bool:
+    """Run the full market-data update pipeline for one or both markets.
 
-    Args:
-        history: Whether to include historical data processing.
-        market_alias: Market alias to process (e.g., "primary", "deployment", "both").
+    Handles env validation, DB init, Jita-price fetch, and per-market pipeline.
+    Returns True on success; exits non-zero on setup failures.
     """
+    from mkts_backend.cli_tools.market_args import expand_market_alias
+
     start_time = time.perf_counter()
 
-    # Validate environment credentials before proceeding
     validation_result = validate_all()
     if not validation_result["is_valid"]:
         logger.error(validation_result["message"])
@@ -476,23 +475,8 @@ def main(history: bool = False, market_alias: str = "primary"):
     logger.debug(f"Data directory created: {os.path.abspath('data')}")
     logger.debug("=" * 80)
 
-    # Parse command line arguments
-    if len(sys.argv) > 1:
-        args = parse_args(sys.argv)
+    market_aliases = expand_market_alias(market_alias)
 
-        if args is not None:
-            history = args.get("history", False)
-            market_alias = args.get("market", "primary")
-        else:
-            return
-
-    # Determine which markets to process
-    if market_alias == "both":
-        market_aliases = ["primary", "deployment"]
-    else:
-        market_aliases = [market_alias]
-
-    # Build all market contexts up front
     all_contexts = []
     for alias in market_aliases:
         try:
@@ -504,14 +488,12 @@ def main(history: bool = False, market_alias: str = "primary"):
             logger.error(f"Available markets: {', '.join(MarketContext.list_available())}")
             sys.exit(1)
 
-    # Ensure market databases are synced before querying them
     for market_ctx in all_contexts:
         db = DatabaseConfig(market_context=market_ctx)
         if db.needs_init():
             logger.info(f"Initializing market database: {db.alias}")
             db.verify_db_exists()
 
-    # Fetch Jita prices once and write to all market databases
     jita_ok = process_jita_prices(all_contexts)
     if not jita_ok:
         logger.warning("Jita price update failed; downstream stats will lack Jita comparisons")
@@ -525,6 +507,22 @@ def main(history: bool = False, market_alias: str = "primary"):
         f"Market job complete for {label} in {time.perf_counter() - start_time:.1f}s"
     )
     logger.info("=" * 80)
+    return True
+
+
+def main():
+    """Entry point for the `mkts-backend` CLI.
+
+    Bare invocation prints help. Any subcommand is dispatched via the shared
+    command registry inside ``parse_args``.
+    """
+    from mkts_backend.cli_tools.cli_help import display_cli_help
+
+    if len(sys.argv) <= 1:
+        display_cli_help()
+        return
+
+    parse_args(sys.argv)
 
 
 if __name__ == "__main__":

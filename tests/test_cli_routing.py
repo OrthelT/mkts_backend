@@ -68,19 +68,64 @@ class TestArgsParserRouting:
         with pytest.raises(SystemExit):
             parse_args(["--help"])
 
-    def test_history_flag_returned(self):
+    def test_bare_flag_only_exits_nonzero(self):
+        """Flag-only invocation with no subcommand must fail (no silent success)."""
         from mkts_backend.cli_tools.args_parser import parse_args
 
-        result = parse_args(["--history"])
-        assert result is not None
-        assert result["history"] is True
+        with pytest.raises(SystemExit) as exc_info:
+            parse_args(["--history"])
+        assert exc_info.value.code == 2
 
-    def test_no_history_flag(self):
+    def test_bare_market_flag_exits_nonzero(self):
+        """A lone --primary is not a shortcut; must not silently succeed."""
         from mkts_backend.cli_tools.args_parser import parse_args
 
-        result = parse_args(["--primary"])
-        assert result is not None
-        assert result["history"] is False
+        with pytest.raises(SystemExit) as exc_info:
+            parse_args(["--primary"])
+        assert exc_info.value.code == 2
+
+    @patch("mkts_backend.cli.run_market_update", return_value=True)
+    def test_update_markets_routes_history_flag(self, mock_run):
+        """update-markets --history forwards history=True to run_market_update."""
+        from mkts_backend.cli_tools.args_parser import parse_args
+
+        with patch("sys.argv", ["mkts-backend", "update-markets", "--history"]):
+            with pytest.raises(SystemExit) as exc_info:
+                parse_args(["update-markets", "--history"])
+            assert exc_info.value.code == 0
+        _, kwargs = mock_run.call_args
+        assert kwargs["history"] is True
+
+    @patch("mkts_backend.cli.run_market_update", return_value=True)
+    def test_update_markets_defaults_to_both(self, mock_run):
+        """update-markets with no --market flag dispatches market_alias='both'."""
+        from mkts_backend.cli_tools.args_parser import parse_args
+
+        with pytest.raises(SystemExit):
+            parse_args(["update-markets"])
+        _, kwargs = mock_run.call_args
+        assert kwargs["market_alias"] == "both"
+
+    @patch("mkts_backend.cli.run_market_update", return_value=True)
+    def test_update_markets_history_before_subcommand(self, mock_run):
+        """--history before the subcommand must still be honored (position-agnostic)."""
+        from mkts_backend.cli_tools.args_parser import parse_args
+
+        with patch("sys.argv", ["mkts-backend", "--history", "update-markets"]):
+            with pytest.raises(SystemExit):
+                parse_args(["--history", "update-markets"])
+        _, kwargs = mock_run.call_args
+        assert kwargs["history"] is True
+
+    @patch("mkts_backend.cli.run_market_update", return_value=True)
+    def test_update_markets_honors_explicit_primary(self, mock_run):
+        """Explicit --primary overrides the subcommand's 'both' default."""
+        from mkts_backend.cli_tools.args_parser import parse_args
+
+        with pytest.raises(SystemExit):
+            parse_args(["update-markets", "--primary"])
+        _, kwargs = mock_run.call_args
+        assert kwargs["market_alias"] == "primary"
 
     @patch(
         "mkts_backend.cli_tools.asset_check.asset_check_command", return_value=True

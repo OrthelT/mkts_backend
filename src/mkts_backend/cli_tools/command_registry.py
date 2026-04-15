@@ -29,6 +29,7 @@ class CommandEntry:
     handler: HandlerFn
     aliases: list[str] = field(default_factory=list)
     description: str = ""
+    default_market: str = "primary"
 
     @property
     def all_names(self) -> set[str]:
@@ -49,12 +50,14 @@ class CommandRegistry:
         *,
         aliases: list[str] | None = None,
         description: str = "",
+        default_market: str = "primary",
     ) -> None:
         entry = CommandEntry(
             name=name,
             handler=handler,
             aliases=aliases or [],
             description=description,
+            default_market=default_market,
         )
         self._commands.append(entry)
         for n in entry.all_names:
@@ -281,10 +284,8 @@ def _register_all(reg: CommandRegistry) -> None:
             print("Use 'update-fit --help' for usage information.")
             return False
 
-        if market_alias == "both":
-            target_markets = ["primary", "deployment"]
-        else:
-            target_markets = [market_alias]
+        from mkts_backend.cli_tools.market_args import expand_market_alias
+        target_markets = expand_market_alias(market_alias)
 
         remote = p.has_flag("remote")
         clear_existing = not p.has_flag("no-clear")
@@ -469,15 +470,11 @@ def _register_all(reg: CommandRegistry) -> None:
         from mkts_backend.config.market_context import MarketContext
         from mkts_backend.config.config import DatabaseConfig
         from mkts_backend.config.logging_config import configure_logging
+        from mkts_backend.cli_tools.market_args import expand_market_alias
 
         logger = configure_logging(__name__)
 
-        if market_alias == "both":
-            sync_markets = ["primary", "deployment"]
-        else:
-            sync_markets = [market_alias]
-
-        for mkt in sync_markets:
+        for mkt in expand_market_alias(market_alias):
             market_ctx = MarketContext.from_settings(mkt)
             db = DatabaseConfig(market_context=market_ctx)
             print(f"Syncing database for market: {market_ctx.name} ({market_ctx.alias})")
@@ -487,24 +484,52 @@ def _register_all(reg: CommandRegistry) -> None:
 
         return True
 
-    reg.register("sync", _handle_sync, description="Sync the database")
+    reg.register(
+        "sync",
+        _handle_sync,
+        description="Sync the database (both markets by default)",
+        default_market="both",
+    )
 
     # ── validate ────────────────────────────────────────────────
     def _handle_validate(args: list[str], market_alias: str) -> bool:
         from mkts_backend.config.market_context import MarketContext
         from mkts_backend.config.config import DatabaseConfig
+        from mkts_backend.cli_tools.market_args import expand_market_alias
 
-        market_ctx = MarketContext.from_settings(market_alias)
-        db = DatabaseConfig(market_context=market_ctx)
-        print(f"Validating database for market: {market_ctx.name} ({market_ctx.alias})")
-        valid = db.validate_sync()
-        if valid:
-            print(f"Database validated: {db.alias}")
-        else:
-            print(f"Database {db.alias} is out of date. Run 'sync' to sync the database.")
-        return valid
+        all_valid = True
+        for mkt in expand_market_alias(market_alias):
+            market_ctx = MarketContext.from_settings(mkt)
+            db = DatabaseConfig(market_context=market_ctx)
+            print(f"Validating database for market: {market_ctx.name} ({market_ctx.alias})")
+            valid = db.validate_sync()
+            if valid:
+                print(f"Database validated: {db.alias}")
+            else:
+                print(f"Database {db.alias} is out of date. Run 'sync' to sync the database.")
+                all_valid = False
+        return all_valid
 
     reg.register("validate", _handle_validate, description="Validate the database sync status")
+
+    # ── update-markets ──────────────────────────────────────────
+    def _handle_update_markets(args: list[str], market_alias: str) -> bool:
+        import sys
+        from mkts_backend.cli_tools.arg_utils import ParsedArgs
+        from mkts_backend.cli import run_market_update
+
+        # Honor --history regardless of flag position; market is already
+        # resolved from full argv by the dispatcher, so do the same here.
+        history = ParsedArgs(sys.argv[1:]).has_flag("history", "include-history")
+        return run_market_update(history=history, market_alias=market_alias)
+
+    reg.register(
+        "update-markets",
+        _handle_update_markets,
+        aliases=["update"],
+        description="Run full market-data update pipeline (both markets by default)",
+        default_market="both",
+    )
 
     # ── parse-items ─────────────────────────────────────────────
     def _handle_parse_items(args: list[str], market_alias: str) -> bool:

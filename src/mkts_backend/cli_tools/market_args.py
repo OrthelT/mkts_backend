@@ -13,6 +13,28 @@ MARKET_SYNONYMS: dict[str, str] = {
 
 VALID_MARKET_ALIASES: set[str] = {"primary", "deployment", "both"}
 
+_UNSPECIFIED = "__unspecified__"
+
+
+def expand_market_alias(alias: str) -> list[str]:
+    """Expand a market alias into the list of concrete markets to act on.
+
+    ``"both"`` → ``["primary", "deployment"]``; anything else → ``[alias]``.
+    """
+    if alias == "both":
+        return ["primary", "deployment"]
+    return [alias]
+
+
+def resolve_market_alias(args: list[str]) -> str | None:
+    """Return the explicit market alias if the user specified one, else ``None``.
+
+    Distinguishes "user gave no flag" from "user explicitly picked --primary",
+    which the subcommand-default logic in ``parse_args`` needs.
+    """
+    resolved = parse_market_args(args, default=_UNSPECIFIED)
+    return None if resolved == _UNSPECIFIED else resolved
+
 
 def parse_market_args(args: list[str], default: str = "primary") -> str:
     """Scan args for market flags and return a normalized market alias.

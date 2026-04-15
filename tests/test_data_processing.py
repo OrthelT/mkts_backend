@@ -238,3 +238,38 @@ class TestCalculateMarketStats:
         assert len(row36) == 1
         # days_remaining defaults to 30 when avg_volume is 0/NULL (per SQL CASE)
         assert row36.iloc[0]["days_remaining"] == 30.0
+
+    def test_output_dtypes_contract(self, in_memory_market_db):
+        """Numeric columns must have stable numeric dtypes, not object.
+
+        Guards against silent dtype drift that would corrupt frontend fit-cost
+        calculations (price arithmetic on object-dtype columns is a latent bug).
+        """
+        mock_db = _MockDB(in_memory_market_db)
+        with patch("mkts_backend.processing.data_processing._get_db", return_value=mock_db):
+            import mkts_backend.processing.data_processing as dp
+            dp._wcmkt_db = None
+            result = dp.calculate_market_stats()
+
+        for col in ("min_price", "avg_price", "price", "avg_volume", "days_remaining"):
+            assert str(result[col].dtype) == "float64", (
+                f"{col} dtype={result[col].dtype}"
+            )
+        assert str(result["total_volume_remain"].dtype) == "int64"
+
+    def test_soldout_no_history_price_is_numeric_zero(self, in_memory_market_db):
+        """Mexallon (type_id=36) has no orders AND no history.
+
+        Its price must be float 0.0 (the typed fallback), not Python int 0 or
+        an object-dtype string — otherwise frontend fit-cost breaks.
+        """
+        mock_db = _MockDB(in_memory_market_db)
+        with patch("mkts_backend.processing.data_processing._get_db", return_value=mock_db):
+            import mkts_backend.processing.data_processing as dp
+            dp._wcmkt_db = None
+            result = dp.calculate_market_stats()
+
+        row = result[result.type_id == 36].iloc[0]
+        assert row["price"] == 0.0
+        assert isinstance(row["price"], float)
+        assert str(result["price"].dtype) == "float64"

@@ -67,6 +67,22 @@ logger = configure_logging(__name__)
 console = Console()
 
 
+def _configured_market_db_aliases() -> List[str]:
+    """Return the per-market database aliases from settings.toml.
+
+    Resolves each configured market via MarketContext so callers never
+    hardcode "wcmktprod"/"wcmktnorth" (or the legacy "wcmkt" catch-all).
+    """
+    from mkts_backend.config.market_context import MarketContext
+
+    aliases: List[str] = []
+    for market in MarketContext.list_available():
+        db_alias = MarketContext.from_settings(market).database_alias
+        if db_alias not in aliases:
+            aliases.append(db_alias)
+    return aliases
+
+
 def get_available_doctrines(remote: bool = False) -> List[dict]:
     """Get list of available doctrines from fittings database."""
     db = DatabaseConfig("fittings")
@@ -622,10 +638,19 @@ def assign_doctrine_market(
         )
         return False
 
-    fit_ids = get_doctrine_fits_from_market(doctrine_id, db_alias, remote)
+    # Discover fits across every configured market, not just the destination.
+    # Otherwise assigning a doctrine to a market where it doesn't yet exist
+    # (the exact reason this command is usually invoked) would bail here.
+    fit_ids: List[int] = []
+    searched_aliases = _configured_market_db_aliases()
+    for source_alias in searched_aliases:
+        for fid in get_doctrine_fits_from_market(doctrine_id, source_alias, remote):
+            if fid not in fit_ids:
+                fit_ids.append(fid)
     if not fit_ids:
         console.print(
-            f"[yellow]No fits found for doctrine {doctrine_id} in {db_alias}[/yellow]"
+            f"[yellow]No fits found for doctrine {doctrine_id} in any configured market "
+            f"({', '.join(searched_aliases)})[/yellow]"
         )
         return False
 
@@ -1250,9 +1275,19 @@ def unassign_doctrine_market(
         )
         return False
 
-    fit_ids = get_doctrine_fits_from_market(doctrine_id, db_alias, remote)
+    # Discover fits across every configured market so unassign can act on
+    # doctrines that live only in the non-target DB (symmetric with assign).
+    fit_ids: List[int] = []
+    searched_aliases = _configured_market_db_aliases()
+    for source_alias in searched_aliases:
+        for fid in get_doctrine_fits_from_market(doctrine_id, source_alias, remote):
+            if fid not in fit_ids:
+                fit_ids.append(fid)
     if not fit_ids:
-        console.print(f"[yellow]No fits found for doctrine {doctrine_id} in {db_alias}[/yellow]")
+        console.print(
+            f"[yellow]No fits found for doctrine {doctrine_id} in any configured market "
+            f"({', '.join(searched_aliases)})[/yellow]"
+        )
         return False
 
     # Get doctrine name for display

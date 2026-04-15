@@ -119,15 +119,7 @@ def parse_args(args: list[str]) -> dict | None:
             print(f"\033[93mDid you mean?\033[0m {hint}")
             exit(1)
 
-    # ── Flags that don't exit ───────────────────────────────────
-    if p.has_flag("history", "include-history"):
-        return_args["history"] = True
-    else:
-        return_args["history"] = False
-
-    # If we have a market specified but no other command, run the main workflow
-    if return_args.get("market"):
-        return return_args
-
+    # No subcommand matched; a lone market flag is no longer a shortcut
+    # for the update pipeline — use ``mkts-backend update-markets`` instead.
     display_cli_help()
     exit()

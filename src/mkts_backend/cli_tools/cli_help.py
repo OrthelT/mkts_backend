@@ -17,6 +17,7 @@ def _build_command_list() -> str:
         name = entry.name
         aliases = f" ({', '.join(entry.aliases)})" if entry.aliases else ""
         lines.append(f"  {name:<20s}{entry.description}{aliases}")
+    lines.sort()
     return "\n".join(lines)
 
 
@@ -24,13 +25,15 @@ def display_cli_help():
     console.print("\nUsage: mkts-backend [command] [options]\n")
     console.print(f"Commands:\n{_build_command_list()}")
     console.print("""
-Global Options (apply to main workflow and most commands):
-  --market=<alias>   Select market (primary, deployment, both). Default: primary
+Global Options (accepted by most commands):
+  --market=<alias>   Select market (primary, deployment, both).
+                     update-markets and sync default to both; other commands
+                     default to primary unless noted.
   --primary          Shorthand for --market=primary
   --deployment       Shorthand for --market=deployment
-  --both             Shorthand for --market=both (process both markets in sequence)
+  --both             Shorthand for --market=both
   --env=<env>        Override app.environment temporarily (production, development)
-  --history          Include history processing (main workflow)
+  --history          Include history processing (update-markets only)
   --check_tables     Check the tables in the database (supports --market)
   --validate-env     Validate environment credentials and exit
   --list-markets     List available market configurations
@@ -39,14 +42,12 @@ Global Options (apply to main workflow and most commands):
 Use 'mkts-backend <command> --help' for more information about a command.
 
 Examples:
-  mkts-backend --history                      # Run main workflow with history
-  mkts-backend --history --deployment         # Run for deployment market
-  mkts-backend --both --history               # Run both markets with history
-  mkts-backend --market=both                  # Run both markets (no history)
-  mkts-backend --env=development              # Run against testing database
-  mkts-backend sync --both                    # Sync both databases
-  mkts-backend sync --deployment              # Sync deployment database
-  mkts-backend validate --market=deployment   # Validate deployment database
+  mkts-backend update-markets                 # Run full pipeline for both markets
+  mkts-backend update-markets --history       # With history processing
+  mkts-backend update-markets --primary       # Primary market only
+  mkts-backend sync                           # Sync both databases
+  mkts-backend sync --deployment              # Sync deployment only
+  mkts-backend validate --market=both         # Validate both databases
   mkts-backend fit-check --file=fits/hfi.txt  # Check fit availability
   mkts-backend assets --name='Damage Control'   # Look up assets by partial name
   mkts-backend assets --id=11379                # Look up assets by type ID

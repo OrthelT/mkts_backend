@@ -164,8 +164,8 @@ jobs:
           # Run with --history flag at 12:00 UTC
           HISTORY_FLAG="--history"
         fi
-        echo "Running: uv run mkts-backend --market=${{ matrix.market }} $HISTORY_FLAG"
-        uv run mkts-backend --market=${{ matrix.market }} $HISTORY_FLAG
+        echo "Running: uv run mkts-backend update-markets --market=${{ matrix.market }} $HISTORY_FLAG"
+        uv run mkts-backend update-markets --market=${{ matrix.market }} $HISTORY_FLAG
       timeout-minutes: 30
 
     - name: Save database cache

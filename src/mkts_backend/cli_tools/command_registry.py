@@ -514,11 +514,13 @@ def _register_all(reg: CommandRegistry) -> None:
 
     # ── update-markets ──────────────────────────────────────────
     def _handle_update_markets(args: list[str], market_alias: str) -> bool:
+        import sys
         from mkts_backend.cli_tools.arg_utils import ParsedArgs
         from mkts_backend.cli import run_market_update
 
-        p = ParsedArgs(args)
-        history = p.has_flag("history", "include-history")
+        # Honor --history regardless of flag position; market is already
+        # resolved from full argv by the dispatcher, so do the same here.
+        history = ParsedArgs(sys.argv[1:]).has_flag("history", "include-history")
         return run_market_update(history=history, market_alias=market_alias)
 
     reg.register(

@@ -89,9 +89,10 @@ class TestArgsParserRouting:
         """update-markets --history forwards history=True to run_market_update."""
         from mkts_backend.cli_tools.args_parser import parse_args
 
-        with pytest.raises(SystemExit) as exc_info:
-            parse_args(["update-markets", "--history"])
-        assert exc_info.value.code == 0
+        with patch("sys.argv", ["mkts-backend", "update-markets", "--history"]):
+            with pytest.raises(SystemExit) as exc_info:
+                parse_args(["update-markets", "--history"])
+            assert exc_info.value.code == 0
         _, kwargs = mock_run.call_args
         assert kwargs["history"] is True
 
@@ -104,6 +105,17 @@ class TestArgsParserRouting:
             parse_args(["update-markets"])
         _, kwargs = mock_run.call_args
         assert kwargs["market_alias"] == "both"
+
+    @patch("mkts_backend.cli.run_market_update", return_value=True)
+    def test_update_markets_history_before_subcommand(self, mock_run):
+        """--history before the subcommand must still be honored (position-agnostic)."""
+        from mkts_backend.cli_tools.args_parser import parse_args
+
+        with patch("sys.argv", ["mkts-backend", "--history", "update-markets"]):
+            with pytest.raises(SystemExit):
+                parse_args(["--history", "update-markets"])
+        _, kwargs = mock_run.call_args
+        assert kwargs["history"] is True
 
     @patch("mkts_backend.cli.run_market_update", return_value=True)
     def test_update_markets_honors_explicit_primary(self, mock_run):

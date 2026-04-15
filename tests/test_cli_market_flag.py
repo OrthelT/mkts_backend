@@ -153,8 +153,10 @@ class TestUpdateMarketsDispatch:
     def test_update_markets_with_history(self, mock_run):
         from mkts_backend.cli_tools.args_parser import parse_args
 
-        with pytest.raises(SystemExit):
-            parse_args(["update-markets", "--market=deployment", "--history"])
+        argv = ["mkts-backend", "update-markets", "--market=deployment", "--history"]
+        with patch("sys.argv", argv):
+            with pytest.raises(SystemExit):
+                parse_args(["update-markets", "--market=deployment", "--history"])
         _, kwargs = mock_run.call_args
         assert kwargs["market_alias"] == "deployment"
         assert kwargs["history"] is True

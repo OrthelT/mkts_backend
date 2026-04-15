@@ -221,10 +221,9 @@ def fill_nulls_from_history(stats: pd.DataFrame, market_ctx: Optional["MarketCon
     finally:
         session.close()
         engine.dispose()
-    # History fallback didn't cover every NaN (type_id has neither orders nor
-    # history). Fill per-column with the typed zero so numeric dtypes are
-    # preserved end-to-end — no silent object-dtype contamination of the
-    # price columns that feed frontend fit-cost calculations.
+    # Per-column typed fill — preserves numeric dtypes end-to-end so price
+    # columns never drift to object dtype (would silently corrupt frontend
+    # fit-cost arithmetic).
     numeric_fills: dict[str, tuple[str, float | int]] = {
         "min_price":           ("float64", 0.0),
         "avg_price":           ("float64", 0.0),
@@ -237,10 +236,14 @@ def fill_nulls_from_history(stats: pd.DataFrame, market_ctx: Optional["MarketCon
         if col in stats.columns:
             stats[col] = pd.to_numeric(stats[col], errors="raise").fillna(zero).astype(dtype)
 
-    if stats.isnull().sum().sum() == 0:
-        logger.info("No nulls found after filling")
-    else:
-        logger.error(f"stats has nulls after filling: {stats.isnull().sum().sum()}")
+    residual = stats.isnull().sum()
+    residual = residual[residual > 0]
+    if len(residual) > 0:
+        raise ValueError(
+            f"fill_nulls_from_history: residual nulls in columns not covered by "
+            f"typed fill: {residual.to_dict()}"
+        )
+    logger.info("No nulls found after filling")
     return stats
 
 def calculate_doctrine_stats(market_ctx: Optional["MarketContext"] = None) -> pd.DataFrame:

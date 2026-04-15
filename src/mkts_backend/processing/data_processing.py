@@ -42,7 +42,7 @@ def calculate_5_percentile_price(market_ctx: Optional["MarketContext"] = None) -
     logger.info(f"5 percentile price queried: {df.shape[0]} items")
     engine.dispose()
     df = df.groupby("type_id")["price"].quantile(0.05).reset_index()
-    df.price = df.price.apply(lambda x: round(x, 2))
+    df["price"] = df["price"].round(2)
     df.columns = ["type_id", "5_perc_price"]
     return df
 
@@ -106,16 +106,36 @@ def calculate_market_stats(market_ctx: Optional["MarketContext"] = None) -> pd.D
 
     df["last_update"] = pd.Timestamp.now(tz="UTC")
 
-    # Round numeric columns
-    df["days_remaining"] = df["days_remaining"].apply(lambda x: round(x, 1))
-    df["avg_price"] = df["avg_price"].apply(lambda x: round(x, 2) if pd.notnull(x) and x > 0 else 0)
-    df["avg_volume"] = df["avg_volume"].apply(lambda x: round(x, 1) if pd.notnull(x) and x > 0 else 0)
-    df["total_volume_remain"] = df["total_volume_remain"].fillna(0).astype(int)
-    df["days_remaining"] = df["days_remaining"].fillna(0)
+    # Round numeric columns with explicit dtype preservation.
+    # `.where(cond, 0.0)` substitutes the typed zero for NaN and non-positive
+    # values, avoiding the mixed int/float returns that used to produce
+    # object-dtype columns under apply lambdas.
+    df["days_remaining"] = df["days_remaining"].fillna(0).round(1).astype("float64")
+    df["avg_price"] = df["avg_price"].where(df["avg_price"] > 0, 0.0).round(2).astype("float64")
+    df["avg_volume"] = df["avg_volume"].where(df["avg_volume"] > 0, 0.0).round(1).astype("float64")
+    df["total_volume_remain"] = df["total_volume_remain"].fillna(0).astype("int64")
 
     # Ensure we have all required database columns
     db_cols = MarketStats.__table__.columns.keys()
     df = df[db_cols]
+
+    # Dtype contract: numeric columns that feed frontend fit-cost calculations
+    # must stay numeric. Fail loudly here rather than silently upserting an
+    # object-dtype column into the Float-typed marketstats table.
+    expected_dtypes = {
+        "min_price":           "float64",
+        "avg_price":           "float64",
+        "price":               "float64",
+        "avg_volume":          "float64",
+        "days_remaining":      "float64",
+        "total_volume_remain": "int64",
+    }
+    for col, expected in expected_dtypes.items():
+        if col in df.columns and str(df[col].dtype) != expected:
+            raise TypeError(
+                f"calculate_market_stats: column '{col}' has dtype "
+                f"{df[col].dtype}, expected {expected}"
+            )
 
     logger.info(f"Market stats calculated: {df.shape[0]} items")
     return df
@@ -201,13 +221,29 @@ def fill_nulls_from_history(stats: pd.DataFrame, market_ctx: Optional["MarketCon
     finally:
         session.close()
         engine.dispose()
-    if stats.isnull().sum().sum() > 0:
-        stats = stats.fillna(0)
+    # Per-column typed fill — preserves numeric dtypes end-to-end so price
+    # columns never drift to object dtype (would silently corrupt frontend
+    # fit-cost arithmetic).
+    numeric_fills: dict[str, tuple[str, float | int]] = {
+        "min_price":           ("float64", 0.0),
+        "avg_price":           ("float64", 0.0),
+        "price":               ("float64", 0.0),
+        "avg_volume":          ("float64", 0.0),
+        "total_volume_remain": ("int64",   0),
+        "days_remaining":      ("float64", 0.0),
+    }
+    for col, (dtype, zero) in numeric_fills.items():
+        if col in stats.columns:
+            stats[col] = pd.to_numeric(stats[col], errors="raise").fillna(zero).astype(dtype)
 
-    if stats.isnull().sum().sum() == 0:
-        logger.info("No nulls found after filling")
-    else:
-        logger.error(f"stats has nulls after filling: {stats.isnull().sum().sum()}")
+    residual = stats.isnull().sum()
+    residual = residual[residual > 0]
+    if len(residual) > 0:
+        raise ValueError(
+            f"fill_nulls_from_history: residual nulls in columns not covered by "
+            f"typed fill: {residual.to_dict()}"
+        )
+    logger.info("No nulls found after filling")
     return stats
 
 def calculate_doctrine_stats(market_ctx: Optional["MarketContext"] = None) -> pd.DataFrame:

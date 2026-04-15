@@ -161,6 +161,10 @@ def process_market_stats(market_ctx: Optional[MarketContext] = None):
         else:
             logger.error("Failed to calculate market stats")
             return False
+    except (TypeError, ValueError):
+        # Dtype-contract breach or non-coercible numeric — fail loudly rather
+        # than upserting corrupted data. See data_processing.calculate_market_stats.
+        raise
     except Exception as e:
         logger.error(f"Failed to calculate market stats: {e}")
         return False

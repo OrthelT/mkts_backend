@@ -69,6 +69,7 @@ class TestGlobalRegistry:
         expected = {
             "fit-check", "fit-update", "update-fit", "update-target",
             "assets", "equiv", "sync", "validate", "parse-items",
+            "update-builder-costs",
             "esi-auth", "add_watchlist", "list-fits", "needed", "module",
         }
         registered = {e.name for e in reg.all_commands()}
@@ -82,6 +83,8 @@ class TestGlobalRegistry:
         assert reg.resolve("lf").name == "list-fits"
         assert reg.resolve("add-watchlist") is not None
         assert reg.resolve("add-watchlist").name == "add_watchlist"
+        assert reg.resolve("builder-costs") is not None
+        assert reg.resolve("builder-costs").name == "update-builder-costs"
 
     def test_all_commands_have_handler_and_description(self):
         reg = get_registry()

@@ -127,6 +127,41 @@ class TestArgsParserRouting:
         _, kwargs = mock_run.call_args
         assert kwargs["market_alias"] == "primary"
 
+    @patch("mkts_backend.cli.process_builder_costs", return_value=True)
+    @patch("mkts_backend.cli.init_databases")
+    @patch("mkts_backend.config.market_context.MarketContext.from_settings")
+    @patch("mkts_backend.config.market_context.MarketContext.list_available")
+    def test_update_builder_costs_routes(
+        self,
+        mock_list_available,
+        mock_from_settings,
+        mock_init_dbs,
+        mock_process,
+    ):
+        from mkts_backend.cli_tools.args_parser import parse_args
+
+        primary_ctx = MagicMock(alias="primary")
+        deployment_ctx = MagicMock(alias="deployment")
+        mock_list_available.return_value = ["primary", "deployment"]
+        mock_from_settings.side_effect = [primary_ctx, deployment_ctx]
+
+        with pytest.raises(SystemExit) as exc_info:
+            parse_args(["update-builder-costs"])
+
+        assert exc_info.value.code == 0
+        mock_init_dbs.assert_called_once_with()
+        mock_process.assert_called_once_with(market_contexts=[primary_ctx, deployment_ctx])
+
+    def test_update_builder_costs_help_reaches_subcommand_help(self, capsys):
+        from mkts_backend.cli_tools.args_parser import parse_args
+
+        with pytest.raises(SystemExit) as exc_info:
+            parse_args(["update-builder-costs", "--help"])
+
+        assert exc_info.value.code == 0
+        captured = capsys.readouterr()
+        assert "update-builder-costs: Fetch EverRef manufacturing costs" in captured.out
+
     @patch(
         "mkts_backend.cli_tools.asset_check.asset_check_command", return_value=True
     )

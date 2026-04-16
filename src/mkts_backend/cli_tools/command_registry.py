@@ -16,7 +16,10 @@ Handlers return ``True`` on success, ``False`` on failure.  They should
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Callable
+from typing import Callable, TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from mkts_backend.utils.parse_fits import FitMetadata
 
 HandlerFn = Callable[[list[str], str], bool]
 
@@ -321,12 +324,14 @@ def _register_all(reg: CommandRegistry) -> None:
         dry_run = p.has_flag("dry-run")
 
         try:
+            metadata: FitMetadata | None = None
+            metadata_dict: dict[str, Any] | None = None
             if meta_file:
                 metadata = parse_fit_metadata(meta_file)
                 if fit_id is not None and metadata.fit_id != fit_id:
                     print(
-                        f"Warning: --fit-id={fit_id} overrides fit_id={
-                            metadata.fit_id} from metadata file"
+                        f"Warning: --fit-id={fit_id} overrides "
+                        f"fit_id={metadata.fit_id} from metadata file"
                     )
                     metadata_dict = {
                         "fit_id": fit_id,
@@ -337,8 +342,6 @@ def _register_all(reg: CommandRegistry) -> None:
                         else metadata.doctrine_id,
                         "target": metadata.target,
                     }
-                else:
-                    metadata_dict = None
             else:
                 from mkts_backend.cli_tools.fit_update import collect_fit_metadata_interactive
                 metadata_dict = collect_fit_metadata_interactive(fit_id, fit_file)
@@ -347,10 +350,13 @@ def _register_all(reg: CommandRegistry) -> None:
                 target_alias = MARKET_DB_MAP[target_market]
                 print(f"\n--- Processing for {target_market} market ({target_alias}) ---")
 
-                if metadata_dict:
+                if metadata_dict is not None:
                     from mkts_backend.utils.parse_fits import FitMetadata
                     metadata_obj = FitMetadata(**metadata_dict)
                 else:
+                    if metadata is None:
+                        print("Error: No fit metadata available for update-fit")
+                        return False
                     metadata_obj = metadata
 
                 result = update_fit_workflow(
@@ -540,6 +546,44 @@ def _register_all(reg: CommandRegistry) -> None:
         return all_valid
 
     reg.register("validate", _handle_validate, description="Validate the database sync status")
+
+    # ── update-builder-costs ───────────────────────────────────
+    def _handle_update_builder_costs(args: list[str], market_alias: str) -> bool:
+        from mkts_backend.cli_tools.arg_utils import ParsedArgs
+        from mkts_backend.config.market_context import MarketContext
+        from mkts_backend.cli import process_builder_costs, init_databases
+
+        p = ParsedArgs(args)
+        if p.has_help():
+            print(
+                "update-builder-costs: Fetch EverRef manufacturing costs for all watchlist items\n"
+                "Usage: mkts-backend update-builder-costs\n"
+                "Build costs are market-independent; written to all configured market DBs."
+            )
+            return True
+
+        init_databases()
+
+        all_ctxs = []
+        for alias in MarketContext.list_available():
+            try:
+                all_ctxs.append(MarketContext.from_settings(alias))
+            except (ValueError, KeyError):
+                pass
+
+        if not all_ctxs:
+            print("Error: No market contexts configured")
+            return False
+
+        return process_builder_costs(market_contexts=all_ctxs)
+
+    reg.register(
+        "update-builder-costs",
+        _handle_update_builder_costs,
+        aliases=["builder-costs", "ubc"],
+        description="Fetch EverRef manufacturing costs for watchlist items",
+        default_market="primary",
+    )
 
     # ── update-markets ──────────────────────────────────────────
     def _handle_update_markets(args: list[str], market_alias: str) -> bool:

@@ -182,7 +182,7 @@ class TestFetchHistory:
         with patch("mkts_backend.esi.esi_requests.ESIConfig") as MockESI:
             mock_esi = MagicMock()
             mock_esi.market_history_url = "https://esi.evetech.net/markets/10000003/history"
-            mock_esi.headers.return_value = {"Accept": "application/json", "Authorization": "Bearer test"}
+            mock_esi.headers = {"Accept": "application/json", "Authorization": "Bearer test"}
             MockESI.return_value = mock_esi
 
             with patch("mkts_backend.esi.esi_requests.requests.get", return_value=resp):
@@ -194,4 +194,63 @@ class TestFetchHistory:
         assert len(result) == 2
         # Each record should have type_name and type_id injected
         assert result[0]["type_name"] == "Tritanium"
+        assert result[0]["type_id"] == 34
+
+    def test_basic_fetch_creates_data_directory(self, tmp_path, monkeypatch):
+        """Successful history fetch should create data/ before writing market_history.json."""
+        watchlist = pd.DataFrame({
+            "type_id": [34],
+            "type_name": ["Tritanium"],
+        })
+        history_data = [
+            {"date": "2026-02-10", "average": 8.5, "volume": 2000},
+        ]
+        resp = _make_response(
+            json_data=history_data,
+            headers={"X-Esi-Error-Limit-Remain": "100"},
+        )
+
+        monkeypatch.chdir(tmp_path)
+
+        with patch("mkts_backend.esi.esi_requests.ESIConfig") as MockESI:
+            mock_esi = MagicMock()
+            mock_esi.market_history_url = "https://esi.evetech.net/markets/10000003/history"
+            mock_esi.headers = {"Accept": "application/json", "Authorization": "Bearer test"}
+            MockESI.return_value = mock_esi
+
+            with patch("mkts_backend.esi.esi_requests.requests.get", return_value=resp):
+                with patch("mkts_backend.esi.esi_requests.time.sleep"):
+                    from mkts_backend.esi.esi_requests import fetch_history
+                    result = fetch_history(watchlist)
+
+        assert result is not None
+        assert (tmp_path / "data" / "market_history.json").exists()
+
+    def test_basic_fetch_does_not_require_authenticated_headers(self):
+        """Public history fetch should use public headers and not touch the authenticated headers property."""
+        watchlist = pd.DataFrame({
+            "type_id": [34],
+            "type_name": ["Tritanium"],
+        })
+        resp = _make_response(
+            json_data=[{"date": "2026-02-10", "average": 8.5, "volume": 2000}],
+            headers={"X-Esi-Error-Limit-Remain": "100"},
+        )
+
+        class StubESI:
+            market_history_url = "https://esi.evetech.net/markets/10000003/history"
+            user_agent = "test-agent"
+            compatibility_date = "2020-01-01"
+
+            @property
+            def headers(self):
+                raise AssertionError("authenticated headers should not be used")
+
+        with patch("mkts_backend.esi.esi_requests.ESIConfig", return_value=StubESI()):
+            with patch("mkts_backend.esi.esi_requests.requests.get", return_value=resp):
+                with patch("mkts_backend.esi.esi_requests.time.sleep"):
+                    from mkts_backend.esi.esi_requests import fetch_history
+                    result = fetch_history(watchlist)
+
+        assert result is not None
         assert result[0]["type_id"] == 34

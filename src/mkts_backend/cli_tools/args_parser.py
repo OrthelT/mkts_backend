@@ -14,7 +14,13 @@ logger = configure_logging(__name__)
 _VALID_ENVIRONMENTS = ("production", "development")
 
 # Subcommands that have their own --help handling
-_SUBCOMMANDS_WITH_HELP = {"fit-check", "fit-update", "update-fit", "update-target"}
+_SUBCOMMANDS_WITH_HELP = {
+    "fit-check",
+    "fit-update",
+    "update-fit",
+    "update-target",
+    "update-builder-costs",
+}
 
 
 def parse_args(args: list[str]) -> dict | None:

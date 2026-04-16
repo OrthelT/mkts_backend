@@ -256,11 +256,13 @@ def update_fit_market_flag(
 
     engine.dispose()
 
+    db_label = f"{db_alias}({'remote' if remote else 'local'})"
     if rows_affected > 0:
-        logger.info(f"Updated market_flag to '{market_flag}' for fit_id {fit_id} ({rows_affected} rows)")
+        logger.info(f"[{db_label}] Updated market_flag to '{market_flag}' for fit_id {fit_id} ({rows_affected} rows)")
         return True
     else:
-        logger.warning(f"No rows found for fit_id {fit_id}")
+        doc_suffix = f" doctrine_id={doctrine_id}" if doctrine_id is not None else ""
+        logger.warning(f"[{db_label}] No doctrine_fits row for fit_id {fit_id}{doc_suffix} — provisioning may be needed")
         return False
 
 

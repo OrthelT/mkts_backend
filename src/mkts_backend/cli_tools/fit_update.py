@@ -759,8 +759,9 @@ def _needs_provisioning(
     db_alias: str,
     remote: bool = False,
     engine=None,
+    doctrine_id: int | None = None,
 ) -> bool:
-    """Return True if a fit is missing doctrines or ship_targets rows in a database."""
+    """Return True if a fit is missing doctrine_fits, doctrines, or ship_targets rows in a database."""
     if engine is None:
         db = DatabaseConfig(db_alias)
         _engine = db.remote_engine if remote else db.engine
@@ -768,6 +769,20 @@ def _needs_provisioning(
         _engine = engine
     try:
         with _engine.connect() as conn:
+            # Check doctrine_fits (the row update_fit_market_flag targets)
+            if doctrine_id is not None:
+                df = conn.execute(
+                    text(
+                        "SELECT 1 FROM doctrine_fits "
+                        "WHERE fit_id = :fit_id AND doctrine_id = :doctrine_id"
+                    ),
+                    {"fit_id": fit_id, "doctrine_id": doctrine_id},
+                ).fetchone()
+            else:
+                df = conn.execute(
+                    text("SELECT 1 FROM doctrine_fits WHERE fit_id = :fit_id"),
+                    {"fit_id": fit_id},
+                ).fetchone()
             doc_count = conn.execute(
                 text("SELECT COUNT(*) FROM doctrines WHERE fit_id = :fit_id"),
                 {"fit_id": fit_id},
@@ -776,7 +791,7 @@ def _needs_provisioning(
                 text("SELECT 1 FROM ship_targets WHERE fit_id = :fit_id"),
                 {"fit_id": fit_id},
             ).fetchone()
-        return doc_count == 0 or st is None
+        return df is None or doc_count == 0 or st is None
     finally:
         if engine is None:
             _engine.dispose()
@@ -1109,7 +1124,7 @@ def _execute_market_plan(
                     fit_id, new_flag, remote=False, db_alias=alias,
                     doctrine_id=row_doctrine_id,
                 )
-                if _needs_provisioning(fit_id, alias, remote=False):
+                if _needs_provisioning(fit_id, alias, remote=False, doctrine_id=row_doctrine_id):
                     _provision_market_db(p, alias, new_flag, remote=False)
                     console.print(f"  [green]Provisioned[/green] missing data for fit {fit_id} in {alias}")
 
@@ -1132,7 +1147,7 @@ def _execute_market_plan(
                                 fit_id, new_flag, remote=True, db_alias=target,
                                 doctrine_id=row_doctrine_id,
                             )
-                            if _needs_provisioning(fit_id, target, remote=True):
+                            if _needs_provisioning(fit_id, target, remote=True, doctrine_id=row_doctrine_id):
                                 _provision_market_db(p, target, new_flag, remote=True)
                                 console.print(f"  [green]Provisioned[/green] missing remote data for fit {fit_id} in {target}")
                         else:
@@ -1175,7 +1190,7 @@ def _execute_market_plan(
             non_target_aliases = {"wcmktprod", "wcmktnorth"} - target_aliases
             healed = False
             for alias in target_aliases:
-                if _needs_provisioning(fit_id, alias, remote=False):
+                if _needs_provisioning(fit_id, alias, remote=False, doctrine_id=row_doctrine_id):
                     _provision_market_db(p, alias, p["new_flag"], remote=False)
                     console.print(f"  [green]Provisioned[/green] missing data for fit {fit_id} in {alias}")
                     healed = True
@@ -1186,7 +1201,7 @@ def _execute_market_plan(
                             fit_id, p["new_flag"], remote=True, db_alias=alias,
                             doctrine_id=row_doctrine_id,
                         )
-                        if _needs_provisioning(fit_id, alias, remote=True):
+                        if _needs_provisioning(fit_id, alias, remote=True, doctrine_id=row_doctrine_id):
                             _provision_market_db(p, alias, p["new_flag"], remote=True)
                             console.print(f"  [green]Provisioned[/green] missing remote data for fit {fit_id} in {alias}")
                             healed = True

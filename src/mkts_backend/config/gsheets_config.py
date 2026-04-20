@@ -194,6 +194,65 @@ class GoogleSheetConfig:
         spreadsheet = self.get_spreadsheet(sheet_url)
         return spreadsheet.worksheets()
 
+    def get_worksheet_as_dataframe(
+        self,
+        sheet_url: Optional[str] = None,
+        worksheet_name: Optional[str] = None,
+        expected_headers: Optional[List[str]] = None,
+        unformatted: bool = True,
+    ) -> pd.DataFrame:
+        """Read a worksheet into a pandas DataFrame.
+
+        Row 1 is the header. Empty cells come back as ``""`` (not NaN).
+
+        Args:
+            sheet_url: Override the configured sheet URL.
+            worksheet_name: Worksheet title. If empty/None, uses the first sheet.
+            expected_headers: When given, ``gspread`` will only return columns
+                whose header matches one of these names. This lets us tolerate
+                sheets with extra or blank columns in row 1 (which would
+                otherwise trip ``get_all_records`` on duplicate "" headers).
+            unformatted: When True (default), returns the underlying numeric
+                values instead of formatted display strings. A cell formatted
+                as ``0.05%`` comes back as the float ``0.0005``. Integers
+                stay ints, text stays text. Set to False if you need the
+                display-formatted strings (e.g. pre-formatted ISK strings).
+        """
+        spreadsheet = self.get_spreadsheet(sheet_url)
+        if worksheet_name:
+            worksheet = spreadsheet.worksheet(worksheet_name)
+        else:
+            worksheet = spreadsheet.get_worksheet(0)
+
+        render_opts = {"value_render_option": "UNFORMATTED_VALUE"} if unformatted else {}
+
+        if expected_headers:
+            header_row = worksheet.row_values(1)
+            logger.info(
+                f"Worksheet '{worksheet.title}' raw header row ({len(header_row)} cols): {header_row}"
+            )
+            # Only pass the expected headers that actually appear in row 1.
+            # Validation of which of those are *required* is up to the caller.
+            present = [h for h in expected_headers if h in header_row]
+            if not present:
+                raise ValueError(
+                    f"Worksheet '{worksheet.title}' has none of the expected columns. "
+                    f"Expected any of: {expected_headers}. Actual headers: {header_row}"
+                )
+            rows = worksheet.get_all_records(
+                default_blank="",
+                expected_headers=present,
+                **render_opts,
+            )
+        else:
+            rows = worksheet.get_all_records(default_blank="", **render_opts)
+
+        logger.info(
+            f"Read {len(rows)} rows from worksheet '{worksheet.title}' "
+            f"in spreadsheet '{spreadsheet.title}'"
+        )
+        return pd.DataFrame(rows)
+
     # ---------- Update ops ----------
     def update_sheet(
         self,

@@ -1,7 +1,13 @@
 """SQLAlchemy ORM models for buildcost.db.
 
-Mirrors wcmkts_new/build_cost_models.py. Independent Base so these models
-can be used for targeted `create_all` calls without pulling in market models.
+Authoritative schema for the structures / rigs / industry_index tables.
+`STRUCTURE_COLUMNS` in ``build_cost_utils.py`` is derived from ``Structure``
+so column order stays in sync with this model.
+
+The deployed ``structures`` table uses a UNIQUE INDEX on ``structure_id``
+(added via non-destructive migration) rather than a PRIMARY KEY clause in
+CREATE TABLE. Functionally equivalent for SQLite: ``ON CONFLICT(structure_id)``
+works against either.
 """
 
 from sqlalchemy import Column, Float, Integer, String

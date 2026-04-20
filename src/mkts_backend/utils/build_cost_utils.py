@@ -25,15 +25,16 @@ from sqlalchemy import text
 from sqlalchemy.engine import Engine
 
 from mkts_backend.config.logging_config import configure_logging
+from mkts_backend.db.build_cost_models import Structure
 
 logger = configure_logging(__name__)
 
 
 # ── Constants ───────────────────────────────────────────────────
 
-# Map of EVE upwell-structure type names → type_ids. Values verified against
-# the current buildcost.db structures table. Extend here when new structure
-# types are added to the game.
+# Map of EVE upwell-structure type names → type_ids.
+# Verified against the EVE SDE (sdetypes) as of PR #26 (Apr 2026).
+# Cross-check with the SDE before adding new entries.
 STRUCTURE_TYPE_IDS: dict[str, int] = {
     "Raitaru": 35825,
     "Azbel": 35826,
@@ -42,21 +43,9 @@ STRUCTURE_TYPE_IDS: dict[str, int] = {
     "Tatara": 35836,
 }
 
-# Columns of the structures table, in the order used by the ORM model.
-STRUCTURE_COLUMNS: list[str] = [
-    "structure_id",
-    "system",
-    "structure",
-    "system_id",
-    "rig_1",
-    "rig_2",
-    "rig_3",
-    "structure_type",
-    "structure_type_id",
-    "tax",
-    "region",
-    "region_id",
-]
+# Columns of the structures table, derived from the ORM model so order stays
+# in sync with `build_cost_models.Structure`.
+STRUCTURE_COLUMNS: list[str] = [c.name for c in Structure.__table__.columns]
 
 # Columns that must come from the sheet — the rest can be enriched.
 REQUIRED_SHEET_COLUMNS: list[str] = [
@@ -444,33 +433,32 @@ def format_diff_for_display(diff: StructureDiff) -> str:
 def upsert_structures(engine: Engine, rows: pd.DataFrame) -> int:
     """Upsert ``rows`` into the ``structures`` table.
 
-    The production ``structures`` table has no PRIMARY KEY or UNIQUE constraint
-    on ``structure_id``, so SQLite's ``ON CONFLICT`` path is not usable. This
-    function does an explicit per-row check: UPDATE if a row with the same
-    ``structure_id`` already exists, otherwise INSERT. All writes happen in a
-    single transaction; any exception rolls back and is re-raised.
+    Uses SQLite's native ``INSERT ... ON CONFLICT(structure_id) DO UPDATE``.
+    The deployed ``structures`` table has a UNIQUE INDEX on ``structure_id``
+    (``ix_structures_structure_id``) which is what ON CONFLICT binds to.
+
+    All writes happen in a single transaction; any exception rolls back
+    and is re-raised. NaN values in optional columns (rig_1..rig_3, region)
+    are coerced to NULL before binding.
     """
     if rows.empty:
         return 0
 
     records: list[dict] = rows[STRUCTURE_COLUMNS].to_dict(orient="records")
     update_cols = [c for c in STRUCTURE_COLUMNS if c != "structure_id"]
-    update_set = ", ".join(f"{c} = :{c}" for c in update_cols)
+    update_set = ", ".join(f"{c} = excluded.{c}" for c in update_cols)
     insert_cols = ", ".join(STRUCTURE_COLUMNS)
     insert_params = ", ".join(f":{c}" for c in STRUCTURE_COLUMNS)
 
-    update_sql = text(f"UPDATE structures SET {update_set} WHERE structure_id = :structure_id")
-    insert_sql = text(f"INSERT INTO structures ({insert_cols}) VALUES ({insert_params})")
-    exists_sql = text("SELECT 1 FROM structures WHERE structure_id = :structure_id LIMIT 1")
+    upsert_sql = text(
+        f"INSERT INTO structures ({insert_cols}) VALUES ({insert_params}) "
+        f"ON CONFLICT(structure_id) DO UPDATE SET {update_set}"
+    )
 
     with engine.begin() as conn:
         for record in records:
             clean = {k: (None if isinstance(v, float) and pd.isna(v) else v) for k, v in record.items()}
-            exists = conn.execute(exists_sql, {"structure_id": clean["structure_id"]}).scalar()
-            if exists:
-                conn.execute(update_sql, clean)
-            else:
-                conn.execute(insert_sql, clean)
+            conn.execute(upsert_sql, clean)
     return len(records)
 
 

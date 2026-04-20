@@ -32,9 +32,9 @@ def buildcost_engine(tmp_path):
     db_path = tmp_path / "buildcost.db"
     engine = create_engine(f"sqlite:///{db_path}")
     with engine.begin() as conn:
-        # Matches production schema: no PRIMARY KEY / UNIQUE constraint on
-        # structure_id. Do not change this — the upsert logic must work
-        # against the real schema, which is permissive.
+        # Matches production schema (post-migration): no PRIMARY KEY in the
+        # table def, but a UNIQUE INDEX on structure_id (ix_structures_structure_id)
+        # which is what `INSERT ... ON CONFLICT(structure_id)` binds against.
         conn.execute(text("""
             CREATE TABLE structures(
                 structure TEXT,
@@ -49,6 +49,10 @@ def buildcost_engine(tmp_path):
                 system TEXT
             )
         """))
+        conn.execute(text(
+            "CREATE UNIQUE INDEX ix_structures_structure_id "
+            "ON structures(structure_id)"
+        ))
         conn.execute(text("""
             CREATE TABLE rigs(
                 type_id INTEGER PRIMARY KEY,
@@ -291,3 +295,208 @@ def test_upsert_is_idempotent(buildcost_engine):
     with buildcost_engine.connect() as conn:
         count = conn.execute(text("SELECT COUNT(*) FROM structures")).scalar()
     assert count == 3  # 2 seeded + 1 new
+
+
+def test_upsert_rolls_back_on_midbatch_failure(tmp_path):
+    """A failing row mid-batch must revert earlier rows in the same call."""
+    import numpy as np
+
+    db_path = tmp_path / "rollback.db"
+    engine = create_engine(f"sqlite:///{db_path}")
+    with engine.begin() as conn:
+        # CHECK constraint rejects structure_id 666 — we use this to force
+        # a failure on the second row while the first has already inserted.
+        conn.execute(text("""
+            CREATE TABLE structures(
+                structure TEXT,
+                rig_1 TEXT, rig_2 TEXT, rig_3 TEXT,
+                structure_type TEXT,
+                system_id BIGINT,
+                structure_id BIGINT CHECK (structure_id != 666),
+                structure_type_id BIGINT,
+                region_id BIGINT,
+                tax FLOAT,
+                region TEXT,
+                system TEXT
+            )
+        """))
+        conn.execute(text(
+            "CREATE UNIQUE INDEX ix_structures_structure_id ON structures(structure_id)"
+        ))
+
+    frame = pd.DataFrame([
+        {c: None for c in STRUCTURE_COLUMNS} | {
+            "structure_id": 1, "structure": "ok", "system": "s", "system_id": 10,
+            "structure_type": "Azbel", "structure_type_id": 35826, "tax": 0.01,
+            "region": "r", "region_id": 100,
+        },
+        {c: None for c in STRUCTURE_COLUMNS} | {
+            "structure_id": 666, "structure": "fails", "system": "s", "system_id": 10,
+            "structure_type": "Azbel", "structure_type_id": 35826, "tax": 0.01,
+            "region": "r", "region_id": 100,
+        },
+    ])
+
+    with pytest.raises(Exception):
+        upsert_structures(engine, frame)
+
+    # Rollback invariant: neither row should be present.
+    with engine.connect() as conn:
+        count = conn.execute(text("SELECT COUNT(*) FROM structures")).scalar()
+    assert count == 0, "first-row insert was not rolled back after second-row failure"
+
+
+def test_upsert_coerces_nan_to_null(buildcost_engine):
+    """NaN values (in optional columns like rig_1..3, region) become SQL NULL."""
+    import numpy as np
+
+    # Build a row directly (bypass enrichment) with NaN in rig/region columns.
+    row = {c: None for c in STRUCTURE_COLUMNS} | {
+        "structure_id": 2000000000001,
+        "structure": "NaN-test structure",
+        "system": "Jita",
+        "system_id": 30000142,
+        "rig_1": np.nan,
+        "rig_2": np.nan,
+        "rig_3": np.nan,
+        "structure_type": "Azbel",
+        "structure_type_id": 35826,
+        "tax": 0.01,
+        "region": np.nan,
+        "region_id": 10000002,
+    }
+    frame = pd.DataFrame([row])
+    upsert_structures(buildcost_engine, frame)
+
+    with buildcost_engine.connect() as conn:
+        result = conn.execute(text(
+            "SELECT rig_1, rig_2, rig_3, region FROM structures "
+            "WHERE structure_id = 2000000000001"
+        )).fetchone()
+    assert result == (None, None, None, None), (
+        f"NaN should be stored as SQL NULL, got {result!r}"
+    )
+
+
+# ── CLI handler ─────────────────────────────────────────────────
+
+
+@pytest.fixture
+def cli_env(monkeypatch, buildcost_engine, tmp_path):
+    """Wire the add_structure handler to use a test DB instead of Turso.
+
+    Monkeypatches DatabaseConfig inside the handler module so both
+    `engine` and `remote_engine` point at the same in-test SQLite DB.
+    Skips the `_ensure_buildcost_ready` bootstrap path entirely.
+    """
+    from mkts_backend.cli_tools import add_structure as mod
+
+    class _FakeDB:
+        def __init__(self, *_a, **_kw):
+            self.engine = buildcost_engine
+            self.remote_engine = buildcost_engine
+            self.path = str(tmp_path / "buildcost.db")
+            self.turso_url = "libsql://fake"
+            self.token = "fake-token"
+
+        def sync(self):
+            return None
+
+    monkeypatch.setattr(mod, "DatabaseConfig", _FakeDB)
+    monkeypatch.setattr(mod, "_ensure_buildcost_ready", lambda db: True)
+    return mod
+
+
+def _csv_for(tmp_path, rows: list[dict]) -> str:
+    path = tmp_path / "input.csv"
+    pd.DataFrame(rows).to_csv(path, index=False)
+    return str(path)
+
+
+def _sample_row(**overrides) -> dict:
+    row = {
+        "structure_id": 1040000000001,
+        "structure": "4-HWWF - CLI Test Azbel",
+        "system": "4-HWWF",
+        "structure_type": "Azbel",
+        "tax": 0.005,
+        "rig_1": "Standup M-Set Basic Medium Ship Manufacturing Material Efficiency I",
+        "rig_2": "",
+        "rig_3": "",
+    }
+    row.update(overrides)
+    return row
+
+
+def test_cli_rejects_local_plus_remote_only(cli_env, tmp_path):
+    csv = _csv_for(tmp_path, [_sample_row()])
+    result = cli_env.add_structure([f"--file={csv}", "--local", "--remote-only", "--yes"])
+    assert result is False
+
+
+def test_cli_dry_run_writes_nothing(cli_env, buildcost_engine, tmp_path):
+    csv = _csv_for(tmp_path, [_sample_row()])
+    before = _count_structures(buildcost_engine)
+    result = cli_env.add_structure([f"--file={csv}", "--dry-run", "--yes"])
+    after = _count_structures(buildcost_engine)
+    assert result is True
+    assert after == before, "--dry-run must not write"
+
+
+def test_cli_local_only_skips_remote(cli_env, buildcost_engine, tmp_path, monkeypatch):
+    """--local must not call upsert against remote_engine."""
+    from mkts_backend.cli_tools import add_structure as mod
+
+    called_engines: list[object] = []
+    real_upsert = mod.upsert_structures
+
+    def spy_upsert(engine, rows):
+        called_engines.append(engine)
+        return real_upsert(engine, rows)
+
+    monkeypatch.setattr(mod, "upsert_structures", spy_upsert)
+
+    csv = _csv_for(tmp_path, [_sample_row()])
+    result = cli_env.add_structure([f"--file={csv}", "--local", "--yes"])
+    assert result is True
+    assert len(called_engines) == 1, "--local must produce exactly one upsert call"
+
+
+def test_cli_partial_success_remote_ok_local_fails(cli_env, buildcost_engine, tmp_path, monkeypatch, capsys):
+    """When remote succeeds and local fails, handler returns False AND prints a WARNING."""
+    from mkts_backend.cli_tools import add_structure as mod
+
+    # The handler's write phase receives .remote_engine and .engine via the
+    # fake DB — enrichment needs a real engine on .engine, and we drive the
+    # pass/fail via a stubbed upsert_structures that counts calls.
+    def flaky_upsert(engine, rows):
+        flaky_upsert.calls += 1  # type: ignore[attr-defined]
+        if flaky_upsert.calls == 2:  # second call == local (remote goes first)
+            raise RuntimeError("simulated local failure")
+        return len(rows)
+    flaky_upsert.calls = 0  # type: ignore[attr-defined]
+
+    monkeypatch.setattr(mod, "upsert_structures", flaky_upsert)
+
+    csv = _csv_for(tmp_path, [_sample_row()])
+    result = cli_env.add_structure([f"--file={csv}", "--yes"])
+    out = capsys.readouterr().out
+    assert result is False
+    assert "WARNING" in out
+    assert "Turso remote was updated but local write failed" in out
+
+
+def test_cli_missing_sheet_url_errors(cli_env, monkeypatch, capsys):
+    """With no --file and no configured sheet_url, handler reports a clean error."""
+    from mkts_backend.cli_tools import add_structure as mod
+    monkeypatch.setattr(mod, "load_settings", lambda: {"buildcost": {}})
+
+    result = cli_env.add_structure(["--yes"])
+    out = capsys.readouterr().out
+    assert result is False
+    assert "no sheet URL configured" in out
+
+
+def _count_structures(engine) -> int:
+    with engine.connect() as conn:
+        return conn.execute(text("SELECT COUNT(*) FROM structures")).scalar() or 0

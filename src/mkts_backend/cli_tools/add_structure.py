@@ -12,7 +12,9 @@ Flags
 ``--worksheet=NAME``   Worksheet title (defaults to the first sheet).
 ``--file=PATH``        Read from a local CSV instead of Google Sheets (testing).
 ``--local``            Only update the local buildcost.db (skip Turso remote).
+                       Mutually exclusive with ``--remote-only``.
 ``--remote-only``      Only update the Turso remote (skip local mirror).
+                       Mutually exclusive with ``--local``.
 ``--dry-run``          Print the diff only, make no writes.
 ``--yes``              Skip the confirm prompt (for scripted use).
 """
@@ -87,7 +89,7 @@ def add_structure(args: list[str], market_alias: str = "primary") -> bool:
             source_df = read_structures_sheet(gs_config, sheet_url=sheet_url, worksheet_name=worksheet_name)
             source_label = f"sheet {sheet_url}" + (f" (worksheet: {worksheet_name})" if worksheet_name else "")
     except Exception as e:
-        logger.error(f"Failed to read source: {e}")
+        logger.exception("Failed to read source")
         print(f"Error reading source: {e}")
         return False
 
@@ -101,7 +103,8 @@ def add_structure(args: list[str], market_alias: str = "primary") -> bool:
 
     # Ensure the local DB is populated. SQLAlchemy's first connection creates
     # an empty 0-byte file, which would make later "no such table: rigs"
-    # errors look like code bugs. verify_db_exists triggers sync() when needed.
+    # errors look like code bugs. _ensure_buildcost_ready checks for the
+    # required tables directly and triggers sync() when they're missing.
     if not _ensure_buildcost_ready(local_db):
         return False
 
@@ -111,7 +114,7 @@ def add_structure(args: list[str], market_alias: str = "primary") -> bool:
         print(f"Error: {e}")
         return False
     except Exception as e:
-        logger.error(f"Enrichment failed: {e}")
+        logger.exception("Enrichment failed")
         print(f"Error during enrichment: {e}")
         return False
     print(f"Enriched {len(enriched_df)} rows")
@@ -138,29 +141,50 @@ def add_structure(args: list[str], market_alias: str = "primary") -> bool:
     rows_to_write = _concat_new_and_changed(diff)
 
     # ── 5. Write ───────────────────────────────────────────────
-    ok = True
+    # Track remote/local separately so we can tell the user exactly which
+    # side committed — otherwise a one-sided success (e.g. Turso wrote but
+    # local failed) looks like total failure from the exit code alone.
+    remote_attempted = not local_only
+    local_attempted = not remote_only
+    remote_ok: bool | None = None
+    local_ok: bool | None = None
 
-    if not local_only:
+    if remote_attempted:
         try:
             count = upsert_structures(local_db.remote_engine, rows_to_write)
             print(f"Remote (Turso): wrote {count} rows.")
             logger.info(f"Remote upsert complete: {count} rows; ids={list(rows_to_write['structure_id'])}")
+            remote_ok = True
         except Exception as e:
-            logger.error(f"Remote upsert failed: {e}")
+            logger.exception("Remote upsert failed")
             print(f"Error writing to Turso remote: {e}")
-            ok = False
+            remote_ok = False
 
-    if not remote_only:
+    if local_attempted:
         try:
             count = upsert_structures(local_db.engine, rows_to_write)
             print(f"Local ({local_db.path}): wrote {count} rows.")
             logger.info(f"Local upsert complete: {count} rows; ids={list(rows_to_write['structure_id'])}")
+            local_ok = True
         except Exception as e:
-            logger.error(f"Local upsert failed: {e}")
+            logger.exception("Local upsert failed")
             print(f"Error writing to local DB: {e}")
-            ok = False
+            local_ok = False
 
-    return ok
+    # Surface partial-success explicitly — the scariest outcome is a silent
+    # divergence between Turso and local.
+    if remote_ok is True and local_ok is False:
+        print(
+            "WARNING: Turso remote was updated but local write failed. "
+            "Re-run with --local after fixing the local issue to re-sync."
+        )
+    elif remote_ok is False and local_ok is True:
+        print(
+            "WARNING: local was updated but Turso remote write failed. "
+            "Re-run with --remote-only after fixing credentials/connectivity."
+        )
+
+    return (remote_ok is not False) and (local_ok is not False)
 
 
 def _concat_new_and_changed(diff):
@@ -196,6 +220,10 @@ def _ensure_buildcost_ready(db: DatabaseConfig) -> bool:
                 }
             return {"rigs", "structures"}.issubset(existing)
         except Exception:
+            # Log loudly — a connection failure here otherwise masquerades as
+            # "tables missing", leading to a confusing "synced but still
+            # missing tables" message that hides the real (DB-access) issue.
+            logger.exception("Failed to inspect buildcost.db for required tables")
             return False
 
     if _has_tables(db.engine):
@@ -225,7 +253,7 @@ def _ensure_buildcost_ready(db: DatabaseConfig) -> bool:
     try:
         db.sync()
     except Exception as e:
-        logger.error(f"buildcost sync failed: {e}")
+        logger.exception("buildcost sync failed")
         print(f"Error: buildcost sync failed: {e}")
         return False
 

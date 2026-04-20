@@ -48,6 +48,7 @@ class DatabaseConfig:
         _testing_db_alias: _testing_db_file,
         "sde": settings["db"]["shared"]["sde_file"],
         "fittings": settings["db"]["shared"]["fittings_file"],
+        "buildcost": settings["db"]["shared"]["buildcost_file"],
         _production_db_alias: _production_db_file,
         _deployment_db_alias: _deployment_db_file,
     }
@@ -57,6 +58,7 @@ class DatabaseConfig:
         _testing_db_alias + "_turso": os.getenv("TURSO_WCMKTTEST_URL"),
         "sde_turso": os.getenv("TURSO_SDE_URL"),
         "fittings_turso": os.getenv("TURSO_FITTING_URL"),
+        "buildcost_turso": os.getenv("TURSO_BUILDCOST_URL"),
         _deployment_db_alias + "_turso": os.getenv("TURSO_WCMKTNORTH_URL"),
     }
 
@@ -65,6 +67,7 @@ class DatabaseConfig:
         _testing_db_alias + "_turso": os.getenv("TURSO_WCMKTTEST_TOKEN"),
         "sde_turso": os.getenv("TURSO_SDE_TOKEN"),
         "fittings_turso": os.getenv("TURSO_FITTING_TOKEN"),
+        "buildcost_turso": os.getenv("TURSO_BUILDCOST_TOKEN"),
         _deployment_db_alias + "_turso": os.getenv("TURSO_WCMKTNORTH_TOKEN"),
     }
 

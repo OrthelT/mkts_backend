@@ -98,6 +98,8 @@ sde_file = "sdelite.db"
 fittings_alias = "fittings"
 fittings_file = "wcfitting.db"
 cli_cache_file = "cli_cache.db"  # Local-only cache for ESI assets (not synced to Turso)
+buildcost_alias = "buildcost"
+buildcost_file = "buildcost.db"
 
 # ============================================================================
 # GOOGLE SHEETS CONFIGURATION
@@ -110,6 +112,11 @@ enabled = true
 # Legacy URLs (prefer using market-specific URLs in [markets] sections)
 sheet_url = "https://docs.google.com/spreadsheets/d/1RmNJB9Yz4lG6kKKitGQ0zDuPbOiSe0ywn4SbSKabdwc/edit"
 sheet_url2 = "https://docs.google.com/spreadsheets/d/1sLr5VaUsHKfwZV_CA1K1o2bfywwzl4w-FGYWVnKmwKA/edit"
+
+# Source sheet for the `add_structure` CLI (imports rows into buildcost.db structures table).
+[buildcost]
+sheet_url = "https://docs.google.com/spreadsheets/d/1aFuInUsgvI1mb-nFNBSwRCGy9YqauykGRson3Eb0b5A/edit?gid=0#gid=0"
+default_worksheet = ""  # empty = first worksheet in the spreadsheet
 
 # ============================================================================
 # CHARACTERS - For Asset Checks

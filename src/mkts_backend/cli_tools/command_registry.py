@@ -595,6 +595,18 @@ def _register_all(reg: CommandRegistry) -> None:
         description="Add items to watchlist by type IDs",
     )
 
+    # ── add_structure ───────────────────────────────────────────
+    def _handle_add_structure(args: list[str], market_alias: str) -> bool:
+        from mkts_backend.cli_tools.add_structure import add_structure
+        return add_structure(args, market_alias=market_alias)
+
+    reg.register(
+        "add_structure",
+        _handle_add_structure,
+        aliases=["add-structure", "add_structures"],
+        description="Import structures from a Google Sheet into buildcost.db",
+    )
+
     # ── list-fits (fitcheck subcommand) ─────────────────────────
     def _handle_list_fits(args: list[str], market_alias: str) -> bool:
         from mkts_backend.cli_tools.fit_check import _handle_list_fits as _lf

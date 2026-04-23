@@ -160,7 +160,10 @@ def _register_all(reg: CommandRegistry) -> None:
     # ── fit-update ──────────────────────────────────────────────
     def _handle_fit_update(args: list[str], market_alias: str) -> bool:
         from mkts_backend.cli_tools.arg_utils import ParsedArgs, ArgError
-        from mkts_backend.cli_tools.market_args import MARKET_DB_MAP
+        from mkts_backend.cli_tools.market_args import (
+            MARKET_DB_MAP,
+            resolve_market_alias_interactive,
+        )
         from mkts_backend.cli_tools.fit_update import fit_update_command
 
         p = ParsedArgs(args)
@@ -184,7 +187,22 @@ def _register_all(reg: CommandRegistry) -> None:
             print("Use 'fit-update --help' for usage information.")
             return False
 
-        db_alias = p.get_string("db-alias", default=MARKET_DB_MAP.get(market_alias, "wcmkt"))
+        # Resolve the concrete DB alias to pass to single-DB subcommands.
+        # Subcommands that handle --market=both natively (assign-market,
+        # update-lead-ship, doctrine-add-fit, etc.) use market_alias directly,
+        # so db_alias is a sensible default for those that don't.
+        db_alias_override = p.get_string("db-alias")
+        if db_alias_override:
+            db_alias = db_alias_override
+        elif market_alias in MARKET_DB_MAP:
+            db_alias = MARKET_DB_MAP[market_alias]
+        else:
+            # Market alias covers multiple DBs (e.g. "both"). Prompt for a
+            # concrete pick rather than silently defaulting to the deprecated
+            # "wcmkt" alias. If the user re-picks "both" we default to primary
+            # as the backing DB; subcommands that support "both" use market_alias.
+            market_alias = resolve_market_alias_interactive(default="primary")
+            db_alias = MARKET_DB_MAP.get(market_alias, MARKET_DB_MAP["primary"])
         paste_mode = p.has_flag("paste")
         file_path = None if paste_mode else p.get_string("file", "fit-file")
         meta_file = p.get_string("meta-file")

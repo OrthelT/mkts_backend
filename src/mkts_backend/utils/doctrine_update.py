@@ -22,6 +22,20 @@ def _get_engine(db_alias: str, remote: bool = False):
     return cfg.remote_engine if remote else cfg.engine
 
 
+def _require_single_context(conn, engine) -> None:
+    """Reject callers that pass both a transactional ``conn`` and an ``engine``.
+
+    ``conn`` and ``engine`` are alternative transaction contexts — passing both
+    is always a caller bug (writes would land in whichever branch the helper
+    picks first), so surface it loudly instead of silently choosing one.
+    """
+    if conn is not None and engine is not None:
+        raise ValueError(
+            "Pass either conn= or engine=, not both. They are alternative "
+            "transaction contexts."
+        )
+
+
 doctrines_fields = ['id', 'fit_id', 'ship_id', 'ship_name', 'hulls', 'type_id', 'type_name', 'fit_qty', 'fits_on_mkt', 'total_stock', 'price', 'avg_vol', 'days', 'group_id', 'group_name', 'category_id', 'category_name', 'timestamp']
 
 doctrine_fit_id = 494
@@ -170,6 +184,7 @@ def upsert_doctrine_fits(
             the function participates in the caller's transaction and does
             NOT commit; caller's ``with engine.begin()`` commits on exit.
     """
+    _require_single_context(conn, engine)
     def _do(c):
         existing = c.execute(
             text("SELECT id FROM doctrine_fits WHERE fit_id = :fit_id AND doctrine_id = :doctrine_id"),
@@ -238,7 +253,9 @@ def update_fit_market_flag(
         fit_id: The fit ID to update
         market_flag: New market assignment ('primary', 'deployment', or 'both')
         remote: Whether to use remote database
-        db_alias: Database alias to use
+        db_alias: Database alias to use. When ``conn`` is passed without an
+            explicit ``db_alias``, log attribution uses ``[conn]`` to avoid
+            falsely claiming writes landed on the default catch-all.
         doctrine_id: If provided, only update the row for this doctrine
             (otherwise updates ALL doctrine_fits rows for the fit)
         engine: Optional shared engine (caller manages lifecycle)
@@ -248,6 +265,7 @@ def update_fit_market_flag(
     Returns:
         True if update succeeded, False if fit not found
     """
+    _require_single_context(conn, engine)
     if market_flag not in ("primary", "deployment", "both"):
         raise ValueError(f"Invalid market_flag: {market_flag}. Must be 'primary', 'deployment', or 'both'")
 
@@ -276,7 +294,13 @@ def update_fit_market_flag(
         if engine is None:
             _engine.dispose()
 
-    db_label = f"{db_alias}({'remote' if remote else 'local'})"
+    # When the caller supplied conn= but not an explicit db_alias, we don't
+    # actually know which DB the writes landed on — report [conn] instead of
+    # claiming "wcmkt(local)".
+    if conn is not None and (not db_alias or db_alias == "wcmkt"):
+        db_label = "[conn]"
+    else:
+        db_label = f"{db_alias}({'remote' if remote else 'local'})"
     if rows_affected > 0:
         logger.info(f"[{db_label}] Updated market_flag to '{market_flag}' for fit_id {fit_id} ({rows_affected} rows)")
         return True
@@ -339,6 +363,7 @@ def get_fit_target(fit_id: int, remote: bool = False, db_alias: str = "wcmkt") -
 
 
 def upsert_doctrine_map(doctrine_id: int, fit_id: int, remote: bool = False, db_alias: str = "wcmkt", engine=None, conn=None) -> None:
+    _require_single_context(conn, engine)
     def _do(c):
         exists = c.execute(
             text("SELECT 1 FROM doctrine_map WHERE doctrine_id = :doctrine_id AND fitting_id = :fit_id"),
@@ -380,9 +405,20 @@ def remove_doctrine_fits(
     """
     Remove a fit from the doctrine_fits table.
 
+    Args:
+        doctrine_id: The doctrine containing the fit
+        fit_id: The fit ID to remove
+        remote: Whether to use remote database
+        db_alias: Database alias to use
+        engine: Optional shared engine (caller manages lifecycle)
+        conn: Optional caller-owned transactional connection. When provided,
+            the function participates in the caller's transaction and does
+            NOT commit.
+
     Returns:
         True if a row was deleted, False if no matching row found
     """
+    _require_single_context(conn, engine)
     def _do(c):
         return c.execute(
             text("DELETE FROM doctrine_fits WHERE fit_id = :fit_id AND doctrine_id = :doctrine_id"),
@@ -416,7 +452,22 @@ def remove_doctrine_map(
     engine=None,
     conn=None,
 ) -> bool:
-    """Remove a fit-doctrine mapping from the doctrine_map table."""
+    """Remove a fit-doctrine mapping from the doctrine_map table.
+
+    Args:
+        doctrine_id: The doctrine to unmap from
+        fit_id: The fit ID to unmap
+        remote: Whether to use remote database
+        db_alias: Database alias to use
+        engine: Optional shared engine (caller manages lifecycle)
+        conn: Optional caller-owned transactional connection. When provided,
+            the function participates in the caller's transaction and does
+            NOT commit.
+
+    Returns:
+        True if a row was deleted, False if no matching row found
+    """
+    _require_single_context(conn, engine)
     def _do(c):
         return c.execute(
             text("DELETE FROM doctrine_map WHERE doctrine_id = :doctrine_id AND fitting_id = :fit_id"),
@@ -449,7 +500,21 @@ def remove_ship_target(
     engine=None,
     conn=None,
 ) -> bool:
-    """Remove the ship_targets row for a fit."""
+    """Remove the ship_targets row for a fit.
+
+    Args:
+        fit_id: The fit ID whose ship_targets row should be removed
+        remote: Whether to use remote database
+        db_alias: Database alias to use
+        engine: Optional shared engine (caller manages lifecycle)
+        conn: Optional caller-owned transactional connection. When provided,
+            the function participates in the caller's transaction and does
+            NOT commit.
+
+    Returns:
+        True if a row was deleted, False if no matching row found
+    """
+    _require_single_context(conn, engine)
     def _do(c):
         return c.execute(
             text("DELETE FROM ship_targets WHERE fit_id = :fit_id"),
@@ -542,7 +607,21 @@ def remove_doctrines_for_fit(
     engine=None,
     conn=None,
 ) -> int:
-    """Remove all doctrines table rows for a specific fit."""
+    """Remove all doctrines table rows for a specific fit.
+
+    Args:
+        fit_id: The fit ID whose doctrines rows should be removed
+        remote: Whether to use remote database
+        db_alias: Database alias to use
+        engine: Optional shared engine (caller manages lifecycle)
+        conn: Optional caller-owned transactional connection. When provided,
+            the function participates in the caller's transaction and does
+            NOT commit.
+
+    Returns:
+        Number of rows deleted
+    """
+    _require_single_context(conn, engine)
     def _do(c):
         return c.execute(
             text("DELETE FROM doctrines WHERE fit_id = :fit_id"),
@@ -587,7 +666,25 @@ class DoctrineComponent:
         self.timestamp = datetime.datetime.strftime(datetime.datetime.now(datetime.timezone.utc), '%Y-%m-%d %H:%M:%S')
 
 def upsert_ship_target(fit_id: int, fit_name: str, ship_id: int, ship_name: str, ship_target: int, remote: bool = False, db_alias: str = "wcmkt", engine=None, conn=None) -> bool:
-    """Upsert ship_targets entry keyed by fit_id."""
+    """Upsert ship_targets entry keyed by fit_id.
+
+    Args:
+        fit_id: Fit ID (primary key in ship_targets)
+        fit_name: Fit name
+        ship_id: Ship type ID
+        ship_name: Ship name
+        ship_target: Target quantity for the fit
+        remote: Whether to use remote database
+        db_alias: Database alias to use
+        engine: Optional shared engine (caller manages lifecycle)
+        conn: Optional caller-owned transactional connection. When provided,
+            the function participates in the caller's transaction and does
+            NOT commit.
+
+    Returns:
+        True (operation is always considered successful on no exception)
+    """
+    _require_single_context(conn, engine)
     created_at = datetime.datetime.strftime(datetime.datetime.now(datetime.timezone.utc), '%Y-%m-%d %H:%M:%S')
 
     def _do(c):
@@ -753,9 +850,22 @@ def upsert_lead_ship(
     The lead ship is the primary/representative ship for a doctrine,
     set to the first fit added.
 
+    Args:
+        doctrine_id: The doctrine to assign a lead ship to
+        doctrine_name: The doctrine's friendly name (copied into the row)
+        fit_id: The fit to adopt as lead ship
+        ship_type_id: The fit's ship type ID
+        remote: Whether to use remote database
+        db_alias: Database alias to use
+        engine: Optional shared engine (caller manages lifecycle)
+        conn: Optional caller-owned transactional connection. When provided,
+            the function participates in the caller's transaction and does
+            NOT commit. A no-op (when a row already exists) also skips commit.
+
     Returns:
         True if a row was inserted, False if one already exists
     """
+    _require_single_context(conn, engine)
     def _do(c) -> bool:
         if lead_ship_exists(doctrine_id, c):
             logger.info(f"lead_ships already has entry for doctrine_id {doctrine_id}, skipping")
@@ -805,9 +915,22 @@ def set_lead_ship(
     Unlike upsert_lead_ship (which only inserts if missing), this
     always overwrites an existing row.
 
+    Args:
+        doctrine_id: The doctrine whose lead ship is being set
+        doctrine_name: The doctrine's friendly name (copied into the row)
+        fit_id: The fit to make lead ship
+        ship_type_id: The fit's ship type ID
+        remote: Whether to use remote database
+        db_alias: Database alias to use
+        engine: Optional shared engine (caller manages lifecycle)
+        conn: Optional caller-owned transactional connection. When provided,
+            the function participates in the caller's transaction and does
+            NOT commit.
+
     Returns:
         True on success
     """
+    _require_single_context(conn, engine)
     def _do(c):
         c.execute(
             text("DELETE FROM lead_ships WHERE doctrine_id = :doctrine_id"),
@@ -941,6 +1064,7 @@ def refresh_doctrines_for_fit(fit_id: int, ship_id: int, ship_name: str, remote:
     When ``conn`` is provided, uses it for all reads/writes on the market DB
     (single transaction) and does not commit — caller's engine.begin() owns commit.
     """
+    _require_single_context(conn, engine)
     # Aggregate component quantities from fittings (separate DB; always own engine)
     fittings_engine = _get_engine("fittings", remote)
     try:

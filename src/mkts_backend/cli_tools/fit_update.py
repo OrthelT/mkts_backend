@@ -6,12 +6,16 @@ Interactive tools for managing fits and doctrines:
 - update: Update an existing fit's items from file or pasted text
 - remove: Completely remove a fit from all doctrines and targets
 - assign-market: Assign market flags to fits
+- unassign-market: Remove a fit from one or all markets
 - list-fits: List all fits
 - list-doctrines: List all doctrines
 - create-doctrine: Create a new doctrine
 - doctrine-add-fit: Add existing fit(s) to a doctrine
 - doctrine-remove-fit: Remove fit(s) from a doctrine
 - update-target: Update the target quantity for a fit
+- update-lead-ship: Set or change the lead ship for a doctrine
+- update-friendly-name: Update the friendly_name for a doctrine
+- populate-friendly-names: Bulk-populate friendly_names from a JSON map
 
 Supports --paste mode for pasting EFT text directly via multiline prompt
 instead of requiring a file path.
@@ -743,10 +747,13 @@ def assign_doctrine_market(
     # Execute — skip per-fit confirmation since we just confirmed the whole batch
     result = _execute_market_plan(all_plans, remote, db_alias)
 
-    console.print(
+    summary = (
         f"\n[bold]Summary:[/bold] {result['updated']} updated, "
         f"{result['skipped']} skipped"
     )
+    if result.get("step_failures"):
+        summary += f", [red]{result['step_failures']} step failures[/red]"
+    console.print(summary)
     return result["updated"] > 0
 
 
@@ -772,8 +779,10 @@ def _needs_provisioning(
 ) -> bool:
     """Return True if a fit is missing doctrine_fits, doctrines, ship_targets, or lead_ships rows.
 
-    The lead_ships check is keyed on doctrine_id (not fit_id). Callers that
-    do not pass doctrine_id will skip the lead_ships check — legacy behavior.
+    ``doctrine_id`` is required to evaluate the lead_ships check (lead_ships
+    is keyed on doctrine_id, not fit_id). If ``doctrine_id`` is None, the
+    lead_ships check is skipped and this function cannot detect a missing
+    lead_ships row. All in-tree callers in fit_update.py pass doctrine_id.
     """
     def _check(c) -> bool:
         if doctrine_id is not None:
@@ -1161,8 +1170,31 @@ def _cleanup_market_db(
         engine.dispose()
 
 
-def _apply_step(conn, step_type: str, p: dict, arg) -> bool:
+def _report_lead_ship(adopted: bool, fit_id: int, doctrine_id: int) -> None:
+    """Emit a user-visible message describing lead_ships outcome.
+
+    ``adopted=True`` means a new lead_ships row was inserted for the doctrine;
+    ``adopted=False`` means an existing row was preserved (e.g. set by a prior
+    ``update-lead-ship`` call) and this provisioning did not override it. Users
+    running ``doctrine-add-fit`` against a doctrine with an explicit lead ship
+    need this signal to understand why their new fit did not become lead.
+    """
+    if adopted:
+        console.print(
+            f"  [green]Adopted[/green] fit {fit_id} as lead ship for doctrine {doctrine_id}"
+        )
+    else:
+        console.print(
+            f"  [dim]Lead ship for doctrine {doctrine_id} already set — preserved[/dim]"
+        )
+
+
+def _apply_step(conn, step_type: str, p: dict, arg, alias: str = "") -> bool:
     """Apply one provisioning step within a caller-owned transaction.
+
+    ``alias`` is the canonical DB alias this transaction targets; forwarded to
+    helpers that use it solely for log attribution. Defaults to "" for callers
+    that cannot yet thread it — those will see the helper's own default log.
 
     Returns True when the step did meaningful work (used to decide whether a
     heal plan counted as "updated" vs "skipped").
@@ -1173,16 +1205,18 @@ def _apply_step(conn, step_type: str, p: dict, arg) -> bool:
     if step_type == "update_and_heal":
         new_flag = arg
         update_fit_market_flag(
-            fit_id, new_flag, doctrine_id=doctrine_id, conn=conn,
+            fit_id, new_flag, doctrine_id=doctrine_id, db_alias=alias, conn=conn,
         )
         if _needs_provisioning(fit_id, "", conn=conn, doctrine_id=doctrine_id):
-            _provision_fit_in_market(conn=conn, p=p, market_flag=new_flag)
+            adopted = _provision_fit_in_market(conn=conn, p=p, market_flag=new_flag)
             console.print(f"  [green]Provisioned[/green] missing data for fit {fit_id}")
+            _report_lead_ship(adopted, fit_id, doctrine_id)
             return True
         return False
 
     if step_type == "provision":
-        _provision_fit_in_market(conn=conn, p=p, market_flag=arg)
+        adopted = _provision_fit_in_market(conn=conn, p=p, market_flag=arg)
+        _report_lead_ship(adopted, fit_id, doctrine_id)
         return True
 
     if step_type == "cleanup":
@@ -1192,8 +1226,9 @@ def _apply_step(conn, step_type: str, p: dict, arg) -> bool:
     if step_type == "heal_if_needed":
         new_flag = arg
         if _needs_provisioning(fit_id, "", conn=conn, doctrine_id=doctrine_id):
-            _provision_fit_in_market(conn=conn, p=p, market_flag=new_flag)
+            adopted = _provision_fit_in_market(conn=conn, p=p, market_flag=new_flag)
             console.print(f"  [green]Provisioned[/green] missing data for fit {fit_id}")
+            _report_lead_ship(adopted, fit_id, doctrine_id)
             return True
         return False
 
@@ -1220,8 +1255,22 @@ def _execute_market_plan(
     Returns aggregate counts: ``{"updated": int, "deleted": int, "skipped": int}``.
     """
     configured_aliases = _configured_market_db_aliases()
+    if not configured_aliases:
+        console.print(
+            "[red]Error: no markets configured — aborting plan execution.[/red] "
+            "Check `settings.toml` for a `[market.*]` section."
+        )
+        logger.error("_execute_market_plan aborted: _configured_market_db_aliases() returned []")
+        return {"updated": 0, "deleted": 0, "skipped": len(plans), "step_failures": 0}
+
+    # Canonicalize the caller's db_alias so "remove" buckets key on the same
+    # alias that "update" buckets derive from _flag_to_aliases. Without this,
+    # `db_alias="wcmkt"` and `alias="wcmktprod"` would open two engines against
+    # the same physical DB and defeat the batching.
+    canonical_db_alias = DatabaseConfig(db_alias).alias
+
     buckets: dict[tuple[bool, str], list] = defaultdict(list)
-    counters = {"updated": 0, "deleted": 0, "skipped": 0}
+    counters = {"updated": 0, "deleted": 0, "skipped": 0, "step_failures": 0}
     deleted_fit_ids: set[int] = set()
     heal_worked: dict[int, bool] = {}
     plan_by_fit: dict[int, dict] = {}
@@ -1259,7 +1308,7 @@ def _execute_market_plan(
             )
 
         elif action == "remove":
-            buckets[(False, db_alias)].append(("remove_row", p, None))
+            buckets[(False, canonical_db_alias)].append(("remove_row", p, None))
             if remote:
                 for alias in configured_aliases:
                     buckets[(True, alias)].append(("remove_row", p, None))
@@ -1282,28 +1331,65 @@ def _execute_market_plan(
                 for alias in non_target:
                     buckets[(True, alias)].append(("cleanup", p, None))
 
-    # Phase 2: prepare watchlists (outside transactions, idempotent)
+    # Phase 2: prepare watchlists (outside transactions, idempotent).
+    # Per-(fit, alias) error handling so one unreachable remote does not abort
+    # the entire plan — the remainder of Phase 3/4 for other buckets still runs.
     watchlist_needs: set[tuple[int, str, bool]] = set()
     for (is_remote, alias), steps in buckets.items():
         for step_type, p, _ in steps:
             if step_type in ("provision", "heal_if_needed", "update_and_heal"):
                 watchlist_needs.add((p["fit_id"], alias, is_remote))
     for fit_id_w, alias_w, remote_w in watchlist_needs:
-        _prepare_watchlist_for_fit(plan_by_fit[fit_id_w], alias_w, remote_w)
+        w_loc = f"{alias_w} ({'remote' if remote_w else 'local'})"
+        try:
+            _prepare_watchlist_for_fit(plan_by_fit[fit_id_w], alias_w, remote_w)
+        except (OperationalError, DatabaseError, ConnectionError, TimeoutError) as e:
+            console.print(
+                f"[yellow]Watchlist prep skipped for fit {fit_id_w} on {w_loc}: {e}[/yellow]"
+            )
+        except Exception as e:
+            console.print(
+                f"[red]Watchlist prep failed for fit {fit_id_w} on {w_loc}: {e}[/red]"
+            )
+            logger.exception("Unexpected error preparing watchlist for fit %s on %s", fit_id_w, w_loc)
 
-    # Phase 3: execute each bucket in a single transaction
+    # Phase 3: execute each bucket in a single transaction.
+    # Per-step try/except so a bad SDE lookup in one fit does not take down
+    # the other fits in the same bucket; DB errors (which the transaction must
+    # roll back as a whole) are caught at the outer level with the fit_id of
+    # the last-attempted step for diagnostics.
     for (is_remote, alias), steps in buckets.items():
         db = DatabaseConfig(alias)
         engine = db.remote_engine if is_remote else db.engine
         loc = f"{alias} ({'remote' if is_remote else 'local'})"
+        current_fit_id: int | None = None
         try:
             with engine.begin() as conn:
                 for step_type, p, arg in steps:
-                    did_work = _apply_step(conn, step_type, p, arg)
+                    current_fit_id = p["fit_id"]
+                    try:
+                        did_work = _apply_step(conn, step_type, p, arg, alias=alias)
+                    except (OperationalError, DatabaseError, ConnectionError, TimeoutError):
+                        # DB errors must abort the transaction — re-raise to
+                        # the outer handler which rolls the whole bucket back.
+                        raise
+                    except Exception as step_err:
+                        console.print(
+                            f"[red]Step {step_type} failed for fit {current_fit_id} on {loc}: "
+                            f"{step_err}[/red] (bucket continues)"
+                        )
+                        logger.exception(
+                            "Non-DB error in %s for fit %s on %s",
+                            step_type, current_fit_id, loc,
+                        )
+                        counters["step_failures"] += 1
+                        continue
                     if p["action"] == "heal" and did_work:
                         heal_worked[id(p)] = True
         except (OperationalError, DatabaseError, ConnectionError, TimeoutError) as e:
-            console.print(f"[yellow]Skipped {loc}: {e}[/yellow]")
+            console.print(
+                f"[yellow]Skipped {loc} (rolled back at fit {current_fit_id}): {e}[/yellow]"
+            )
         finally:
             engine.dispose()
 
@@ -1323,18 +1409,27 @@ def _execute_market_plan(
             db = DatabaseConfig(alias)
             engine = db.remote_engine if is_remote else db.engine
             loc = f"{alias} ({'remote' if is_remote else 'local'})"
+            current_fit_id = None
             try:
                 with engine.begin() as conn:
                     for fid in deleted_fit_ids:
+                        current_fit_id = fid
                         if _check_fit_orphaned(fid, conn=conn):
                             removed = remove_doctrines_for_fit(fid, conn=conn)
-                            remove_ship_target(fid, conn=conn)
+                            st_removed = remove_ship_target(fid, conn=conn)
                             if removed:
                                 console.print(
                                     f"  [dim]Cleaned up {removed} orphaned doctrines rows for fit {fid} on {loc}[/dim]"
                                 )
+                            if st_removed:
+                                console.print(
+                                    f"  [dim]Cleaned up ship_targets for fit {fid} on {loc}[/dim]"
+                                )
             except (OperationalError, DatabaseError, ConnectionError, TimeoutError) as e:
-                console.print(f"[yellow]Orphan cleanup skipped for {loc}: {e}[/yellow]")
+                console.print(
+                    f"[yellow]Orphan cleanup skipped for {loc} "
+                    f"(rolled back at fit {current_fit_id}): {e}[/yellow]"
+                )
             finally:
                 engine.dispose()
 
@@ -1492,10 +1587,13 @@ def unassign_doctrine_market(
     # Execute — skip per-fit confirmation since we just confirmed the whole batch
     result = _execute_market_plan(all_plans, remote, db_alias)
 
-    console.print(
+    summary = (
         f"\n[bold]Summary:[/bold] {result['updated']} updated, "
         f"{result['deleted']} removed, {result['skipped']} skipped"
     )
+    if result.get("step_failures"):
+        summary += f", [red]{result['step_failures']} step failures[/red]"
+    console.print(summary)
     return result["updated"] > 0 or result["deleted"] > 0
 
 
@@ -2053,9 +2151,11 @@ def doctrine_add_fit_command(
         db = DatabaseConfig(alias)
         engine = db.remote_engine if remote else db.engine
         loc = f"{alias} ({'remote' if remote else 'local'})"
+        current_fit_id: int | None = None
         try:
             with engine.begin() as conn:
                 for _, doctrine_fit, fit_target in prepared:
+                    current_fit_id = doctrine_fit.fit_id
                     p = {
                         "fit_id": doctrine_fit.fit_id,
                         "fit_name": doctrine_fit.fit_name,
@@ -2065,11 +2165,15 @@ def doctrine_add_fit_command(
                         "doctrine_name": doctrine_fit.doctrine_name,
                         "target": fit_target,
                     }
-                    _provision_fit_in_market(conn=conn, p=p, market_flag=market_flag)
+                    adopted = _provision_fit_in_market(conn=conn, p=p, market_flag=market_flag)
+                    _report_lead_ship(adopted, doctrine_fit.fit_id, doctrine_fit.doctrine_id)
             for _, doctrine_fit, _ in prepared:
                 fit_alias_success[doctrine_fit.fit_id] += 1
         except (OperationalError, DatabaseError, ConnectionError, TimeoutError) as e:
-            console.print(f"[yellow]Bucket {loc} failed: {e}[/yellow]")
+            console.print(
+                f"[yellow]Bucket {loc} failed "
+                f"(rolled back at fit {current_fit_id}): {e}[/yellow]"
+            )
             logger.exception(f"Error provisioning {alias} for doctrine {doctrine_id}")
         finally:
             engine.dispose()
@@ -2750,8 +2854,8 @@ def update_friendly_name_command(
         console.print(f"[red]No rows found for doctrine_id {doctrine_id}[/red]")
         return False
 
-    # Push to both remotes
-    for target in ("wcmkt", "wcmktnorth"):
+    # Push to every configured market's remote
+    for target in _configured_market_db_aliases():
         try:
             ensure_friendly_name_column(db_alias=target, remote=True)
             remote_ok = update_doctrine_friendly_name(doctrine_id, friendly_name, db_alias=target, remote=True)
@@ -2780,8 +2884,8 @@ def populate_friendly_names_command(
     count = populate_friendly_names_from_json(json_path, db_alias=db_alias, remote=False)
     console.print(f"[green]Updated {count} rows locally ({db_alias})[/green]")
 
-    # Sync local → both remotes (doctrine_fits should be identical on both)
-    for target in ("wcmkt", "wcmktnorth"):
+    # Sync local → every configured market's remote (doctrine_fits identical across)
+    for target in _configured_market_db_aliases():
         ok = sync_friendly_names_to_remote(source_alias=db_alias, target_alias=target)
         if ok:
             console.print(f"[green]Synced friendly_names to remote ({target})[/green]")

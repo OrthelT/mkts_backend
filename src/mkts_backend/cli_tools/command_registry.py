@@ -159,6 +159,7 @@ def _register_all(reg: CommandRegistry) -> None:
 
     # ── fit-update ──────────────────────────────────────────────
     def _handle_fit_update(args: list[str], market_alias: str) -> bool:
+        import sys
         from mkts_backend.cli_tools.arg_utils import ParsedArgs, ArgError
         from mkts_backend.cli_tools.market_args import (
             MARKET_DB_MAP,
@@ -166,6 +167,9 @@ def _register_all(reg: CommandRegistry) -> None:
             resolve_market_alias_interactive,
         )
         from mkts_backend.cli_tools.fit_update import fit_update_command
+        from mkts_backend.config.logging_config import configure_logging
+
+        logger = configure_logging(__name__)
 
         p = ParsedArgs(args)
 
@@ -188,19 +192,29 @@ def _register_all(reg: CommandRegistry) -> None:
             print("Use 'fit-update --help' for usage information.")
             return False
 
-        # Resolve the concrete DB alias.
-        # Priority: explicit --db-alias > unambiguous --market > interactive prompt.
-        # We prompt whenever we'd otherwise silently pick a backing DB:
-        #   - no --market flag (unspecified)
-        #   - --market=both (doesn't map to a single DB)
-        # Explicit --market=primary / --market=deployment pass through.
+        # Resolve the effective market_alias and its single-DB fallback.
+        # Priority: explicit --db-alias > explicit --market (incl. "both") > prompt/default.
+        # Explicit --market=both is preserved as-is; subcommands that iterate
+        # markets use _configured_market_db_aliases(market_flag) and need "both"
+        # intact. db_alias is only the single-DB fallback for subcommands that
+        # require one concrete DB.
         db_alias_override = p.get_string("db-alias")
         if db_alias_override:
             db_alias = db_alias_override
         else:
             explicit_market = resolve_market_alias(args)
-            if explicit_market is None or explicit_market not in MARKET_DB_MAP:
-                market_alias = resolve_market_alias_interactive(default="primary")
+            if explicit_market is None:
+                if sys.stdin.isatty():
+                    market_alias = resolve_market_alias_interactive(default="primary")
+                else:
+                    logger.warning(
+                        "fit-update: no --market specified in non-TTY context; "
+                        "defaulting to 'primary'. Pass --market=primary/deployment/both "
+                        "explicitly to silence this warning."
+                    )
+                    market_alias = "primary"
+            else:
+                market_alias = explicit_market
             db_alias = MARKET_DB_MAP.get(market_alias, MARKET_DB_MAP["primary"])
         paste_mode = p.has_flag("paste")
         file_path = None if paste_mode else p.get_string("file", "fit-file")

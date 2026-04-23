@@ -162,6 +162,7 @@ def _register_all(reg: CommandRegistry) -> None:
         from mkts_backend.cli_tools.arg_utils import ParsedArgs, ArgError
         from mkts_backend.cli_tools.market_args import (
             MARKET_DB_MAP,
+            resolve_market_alias,
             resolve_market_alias_interactive,
         )
         from mkts_backend.cli_tools.fit_update import fit_update_command
@@ -187,21 +188,19 @@ def _register_all(reg: CommandRegistry) -> None:
             print("Use 'fit-update --help' for usage information.")
             return False
 
-        # Resolve the concrete DB alias to pass to single-DB subcommands.
-        # Subcommands that handle --market=both natively (assign-market,
-        # update-lead-ship, doctrine-add-fit, etc.) use market_alias directly,
-        # so db_alias is a sensible default for those that don't.
+        # Resolve the concrete DB alias.
+        # Priority: explicit --db-alias > unambiguous --market > interactive prompt.
+        # We prompt whenever we'd otherwise silently pick a backing DB:
+        #   - no --market flag (unspecified)
+        #   - --market=both (doesn't map to a single DB)
+        # Explicit --market=primary / --market=deployment pass through.
         db_alias_override = p.get_string("db-alias")
         if db_alias_override:
             db_alias = db_alias_override
-        elif market_alias in MARKET_DB_MAP:
-            db_alias = MARKET_DB_MAP[market_alias]
         else:
-            # Market alias covers multiple DBs (e.g. "both"). Prompt for a
-            # concrete pick rather than silently defaulting to the deprecated
-            # "wcmkt" alias. If the user re-picks "both" we default to primary
-            # as the backing DB; subcommands that support "both" use market_alias.
-            market_alias = resolve_market_alias_interactive(default="primary")
+            explicit_market = resolve_market_alias(args)
+            if explicit_market is None or explicit_market not in MARKET_DB_MAP:
+                market_alias = resolve_market_alias_interactive(default="primary")
             db_alias = MARKET_DB_MAP.get(market_alias, MARKET_DB_MAP["primary"])
         paste_mode = p.has_flag("paste")
         file_path = None if paste_mode else p.get_string("file", "fit-file")

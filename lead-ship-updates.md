@@ -1,11 +1,12 @@
 WCMKTnorth2
-DOCTRINE ID     DOCTRINE NAME            FRIENDLY NAME
-99              Special Fits             Special Fits
-100             cynos                    Cynos
-95              SUBS - WC Maelstroms     Maelstroms
-98              SUBS - WC-EN Muninn      Muninn
-97              SUBS - WC-EN Ferox       Ferox
-SELECT doctrine_id, fit_id, ship_name FROM doctrine_fits WHERE doctrine_id in (99,100,95,98,97);
+99 -> 991 both 
+100 -> 158 both
+95 -> 550 deployment
+98 -> 554 deployment
+97 -> 553 deployment
+44 -> 288 primary
+
+
 
 ┌─────────────┬────────┬────────────┐
 │ doctrine_id │ fit_id │ ship_name  │

@@ -44,10 +44,10 @@ market_data = "market_data_4h"
 doctrines = "doctrines_mkt_4H"
 
 [markets.deployment]
-name = "B-9C24 Keepstar"
-region_id = 10000023          # Pure Blind
-system_id = 30002029
-structure_id = 1046831245129
+name = "4-HWWF Sotiyo"
+region_id = 10000003
+system_id = 30000240
+structure_id = 1035603743755
 database_alias = "wcmktnorth"
 database_file = "wcmktnorth2.db"
 turso_url_env = "TURSO_WCMKTNORTH_URL"
@@ -67,13 +67,13 @@ doctrines = "doctrines_mkt_b9"
 
 [market_data]
 primary_region_id = 10000003
-deployment_region_id = 10000023
+deployment_region_id = 10000003
 primary_system_id = 30000240
-deployment_system_id = 30002029
+deployment_system_id = 30000240
 primary_structure_id = 1035466617946
-deployment_structure_id = 1046831245129
+deployment_structure_id = 1035603743755
 primary_market_name = "4-HWWF Keepstar"
-deployment_market_name = "B-9C24 Keepstar"
+deployment_market_name = "4-HWWF Sotiyo"
 
 # ============================================================================
 # SHARED DATABASE CONFIGURATION
@@ -108,7 +108,7 @@ buildcost_file = "buildcost.db"
 # These settings are for global Google Sheets configuration.
 
 [google_sheets]
-enabled = true
+enabled = false
 # Legacy URLs (prefer using market-specific URLs in [markets] sections)
 sheet_url = "https://docs.google.com/spreadsheets/d/1RmNJB9Yz4lG6kKKitGQ0zDuPbOiSe0ywn4SbSKabdwc/edit"
 sheet_url2 = "https://docs.google.com/spreadsheets/d/1sLr5VaUsHKfwZV_CA1K1o2bfywwzl4w-FGYWVnKmwKA/edit"

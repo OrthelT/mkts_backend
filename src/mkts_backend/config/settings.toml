@@ -26,10 +26,10 @@ log_level = "INFO" # INFO or DEBUG
 default = "primary"
 
 [markets.primary]
-name = "4-HWWF Keepstar"
+name = "4-HWWF New Keepstar"
 region_id = 10000003          # Vale of Silent
 system_id = 30000240
-structure_id = 1035466617946
+structure_id = 1053654548169
 database_alias = "wcmktprod"
 database_file = "wcmktprod.db"
 turso_url_env = "TURSO_WCMKTPROD_URL"
@@ -70,9 +70,9 @@ primary_region_id = 10000003
 deployment_region_id = 10000003
 primary_system_id = 30000240
 deployment_system_id = 30000240
-primary_structure_id = 1035466617946
+primary_structure_id = 1053654548169
 deployment_structure_id = 1035603743755
-primary_market_name = "4-HWWF Keepstar"
+primary_market_name = "4-HWWF New Keepstar"
 deployment_market_name = "4-HWWF Sotiyo"
 
 # ============================================================================

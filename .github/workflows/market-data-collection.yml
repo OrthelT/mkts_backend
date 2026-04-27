@@ -170,7 +170,7 @@ jobs:
 
     - name: Save database cache
       uses: actions/cache/save@v4
-      if: always()
+      if: success()
       with:
         path: |
           sdelite.db

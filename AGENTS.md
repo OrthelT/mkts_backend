@@ -737,6 +737,20 @@ To track multiple markets simultaneously:
 - Verify region_id is correct
 - Check ESI API status: https://esi.evetech.net/status.json
 
+### GitHub Actions Cache Issues
+
+**Problem**: Scheduled `Market Data Collection` runs fail because a cached DB (e.g., `wcmktnorth2.db`) has drifted out of sync with Turso cloud.
+**Solution**: Wipe the cached DB bundle for the affected market matrix leg. The cache is an immutable bundle keyed per matrix leg (`turso-dbs-v2-<primary|deployment>-<run_id>`), so individual files cannot be removed — the whole entry must be deleted, after which the next run cold-starts and re-pulls from Turso.
+
+```bash
+# Requires `gh` authenticated against the repo
+scripts/wipe_gha_db_cache.sh deployment   # wipe wcmktnorth2 leg only
+scripts/wipe_gha_db_cache.sh primary      # wipe wcmktprod leg only
+scripts/wipe_gha_db_cache.sh both         # wipe both
+```
+
+The cache-save step in `.github/workflows/market-data-collection.yml` is gated on `if: success()`, so a failed run cannot poison the cache for the next run. Env overrides for the script: `GHA_CACHE_REF` (default `refs/heads/main`), `GHA_CACHE_PREFIX` (default `turso-dbs-v2`).
+
 ## Agent Workflow for User Support
 
 When helping a user implement this system:

@@ -17,7 +17,7 @@ import sys
 
 from sqlalchemy import text
 
-from mkts_backend.config.config import DatabaseConfig
+from mkts_backend.config.db_config import DatabaseConfig
 
 MARKETS = ("wcmktprod", "wcmktnorth")
 

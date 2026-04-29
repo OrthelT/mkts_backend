@@ -2,7 +2,7 @@ import csv
 import re
 from sqlalchemy import text
 from mkts_backend.config.logging_config import configure_logging
-from mkts_backend.config.config import DatabaseConfig
+from mkts_backend.config.db_config import DatabaseConfig
 from mkts_backend.utils.utils import init_databases
 
 logger = configure_logging(__name__)

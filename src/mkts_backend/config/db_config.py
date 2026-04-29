@@ -1,41 +1,27 @@
 import os
 from sqlalchemy import create_engine, text
 import pandas as pd
-import pathlib
 from typing import Optional, TYPE_CHECKING
-
-#os.environ.setdefault("RUST_LOG", "debug")
 
 import libsql
 from dotenv import load_dotenv
 from mkts_backend.config.logging_config import configure_logging
-from datetime import datetime, timezone
+from mkts_backend.config.settings_service import SettingsService
+from datetime import datetime
 from time import perf_counter
 import json
 from pathlib import Path
-import tomllib
 
 if TYPE_CHECKING:
     from mkts_backend.config.market_context import MarketContext
 
 load_dotenv()
-settings_file = "src/mkts_backend/config/settings.toml"
 
 logger = configure_logging(__name__)
 
-def load_settings(file_path: str = settings_file):
-    with open(file_path, "rb") as f:
-        settings = tomllib.load(f)
-        logger.debug(f"Settings loaded from {file_path}")
-    # Allow environment variable to override app.environment for temporary switching
-    env_override = os.environ.get("MKTS_ENVIRONMENT")
-    if env_override and "app" in settings:
-        logger.info(f"Environment overridden by MKTS_ENVIRONMENT: {env_override}")
-        settings["app"] = {**settings["app"], "environment": env_override}
-    return settings
 
 class DatabaseConfig:
-    settings = load_settings()
+    settings = SettingsService().settings_dict
     _production_db_alias = settings["db"]["production_database_alias"]
     _production_db_file = settings["db"]["production_database_file"]
     _testing_db_alias = settings["db"]["testing_database_alias"]

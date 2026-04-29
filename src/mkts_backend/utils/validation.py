@@ -180,7 +180,7 @@ def validate_all() -> Dict:
 
 def validate_db_credentials():
     """Legacy function - kept for backward compatibility."""
-    from mkts_backend.config.config import DatabaseConfig
+    from mkts_backend.config.db_config import DatabaseConfig
     db = DatabaseConfig("wcmkt")
     credentials = db.get_db_credentials_dicts()
     return credentials

@@ -123,6 +123,16 @@ sheet_url = "https://docs.google.com/spreadsheets/d/1aFuInUsgvI1mb-nFNBSwRCGy9Yq
 default_worksheet = ""  # empty = first worksheet in the spreadsheet
 
 # ============================================================================
+# UPDATE BEHAVIOR
+# ============================================================================
+# Tables listed here are fully wiped and re-inserted on each upsert run,
+# rather than incrementally upserted. Useful when stale rows must disappear
+# (e.g., resetting deployment history when switching regions).
+
+[wipe_replace]
+tables = ["marketstats", "doctrines", "jita_prices"]
+
+# ============================================================================
 # CHARACTERS - For Asset Checks
 # ============================================================================
 

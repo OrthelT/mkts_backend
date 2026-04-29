@@ -1,5 +1,5 @@
 from mkts_backend.config.market_context import MarketContext
-from mkts_backend.config.config import DatabaseConfig
+from mkts_backend.config.db_config import DatabaseConfig
 from sqlalchemy import text
 
 def check_tables(market_alias: str = "primary"):

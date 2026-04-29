@@ -4,7 +4,6 @@ from logging import StreamHandler
 import sys
 import os
 from typing import Optional, Dict
-import tomllib
 
 try:
     import colorlog
@@ -23,24 +22,14 @@ def _find_project_root(start_dir: str) -> str:
         cur = parent
     return os.path.abspath(os.path.join(start_dir, "..", "..", "..", ".."))
 
-def _default_settings_file() -> str:
-    project_root = _find_project_root(os.path.dirname(__file__))
-    return os.path.join(project_root, "config", "settings.toml")
-
-def log_level_from_settings(file_path: Optional[str] = None):
-    if file_path is None:
-        file_path = _default_settings_file()
+def _resolve_log_level() -> int:
     try:
-        with open(file_path, "rb") as f:
-            settings = tomllib.load(f)
-        settings_level = settings["app"]["log_level"]
-        if settings_level:
-            return logging.getLevelName(settings_level)
-    except (FileNotFoundError, KeyError):
-        pass
-    return logging.INFO
+        from mkts_backend.config.settings_service import SettingsService
+        return logging.getLevelName(SettingsService().log_level)
+    except (FileNotFoundError, KeyError, Exception):
+        return logging.INFO
 
-log_level = log_level_from_settings()
+log_level = _resolve_log_level()
 
 def configure_logging(
     name: str,

@@ -4,7 +4,7 @@ from typing import Union
 from numpy._core.multiarray import RAISE
 from numpy.strings import isdigit, isnumeric
 from sqlalchemy.orm import query
-from mkts_backend.config.config import DatabaseConfig
+from mkts_backend.config.db_config import DatabaseConfig
 from sqlalchemy import false, text
 from mkts_backend.config.logging_config import configure_logging
 

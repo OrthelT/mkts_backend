@@ -24,7 +24,7 @@ class TestVerifyDbExists:
     @pytest.fixture
     def mock_db_config(self, temp_db_path):
         """Create a DatabaseConfig with mocked sync and temp path."""
-        from mkts_backend.config.config import DatabaseConfig
+        from mkts_backend.config.db_config import DatabaseConfig
 
         with patch.object(DatabaseConfig, '__init__', lambda self, *args, **kwargs: None):
             db = DatabaseConfig()
@@ -172,7 +172,7 @@ class TestNeedsInit:
 
     @pytest.fixture
     def mock_db_config(self, temp_db_path):
-        from mkts_backend.config.config import DatabaseConfig
+        from mkts_backend.config.db_config import DatabaseConfig
 
         with patch.object(DatabaseConfig, '__init__', lambda self, *args, **kwargs: None):
             db = DatabaseConfig()
@@ -241,7 +241,7 @@ class TestNukeMethods:
 
     @pytest.fixture
     def mock_db_config(self, temp_db_path):
-        from mkts_backend.config.config import DatabaseConfig
+        from mkts_backend.config.db_config import DatabaseConfig
 
         with patch.object(DatabaseConfig, '__init__', lambda self, *args, **kwargs: None):
             db = DatabaseConfig()
@@ -346,7 +346,7 @@ class TestConfirmMetadataExists:
 
     @pytest.fixture
     def mock_db_config(self, temp_db_path):
-        from mkts_backend.config.config import DatabaseConfig
+        from mkts_backend.config.db_config import DatabaseConfig
 
         with patch.object(DatabaseConfig, '__init__', lambda self, *args, **kwargs: None):
             db = DatabaseConfig()
@@ -379,7 +379,7 @@ class TestReadDbInfo:
 
     @pytest.fixture
     def mock_db_config(self, temp_db_path):
-        from mkts_backend.config.config import DatabaseConfig
+        from mkts_backend.config.db_config import DatabaseConfig
 
         with patch.object(DatabaseConfig, '__init__', lambda self, *args, **kwargs: None):
             db = DatabaseConfig()
@@ -416,7 +416,7 @@ class TestIntegrationScenarios:
 
     @pytest.fixture
     def mock_db_config(self, temp_db_path):
-        from mkts_backend.config.config import DatabaseConfig
+        from mkts_backend.config.db_config import DatabaseConfig
 
         with patch.object(DatabaseConfig, '__init__', lambda self, *args, **kwargs: None):
             db = DatabaseConfig()

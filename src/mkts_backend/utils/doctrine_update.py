@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 from mkts_backend.db.models import Doctrines, LeadShips, DoctrineFitItems, Base
 from mkts_backend.db.db_queries import get_watchlist_ids, get_fit_ids, get_fit_items
 from mkts_backend.utils.get_type_info import TypeInfo
-from mkts_backend.config.config import DatabaseConfig
+from mkts_backend.config.db_config import DatabaseConfig
 from mkts_backend.config.logging_config import configure_logging
 from mkts_backend.utils.utils import get_type_name
 

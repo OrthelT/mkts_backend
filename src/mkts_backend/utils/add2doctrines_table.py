@@ -1,4 +1,4 @@
-from mkts_backend.config.config import DatabaseConfig
+from mkts_backend.config.db_config import DatabaseConfig
 from sqlalchemy import text, select, delete, func
 from sqlalchemy.orm import Session
 from mkts_backend.db.models import Doctrines

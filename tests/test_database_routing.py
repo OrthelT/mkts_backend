@@ -14,7 +14,7 @@ class TestDatabaseConfigRouting:
 
     def test_database_config_uses_primary_market_context(self, primary_market_context):
         """Test DatabaseConfig uses primary market context settings."""
-        from mkts_backend.config.config import DatabaseConfig
+        from mkts_backend.config.db_config import DatabaseConfig
 
         db = DatabaseConfig(market_context=primary_market_context)
 
@@ -23,7 +23,7 @@ class TestDatabaseConfigRouting:
 
     def test_database_config_uses_deployment_market_context(self, deployment_market_context):
         """Test DatabaseConfig uses deployment market context settings."""
-        from mkts_backend.config.config import DatabaseConfig
+        from mkts_backend.config.db_config import DatabaseConfig
 
         db = DatabaseConfig(market_context=deployment_market_context)
 
@@ -34,7 +34,7 @@ class TestDatabaseConfigRouting:
         self, primary_market_context, deployment_market_context
     ):
         """Test that primary and deployment create different database paths."""
-        from mkts_backend.config.config import DatabaseConfig
+        from mkts_backend.config.db_config import DatabaseConfig
 
         primary_db = DatabaseConfig(market_context=primary_market_context)
         deployment_db = DatabaseConfig(market_context=deployment_market_context)
@@ -44,7 +44,7 @@ class TestDatabaseConfigRouting:
 
     def test_database_config_legacy_alias_still_works(self):
         """Test that legacy alias-based initialization still works."""
-        from mkts_backend.config.config import DatabaseConfig
+        from mkts_backend.config.db_config import DatabaseConfig
 
         # Legacy initialization without market_context
         # "wcmkt" alias maps to wcmktprod in the new config
@@ -55,7 +55,7 @@ class TestDatabaseConfigRouting:
 
     def test_database_config_market_context_takes_precedence(self, primary_market_context):
         """Test that market_context takes precedence over alias parameter."""
-        from mkts_backend.config.config import DatabaseConfig
+        from mkts_backend.config.db_config import DatabaseConfig
 
         # Even if alias is provided, market_context should take precedence
         db = DatabaseConfig(alias="something_else", market_context=primary_market_context)
@@ -73,7 +73,7 @@ class TestESIConfigRouting:
         esi = ESIConfig(market_context=primary_market_context)
 
         assert esi.region_id == 10000003
-        assert esi.structure_id == 1035466617946
+        assert esi.structure_id == 1053654548169
 
     def test_esi_config_uses_deployment_market_context(self, deployment_market_context):
         """Test ESIConfig uses deployment market context settings."""
@@ -81,19 +81,22 @@ class TestESIConfigRouting:
 
         esi = ESIConfig(market_context=deployment_market_context)
 
-        assert esi.region_id == 10000023
-        assert esi.structure_id == 1046831245129
+        assert esi.region_id == 10000003
+        assert esi.structure_id == 1041669946862
 
-    def test_esi_config_primary_and_deployment_different_regions(
+    def test_esi_config_primary_and_deployment_have_different_structures(
         self, primary_market_context, deployment_market_context
     ):
-        """Test that primary and deployment have different ESI settings."""
+        """Test that primary and deployment ESI configs target different structures.
+
+        Both markets currently share region_id=10000003, so isolation is verified
+        via structure_id (which uniquely identifies the market hub).
+        """
         from mkts_backend.config.esi_config import ESIConfig
 
         primary_esi = ESIConfig(market_context=primary_market_context)
         deployment_esi = ESIConfig(market_context=deployment_market_context)
 
-        assert primary_esi.region_id != deployment_esi.region_id
         assert primary_esi.structure_id != deployment_esi.structure_id
 
     def test_esi_config_market_orders_url_primary(self, primary_market_context):
@@ -324,7 +327,7 @@ class TestDatabaseIsolation:
         self, primary_market_context, deployment_market_context
     ):
         """Test that database paths contain correct market identifiers."""
-        from mkts_backend.config.config import DatabaseConfig
+        from mkts_backend.config.db_config import DatabaseConfig
 
         primary_db = DatabaseConfig(market_context=primary_market_context)
         deployment_db = DatabaseConfig(market_context=deployment_market_context)
@@ -343,7 +346,7 @@ class TestCrossMarketIsolation:
         self, primary_market_context, deployment_market_context
     ):
         """Test that sequential operations on different markets use correct databases."""
-        from mkts_backend.config.config import DatabaseConfig
+        from mkts_backend.config.db_config import DatabaseConfig
 
         # First operation - primary market
         db1 = DatabaseConfig(market_context=primary_market_context)

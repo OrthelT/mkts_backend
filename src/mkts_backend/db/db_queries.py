@@ -1,7 +1,7 @@
 from sqlalchemy import text
 from typing import Optional, TYPE_CHECKING
 import pandas as pd
-from mkts_backend.config.config import DatabaseConfig
+from mkts_backend.config.db_config import DatabaseConfig
 
 if TYPE_CHECKING:
     from mkts_backend.config.market_context import MarketContext

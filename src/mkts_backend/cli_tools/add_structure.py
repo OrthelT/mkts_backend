@@ -22,7 +22,8 @@ Flags
 from __future__ import annotations
 
 from mkts_backend.cli_tools.arg_utils import ParsedArgs
-from mkts_backend.config.config import DatabaseConfig, load_settings
+from mkts_backend.config.db_config import DatabaseConfig
+from mkts_backend.config.settings_service import SettingsService
 from mkts_backend.config.gsheets_config import GoogleSheetConfig
 from mkts_backend.config.logging_config import configure_logging
 from mkts_backend.utils.build_cost_utils import (
@@ -69,7 +70,7 @@ def add_structure(args: list[str], market_alias: str = "primary") -> bool:
         print("Error: --local and --remote-only are mutually exclusive")
         return False
 
-    settings = load_settings()
+    settings = SettingsService().settings_dict
     buildcost_cfg = settings.get("buildcost", {})
     if sheet_url is None:
         sheet_url = buildcost_cfg.get("sheet_url")

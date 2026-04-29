@@ -49,7 +49,7 @@ doctrines = "doctrines_mkt_4H"
 
 [markets.deployment]
 name = "X47L-Q - Rogue Threshold"
-region_id = 10000003
+region_id = 10000023
 system_id = 30001967
 structure_id = 1041669946862
 database_alias = "wcmktnorth"
@@ -69,15 +69,15 @@ doctrines = "doctrines_mkt_b9"
 # These values are used by legacy code that hasn't been migrated to MarketContext.
 # Prefer using [markets] sections for new code.
 
-#[market_data]
-#primary_region_id = 10000003
-#deployment_region_id = 10000003
-#primary_system_id = 30000240
-#deployment_system_id = 30000240
-#primary_structure_id = 1053654548169
-#deployment_structure_id = 1035603743755
-#primary_market_name = "4-HWWF New Keepstar"
-#deployment_market_name = "4-HWWF Sotiyo"
+[market_data]
+primary_region_id = 10000003
+deployment_region_id = 10000023
+primary_system_id = 30000240
+deployment_system_id = 30001967
+primary_structure_id = 1053654548169
+deployment_structure_id = 1041669946862
+primary_market_name = "4-HWWF - Platestar"
+deployment_market_name = "X47L-Q - Rogue Threshold"
 
 # ============================================================================
 # SHARED DATABASE CONFIGURATION

@@ -98,7 +98,7 @@ class DatabaseConfig:
             env = os.environ.get("MKTS_ENVIRONMENT", self.settings["app"]["environment"])
             if env == 'development':
                 alias = self._testing_db_alias
-            elif alias is None or alias in ["wcmkt", "primary"]:
+            elif alias is None or alias in ["wcmkt", "primary", "wcmktprod"]:
                 alias = self._production_db_alias
             elif alias in ["deployment", "north"]:
                 alias = self._deployment_db_alias

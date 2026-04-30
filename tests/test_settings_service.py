@@ -151,14 +151,20 @@ def test_market_data_legacy_raises_when_required_id_missing():
         s.get_market_data_legacy()
 
 
-def test_environment_override_frozen_after_first_load(monkeypatch):
-    """Document the freeze: env changed after first load is ignored."""
+def test_environment_override_applies_after_first_load(monkeypatch):
+    """env var set AFTER cache priming must still take effect.
+
+    Regression guard: previously the env override was baked into the cached
+    dict at first load, so a CLI flag like ``--env=development`` that sets
+    MKTS_ENVIRONMENT after module imports was silently ignored — primary
+    market routed to the production DB instead of testing.
+    """
     monkeypatch.setenv("MKTS_ENVIRONMENT", "production")
     clear_cache()
-    SettingsService()  # first load — freezes env=production
+    SettingsService()  # primes cache while env=production
     monkeypatch.setenv("MKTS_ENVIRONMENT", "development")
-    # No clear_cache — production is still frozen in.
-    assert SettingsService().environment == "production"
+    # No clear_cache — but environment property now reads env dynamically.
+    assert SettingsService().environment == "development"
 
 
 def test_environment_override_unset_falls_back_to_toml(monkeypatch):
@@ -167,6 +173,29 @@ def test_environment_override_unset_falls_back_to_toml(monkeypatch):
     s = SettingsService()
     # The TOML default is "production"; if you change it, update this assertion.
     assert s.environment == "production"
+
+
+def test_market_context_picks_up_late_env_override(monkeypatch):
+    """End-to-end regression: simulate the --env=development CLI path.
+
+    Order matches what cli.py does in practice:
+    1. Modules import → SettingsService() runs at module load (cache primed
+       with env=production from TOML).
+    2. parse_args() sets os.environ["MKTS_ENVIRONMENT"] = "development".
+    3. MarketContext.from_settings("primary") is called downstream.
+
+    Before the fix this returned the production DB; after, it returns
+    the testing DB because environment is read dynamically.
+    """
+    from mkts_backend.config.market_context import MarketContext
+
+    monkeypatch.delenv("MKTS_ENVIRONMENT", raising=False)
+    clear_cache()
+    SettingsService()  # simulate import-time priming with env unset
+
+    monkeypatch.setenv("MKTS_ENVIRONMENT", "development")  # simulate --env=development
+    ctx = MarketContext.from_settings("primary")
+    assert ctx.database_alias == "wcmkttest"
 
 
 def test_get_all_characters_requires_char_id(monkeypatch):

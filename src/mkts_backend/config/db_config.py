@@ -90,10 +90,10 @@ class DatabaseConfig:
             self.token = market_context.turso_token
             logger.info(f"DatabaseConfig initialized from MarketContext: {market_context.name}")
         else:
-            # SettingsService already applied MKTS_ENVIRONMENT override at load
-            # time — re-reading os.environ here would let the two configs drift
-            # if env was changed mid-process.
-            env = self.settings["app"]["environment"]
+            # Use the property so MKTS_ENVIRONMENT set by --env=<env> after
+            # module import is still picked up. Reading self.settings directly
+            # would freeze on the cached TOML default.
+            env = SettingsService().environment
             if env == 'development':
                 alias = self._testing_db_alias
             elif alias is None or alias in ["wcmkt", "primary", "wcmktprod"]:

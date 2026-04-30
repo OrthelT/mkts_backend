@@ -31,13 +31,16 @@ _cached_settings: dict | None = None
 
 
 def _load_settings(path: Optional[Path] = None) -> dict:
-    """Load and cache settings from the TOML file.
+    """Load and cache the TOML file as-is.
 
-    Default path: cached on first call. ``MKTS_ENVIRONMENT`` is read at that
-    first load and frozen — call :func:`clear_cache` to refresh.
+    The cached dict is the raw TOML — runtime overlays (notably
+    ``MKTS_ENVIRONMENT``) are NOT baked in here. Consumers that need the
+    runtime-effective value should go through :class:`SettingsService`'s
+    typed properties (e.g. ``service.environment``), which read env vars
+    at access time. This lets a CLI flag set after import still take effect.
 
-    Explicit path: bypasses the cache entirely and never populates it. Tests
-    that swap fixtures don't poison the singleton.
+    Default path: cached on first call.
+    Explicit path: bypasses the cache entirely and never populates it.
     """
     global _cached_settings
     if path is not None:
@@ -51,20 +54,13 @@ def _load_settings(path: Optional[Path] = None) -> dict:
 def _read_settings_file(settings_path: Path) -> dict:
     try:
         with open(settings_path, "rb") as f:
-            settings = tomllib.load(f)
+            return tomllib.load(f)
     except Exception as e:
         # Logging may not yet be configured at this bootstrap point — write
         # to stderr so the user sees the failure even before configure_logging.
         sys.stderr.write(f"FATAL: Failed to load settings from {settings_path}: {e}\n")
         logger.error("Failed to load settings from %s: %s", settings_path, e)
         raise
-
-    env_override = os.environ.get("MKTS_ENVIRONMENT")
-    if env_override and "app" in settings:
-        logger.info("Environment overridden by MKTS_ENVIRONMENT: %s", env_override)
-        settings["app"] = {**settings["app"], "environment": env_override}
-
-    return settings
 
 
 def clear_cache() -> None:
@@ -98,7 +94,14 @@ class SettingsService:
 
     @property
     def environment(self) -> str:
-        return self.settings["app"]["environment"]
+        """Resolved runtime environment.
+
+        Returns ``MKTS_ENVIRONMENT`` if set, else the TOML ``app.environment``.
+        Read on every access — a ``--env=development`` CLI flag that sets the
+        env var after module imports still takes effect for downstream
+        consumers like ``MarketContext.from_settings()``.
+        """
+        return os.environ.get("MKTS_ENVIRONMENT", self.settings["app"]["environment"])
 
     @property
     def log_level(self) -> str:

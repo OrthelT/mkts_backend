@@ -435,7 +435,7 @@ def _run_market_pipeline(
         logger.error("Failed to update doctrines")
         exit()
 
-    env = os.environ.get("MKTS_ENVIRONMENT", settings["app"]["environment"])
+    env = SettingsService().environment
 
     # Update Google Sheets if enabled and primary market
     if (

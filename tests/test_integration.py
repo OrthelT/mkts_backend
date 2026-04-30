@@ -63,7 +63,7 @@ class TestMarketContextConfigChain:
         gsheets = GoogleSheetConfig(market_context=deployment_market_context)
 
         assert db.alias == "wcmktnorth"
-        assert esi.region_id == 10000003
+        assert esi.region_id == 10000023
         assert esi.structure_id == 1041669946862
         assert gsheets.google_sheet_url == deployment_market_context.gsheets_url
 
@@ -154,7 +154,7 @@ class TestBackwardCompatibility:
         esi = ESIConfig("deployment")
 
         assert esi.alias == "deployment"
-        assert esi.region_id == 10000003  # Vale of Silent
+        assert esi.region_id == 10000023  # Pure Blind
         assert esi.structure_id == 1041669946862  # X47L-Q
         assert esi.market_orders_url is not None
         assert "structures" in esi.market_orders_url

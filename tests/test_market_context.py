@@ -29,7 +29,7 @@ class TestMarketContextCreation:
 
         assert ctx.alias == "deployment"
         assert ctx.name == "X47L-Q - Rogue Threshold"
-        assert ctx.region_id == 10000003
+        assert ctx.region_id == 10000023
         assert ctx.structure_id == 1041669946862
         assert ctx.database_alias == "wcmktnorth"
         assert ctx.database_file == "wcmktnorth2.db"
@@ -74,11 +74,13 @@ class TestMarketContextCreation:
     ):
         """Test that primary and deployment markets are distinct locations.
 
-        Both markets currently share region_id=10000003, so isolation is verified
-        via structure_id and system_id (which uniquely identify the market hub).
+        Primary is in region_id=10000003 (Vale of Silent), deployment is in
+        region_id=10000023 (Pure Blind). structure_id and system_id uniquely
+        identify the market hub within each region.
         """
         assert primary_market_context.structure_id != deployment_market_context.structure_id
         assert primary_market_context.system_id != deployment_market_context.system_id
+        assert primary_market_context.region_id != deployment_market_context.region_id
 
     def test_invalid_market_alias_raises_error(self):
         """Test that invalid market alias raises ValueError."""

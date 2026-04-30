@@ -81,7 +81,7 @@ class TestESIConfigRouting:
 
         esi = ESIConfig(market_context=deployment_market_context)
 
-        assert esi.region_id == 10000003
+        assert esi.region_id == 10000023
         assert esi.structure_id == 1041669946862
 
     def test_esi_config_primary_and_deployment_have_different_structures(
@@ -89,8 +89,9 @@ class TestESIConfigRouting:
     ):
         """Test that primary and deployment ESI configs target different structures.
 
-        Both markets currently share region_id=10000003, so isolation is verified
-        via structure_id (which uniquely identifies the market hub).
+        Primary is in region_id=10000003 (Vale of Silent), deployment is in
+        region_id=10000023 (Pure Blind). structure_id uniquely identifies the
+        market hub within each region.
         """
         from mkts_backend.config.esi_config import ESIConfig
 

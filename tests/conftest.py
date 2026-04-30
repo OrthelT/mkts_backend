@@ -13,6 +13,19 @@ import sys
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 
+@pytest.fixture(autouse=True)
+def _settings_cache_isolation():
+    """Drop the cached settings dict before/after every test.
+
+    Prevents env-override and TOML-mutation pollution from leaking between
+    tests via the module-level cache in ``settings_service``.
+    """
+    from mkts_backend.config.settings_service import clear_cache
+    clear_cache()
+    yield
+    clear_cache()
+
+
 @pytest.fixture
 def primary_market_context(monkeypatch):
     """Create a primary market context for testing (forces development mode)."""

@@ -25,9 +25,13 @@ def _find_project_root(start_dir: str) -> str:
 def _resolve_log_level() -> int:
     try:
         from mkts_backend.config.settings_service import SettingsService
-        return logging.getLevelName(SettingsService().log_level)
-    except (FileNotFoundError, KeyError, Exception):
+        level_name = SettingsService().log_level
+    except (FileNotFoundError, KeyError):
         return logging.INFO
+    level = logging.getLevelName(level_name)
+    if not isinstance(level, int):
+        raise ValueError(f"Invalid log_level in settings: {level_name!r}")
+    return level
 
 log_level = _resolve_log_level()
 

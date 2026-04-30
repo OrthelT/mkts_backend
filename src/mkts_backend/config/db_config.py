@@ -20,14 +20,23 @@ load_dotenv()
 logger = configure_logging(__name__)
 
 
+def _require_db_key(db_section: dict, key: str) -> str:
+    value = db_section.get(key)
+    if value is None:
+        raise ValueError(
+            f"settings.toml: [db].{key} is required but missing or null."
+        )
+    return value
+
+
 class DatabaseConfig:
     settings = SettingsService().settings_dict
-    _production_db_alias = settings["db"]["production_database_alias"]
-    _production_db_file = settings["db"]["production_database_file"]
-    _testing_db_alias = settings["db"]["testing_database_alias"]
-    _testing_db_file = settings["db"]["testing_database_file"]
-    _deployment_db_alias = settings["db"].get("deployment_database_alias")
-    _deployment_db_file = settings["db"].get("deployment_database_file")
+    _production_db_alias = _require_db_key(settings["db"], "production_database_alias")
+    _production_db_file = _require_db_key(settings["db"], "production_database_file")
+    _testing_db_alias = _require_db_key(settings["db"], "testing_database_alias")
+    _testing_db_file = _require_db_key(settings["db"], "testing_database_file")
+    _deployment_db_alias = _require_db_key(settings["db"], "deployment_database_alias")
+    _deployment_db_file = _require_db_key(settings["db"], "deployment_database_file")
 
 
     _db_paths = {
@@ -81,7 +90,10 @@ class DatabaseConfig:
             self.token = market_context.turso_token
             logger.info(f"DatabaseConfig initialized from MarketContext: {market_context.name}")
         else:
-            env = os.environ.get("MKTS_ENVIRONMENT", self.settings["app"]["environment"])
+            # SettingsService already applied MKTS_ENVIRONMENT override at load
+            # time — re-reading os.environ here would let the two configs drift
+            # if env was changed mid-process.
+            env = self.settings["app"]["environment"]
             if env == 'development':
                 alias = self._testing_db_alias
             elif alias is None or alias in ["wcmkt", "primary", "wcmktprod"]:

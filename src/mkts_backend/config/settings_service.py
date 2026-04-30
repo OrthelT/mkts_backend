@@ -15,6 +15,7 @@ Architectural rules:
 
 import logging
 import os
+import sys
 import tomllib
 from pathlib import Path
 from typing import TYPE_CHECKING, Optional
@@ -32,19 +33,29 @@ _cached_settings: dict | None = None
 def _load_settings(path: Optional[Path] = None) -> dict:
     """Load and cache settings from the TOML file.
 
-    Applies ``MKTS_ENVIRONMENT`` env var override to ``[app][environment]``
-    at load time. Subsequent calls return the cached dict (overrides are
-    frozen at first load).
+    Default path: cached on first call. ``MKTS_ENVIRONMENT`` is read at that
+    first load and frozen — call :func:`clear_cache` to refresh.
+
+    Explicit path: bypasses the cache entirely and never populates it. Tests
+    that swap fixtures don't poison the singleton.
     """
     global _cached_settings
+    if path is not None:
+        return _read_settings_file(path)
     if _cached_settings is not None:
         return _cached_settings
+    _cached_settings = _read_settings_file(_DEFAULT_SETTINGS_PATH)
+    return _cached_settings
 
-    settings_path = path if path is not None else _DEFAULT_SETTINGS_PATH
+
+def _read_settings_file(settings_path: Path) -> dict:
     try:
         with open(settings_path, "rb") as f:
             settings = tomllib.load(f)
     except Exception as e:
+        # Logging may not yet be configured at this bootstrap point — write
+        # to stderr so the user sees the failure even before configure_logging.
+        sys.stderr.write(f"FATAL: Failed to load settings from {settings_path}: {e}\n")
         logger.error("Failed to load settings from %s: %s", settings_path, e)
         raise
 
@@ -53,8 +64,7 @@ def _load_settings(path: Optional[Path] = None) -> dict:
         logger.info("Environment overridden by MKTS_ENVIRONMENT: %s", env_override)
         settings["app"] = {**settings["app"], "environment": env_override}
 
-    _cached_settings = settings
-    return _cached_settings
+    return settings
 
 
 def clear_cache() -> None:
@@ -162,24 +172,36 @@ class SettingsService:
         If the section is absent (or empty), derives equivalent values from the
         modern ``[markets.primary]`` and ``[markets.deployment]`` sections so
         callers that depend on the flat-keyed shape (``primary_region_id`` etc.)
-        keep working. New code should use ``MarketContext`` via
-        ``get_all_market_contexts()`` instead.
+        keep working. Raises ``KeyError`` if a required ID is missing — there
+        is no EVE region/system/structure 0, so silent zero-defaults would just
+        produce 404s far from the root cause. New code should use
+        ``MarketContext`` via ``get_all_market_contexts()`` instead.
         """
         market_data = self.settings.get("market_data") or {}
         if market_data:
             return market_data
 
         markets = self.settings.get("markets", {})
-        primary = markets.get("primary", {}) if isinstance(markets.get("primary"), dict) else {}
-        deployment = markets.get("deployment", {}) if isinstance(markets.get("deployment"), dict) else {}
+        primary = markets.get("primary") if isinstance(markets.get("primary"), dict) else None
+        deployment = markets.get("deployment") if isinstance(markets.get("deployment"), dict) else None
+        if primary is None:
+            raise KeyError(
+                "settings.toml: [market_data] is absent and [markets.primary] "
+                "is missing — cannot derive legacy market data."
+            )
+        if deployment is None:
+            raise KeyError(
+                "settings.toml: [market_data] is absent and [markets.deployment] "
+                "is missing — cannot derive legacy market data."
+            )
         return {
-            "primary_region_id": primary.get("region_id", 0),
-            "primary_system_id": primary.get("system_id", 0),
-            "primary_structure_id": primary.get("structure_id", 0),
+            "primary_region_id": primary["region_id"],
+            "primary_system_id": primary["system_id"],
+            "primary_structure_id": primary["structure_id"],
             "primary_market_name": primary.get("name", ""),
-            "deployment_region_id": deployment.get("region_id", 0),
-            "deployment_system_id": deployment.get("system_id", 0),
-            "deployment_structure_id": deployment.get("structure_id", 0),
+            "deployment_region_id": deployment["region_id"],
+            "deployment_system_id": deployment["system_id"],
+            "deployment_structure_id": deployment["structure_id"],
             "deployment_market_name": deployment.get("name", ""),
         }
 

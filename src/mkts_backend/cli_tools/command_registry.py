@@ -468,7 +468,7 @@ def _register_all(reg: CommandRegistry) -> None:
     # ── sync ────────────────────────────────────────────────────
     def _handle_sync(args: list[str], market_alias: str) -> bool:
         from mkts_backend.config.market_context import MarketContext
-        from mkts_backend.config.config import DatabaseConfig
+        from mkts_backend.config.db_config import DatabaseConfig
         from mkts_backend.config.logging_config import configure_logging
         from mkts_backend.cli_tools.market_args import expand_market_alias
 
@@ -494,7 +494,7 @@ def _register_all(reg: CommandRegistry) -> None:
     # ── validate ────────────────────────────────────────────────
     def _handle_validate(args: list[str], market_alias: str) -> bool:
         from mkts_backend.config.market_context import MarketContext
-        from mkts_backend.config.config import DatabaseConfig
+        from mkts_backend.config.db_config import DatabaseConfig
         from mkts_backend.cli_tools.market_args import expand_market_alias
 
         all_valid = True

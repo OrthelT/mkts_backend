@@ -6,7 +6,7 @@ import pandas as pd
 import json
 import sqlalchemy as sa
 from sqlalchemy import text, create_engine
-from mkts_backend.config.config import DatabaseConfig
+from mkts_backend.config.db_config import DatabaseConfig
 from mkts_backend.config.esi_config import ESIConfig
 from mkts_backend.config.logging_config import configure_logging
 from sqlalchemy.orm import Session

@@ -2,7 +2,7 @@ from typing import Optional, TYPE_CHECKING
 
 from mkts_backend.esi.esi_auth import get_token
 from mkts_backend.config.logging_config import configure_logging
-from mkts_backend.config.config import load_settings, settings_file
+from mkts_backend.config.settings_service import SettingsService
 
 if TYPE_CHECKING:
     from mkts_backend.config.market_context import MarketContext
@@ -10,18 +10,19 @@ if TYPE_CHECKING:
 logger = configure_logging(__name__)
 
 
-settings = load_settings(settings_file)
+_service = SettingsService()
+_market_data = _service.get_market_data_legacy()
 
 class ESIConfig:
     """ESI configuration for primary and deployment markets."""
 
     # Legacy class-level lookups for backward compatibility
-    _region_ids = {"primary_region_id": settings["market_data"]["primary_region_id"], "deployment_region_id": settings["market_data"]["deployment_region_id"]}
-    _system_ids = {"primary_system_id": settings["market_data"]["primary_system_id"], "deployment_system_id": settings["market_data"]["deployment_system_id"]}
-    _structure_ids = {"primary_structure_id": settings["market_data"]["primary_structure_id"], "deployment_structure_id": settings["market_data"]["deployment_structure_id"]}
+    _region_ids = {"primary_region_id": _market_data["primary_region_id"], "deployment_region_id": _market_data["deployment_region_id"]}
+    _system_ids = {"primary_system_id": _market_data["primary_system_id"], "deployment_system_id": _market_data["deployment_system_id"]}
+    _structure_ids = {"primary_structure_id": _market_data["primary_structure_id"], "deployment_structure_id": _market_data["deployment_structure_id"]}
     _valid_aliases = ["primary", "deployment"]
     _shortcut_aliases = {"4h": "primary"}
-    _names = {"primary": settings["market_data"]["primary_market_name"], "deployment": settings["market_data"]["deployment_market_name"]}
+    _names = {"primary": _market_data["primary_market_name"], "deployment": _market_data["deployment_market_name"]}
 
     def __init__(
         self,
@@ -65,8 +66,8 @@ class ESIConfig:
             self.system_id = self._system_ids[f"{self.alias}_system_id"]
             self.structure_id = self._structure_ids[f"{self.alias}_structure_id"]
 
-        self.user_agent = settings["esi"]["user_agent"]
-        self.compatibility_date = settings["esi"]["compatibility_date"]
+        self.user_agent = _service.esi_user_agent
+        self.compatibility_date = _service.esi_compatibility_date
 
     def token(self, scope: str = "esi-markets.structure_markets.v1"):
         return get_token(scope)

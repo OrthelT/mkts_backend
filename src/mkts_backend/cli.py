@@ -29,12 +29,13 @@ from mkts_backend.config.esi_config import ESIConfig
 from mkts_backend.esi.esi_requests import fetch_market_orders
 from mkts_backend.esi.async_history import run_async_history
 from mkts_backend.utils.validation import validate_all
-from mkts_backend.config.config import load_settings, DatabaseConfig
+from mkts_backend.config.db_config import DatabaseConfig
+from mkts_backend.config.settings_service import SettingsService
 from mkts_backend.cli_tools.args_parser import parse_args
 from mkts_backend.config.gsheets_config import GoogleSheetConfig
 from mkts_backend.config.market_context import MarketContext
 
-settings = load_settings(file_path="src/mkts_backend/config/settings.toml")
+settings = SettingsService().settings_dict
 logger = configure_logging(__name__)
 
 
@@ -255,7 +256,7 @@ def google_sheets_update_workflow(market_ctx: Optional[MarketContext] = None):
         )
     else:
         # Legacy behavior for backward compatibility
-        settings = load_settings(file_path="src/mkts_backend/config/settings.toml")
+        settings = SettingsService().settings_dict
         google_sheet_url2 = settings["google_sheets"]["sheet_url2"]
         google_sheet_config = GoogleSheetConfig(sheet_url=google_sheet_url2)
         update_google_sheet(

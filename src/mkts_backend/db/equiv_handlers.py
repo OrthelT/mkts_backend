@@ -9,7 +9,7 @@ from typing import Optional, TYPE_CHECKING
 from sqlalchemy import text
 
 from mkts_backend.config.logging_config import configure_logging
-from mkts_backend.config.config import DatabaseConfig
+from mkts_backend.config.db_config import DatabaseConfig
 
 if TYPE_CHECKING:
     from mkts_backend.config.market_context import MarketContext

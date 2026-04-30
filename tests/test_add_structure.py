@@ -488,8 +488,13 @@ def test_cli_partial_success_remote_ok_local_fails(cli_env, buildcost_engine, tm
 
 def test_cli_missing_sheet_url_errors(cli_env, monkeypatch, capsys):
     """With no --file and no configured sheet_url, handler reports a clean error."""
-    from mkts_backend.cli_tools import add_structure as mod
-    monkeypatch.setattr(mod, "load_settings", lambda: {"buildcost": {}})
+    from mkts_backend.config import settings_service
+    monkeypatch.setattr(
+        settings_service,
+        "_load_settings",
+        lambda path=None: {"buildcost": {}, "app": {"environment": "production"}},
+    )
+    settings_service.clear_cache()
 
     result = cli_env.add_structure(["--yes"])
     out = capsys.readouterr().out

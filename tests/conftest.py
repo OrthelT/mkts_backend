@@ -13,16 +13,29 @@ import sys
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 
+@pytest.fixture(autouse=True)
+def _settings_cache_isolation():
+    """Drop the cached settings dict before/after every test.
+
+    Prevents env-override and TOML-mutation pollution from leaking between
+    tests via the module-level cache in ``settings_service``.
+    """
+    from mkts_backend.config.settings_service import clear_cache
+    clear_cache()
+    yield
+    clear_cache()
+
+
 @pytest.fixture
-def primary_market_context():
+def primary_market_context(monkeypatch):
     """Create a primary market context for testing (forces development mode)."""
-    from mkts_backend.config.market_context import MarketContext, _load_settings
+    from mkts_backend.config.market_context import MarketContext
+    from mkts_backend.config.settings_service import clear_cache
 
-    settings = _load_settings()
-    settings["app"]["environment"] = "development"
-
-    with patch("mkts_backend.config.market_context._load_settings", return_value=settings):
-        return MarketContext.from_settings("primary")
+    monkeypatch.setenv("MKTS_ENVIRONMENT", "development")
+    clear_cache()
+    yield MarketContext.from_settings("primary")
+    clear_cache()
 
 
 @pytest.fixture
@@ -162,8 +175,8 @@ def mock_database_config(temp_db_dir):
     original_init = None
 
     def mock_init(self, alias=None, dialect="sqlite+libsql", market_context=None):
-        from mkts_backend.config.config import load_settings
-        self.settings = load_settings()
+        from mkts_backend.config.settings_service import SettingsService
+        self.settings = SettingsService().settings_dict
 
         if market_context is not None:
             self.alias = market_context.database_alias
@@ -194,7 +207,7 @@ def mock_database_config(temp_db_dir):
         self._engine = None
         self._session = None
 
-    with patch("mkts_backend.config.config.DatabaseConfig.__init__", mock_init):
+    with patch("mkts_backend.config.db_config.DatabaseConfig.__init__", mock_init):
         yield temp_db_dir
 
 

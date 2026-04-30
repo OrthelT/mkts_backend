@@ -9,7 +9,7 @@ from typing import Dict, List, Optional, Tuple
 
 from sqlalchemy import text
 
-from mkts_backend.config.config import DatabaseConfig
+from mkts_backend.config.db_config import DatabaseConfig
 from mkts_backend.config.character_config import CharacterConfig, load_characters
 from mkts_backend.config.logging_config import configure_logging
 from mkts_backend.esi.character_assets import fetch_all_character_assets

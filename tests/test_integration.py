@@ -16,7 +16,7 @@ class TestFullMarketContextFlow:
 
     def test_primary_market_flow_uses_correct_database(self, primary_market_context):
         """Test that primary market operations use wcmkttest database in development."""
-        from mkts_backend.config.config import DatabaseConfig
+        from mkts_backend.config.db_config import DatabaseConfig
 
         db = DatabaseConfig(market_context=primary_market_context)
 
@@ -25,7 +25,7 @@ class TestFullMarketContextFlow:
 
     def test_deployment_market_flow_uses_correct_database(self, deployment_market_context):
         """Test that deployment market operations use wcmktnorth database."""
-        from mkts_backend.config.config import DatabaseConfig
+        from mkts_backend.config.db_config import DatabaseConfig
 
         db = DatabaseConfig(market_context=deployment_market_context)
 
@@ -38,7 +38,7 @@ class TestMarketContextConfigChain:
 
     def test_config_chain_primary(self, primary_market_context):
         """Test full config chain for primary market."""
-        from mkts_backend.config.config import DatabaseConfig
+        from mkts_backend.config.db_config import DatabaseConfig
         from mkts_backend.config.esi_config import ESIConfig
         from mkts_backend.config.gsheets_config import GoogleSheetConfig
 
@@ -53,7 +53,7 @@ class TestMarketContextConfigChain:
 
     def test_config_chain_deployment(self, deployment_market_context):
         """Test full config chain for deployment market."""
-        from mkts_backend.config.config import DatabaseConfig
+        from mkts_backend.config.db_config import DatabaseConfig
         from mkts_backend.config.esi_config import ESIConfig
         from mkts_backend.config.gsheets_config import GoogleSheetConfig
 
@@ -64,6 +64,7 @@ class TestMarketContextConfigChain:
 
         assert db.alias == "wcmktnorth"
         assert esi.region_id == 10000023
+        assert esi.structure_id == 1041669946862
         assert gsheets.google_sheet_url == deployment_market_context.gsheets_url
 
 
@@ -123,7 +124,7 @@ class TestBackwardCompatibility:
 
     def test_legacy_alias_initialization_works(self):
         """Test that legacy alias-based initialization still works."""
-        from mkts_backend.config.config import DatabaseConfig
+        from mkts_backend.config.db_config import DatabaseConfig
 
         # Legacy way of creating database config
         db = DatabaseConfig("wcmkt")
@@ -154,7 +155,7 @@ class TestBackwardCompatibility:
 
         assert esi.alias == "deployment"
         assert esi.region_id == 10000023  # Pure Blind
-        assert esi.structure_id == 1046831245129  # B-9C24
+        assert esi.structure_id == 1041669946862  # X47L-Q
         assert esi.market_orders_url is not None
         assert "structures" in esi.market_orders_url
 
@@ -293,7 +294,7 @@ class TestConcurrentMarketOperations:
 
     def test_concurrent_config_creation(self, primary_market_context, deployment_market_context):
         """Test creating configs for multiple markets concurrently."""
-        from mkts_backend.config.config import DatabaseConfig
+        from mkts_backend.config.db_config import DatabaseConfig
 
         configs = []
 

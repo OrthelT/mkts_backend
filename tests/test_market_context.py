@@ -14,9 +14,9 @@ class TestMarketContextCreation:
         ctx = primary_market_context
 
         assert ctx.alias == "primary"
-        assert ctx.name == "4-HWWF Keepstar"
+        assert ctx.name == "4-HWWF - Platestar"
         assert ctx.region_id == 10000003
-        assert ctx.structure_id == 1035466617946
+        assert ctx.structure_id == 1053654548169
         # In development mode, primary should use testing database
         assert ctx.database_alias == "wcmkttest"
         assert ctx.database_file == "wcmkttest.db"
@@ -28,23 +28,23 @@ class TestMarketContextCreation:
         ctx = deployment_market_context
 
         assert ctx.alias == "deployment"
-        assert ctx.name == "B-9C24 Keepstar"
+        assert ctx.name == "X47L-Q - Rogue Threshold"
         assert ctx.region_id == 10000023
-        assert ctx.structure_id == 1046831245129
+        assert ctx.structure_id == 1041669946862
         assert ctx.database_alias == "wcmktnorth"
         assert ctx.database_file == "wcmktnorth2.db"
         assert ctx.turso_url_env == "TURSO_WCMKTNORTH_URL"
         assert ctx.turso_token_env == "TURSO_WCMKTNORTH_TOKEN"
 
-    def test_create_primary_market_context_production(self):
+    def test_create_primary_market_context_production(self, monkeypatch):
         """Test that primary market context uses production db in production mode."""
-        from mkts_backend.config.market_context import MarketContext, _load_settings
+        from mkts_backend.config.market_context import MarketContext
+        from mkts_backend.config.settings_service import clear_cache
 
-        real_settings = _load_settings()
-        real_settings["app"]["environment"] = "production"
-
-        with patch("mkts_backend.config.market_context._load_settings", return_value=real_settings):
-            ctx = MarketContext.from_settings("primary")
+        monkeypatch.setenv("MKTS_ENVIRONMENT", "production")
+        clear_cache()
+        ctx = MarketContext.from_settings("primary")
+        clear_cache()
 
         assert ctx.alias == "primary"
         assert ctx.database_alias == "wcmktprod"
@@ -59,7 +59,7 @@ class TestMarketContextCreation:
         default = MarketContext.get_default()
 
         assert default.alias == "primary"
-        assert default.name == "4-HWWF Keepstar"
+        assert default.name == "4-HWWF - Platestar"
 
     def test_primary_and_deployment_have_different_databases(
         self, primary_market_context, deployment_market_context
@@ -69,12 +69,18 @@ class TestMarketContextCreation:
         assert primary_market_context.database_file != deployment_market_context.database_file
         assert primary_market_context.turso_url_env != deployment_market_context.turso_url_env
 
-    def test_primary_and_deployment_have_different_regions(
+    def test_primary_and_deployment_are_different_locations(
         self, primary_market_context, deployment_market_context
     ):
-        """Test that primary and deployment markets use different regions."""
-        assert primary_market_context.region_id != deployment_market_context.region_id
+        """Test that primary and deployment markets are distinct locations.
+
+        Primary is in region_id=10000003 (Vale of Silent), deployment is in
+        region_id=10000023 (Pure Blind). structure_id and system_id uniquely
+        identify the market hub within each region.
+        """
         assert primary_market_context.structure_id != deployment_market_context.structure_id
+        assert primary_market_context.system_id != deployment_market_context.system_id
+        assert primary_market_context.region_id != deployment_market_context.region_id
 
     def test_invalid_market_alias_raises_error(self):
         """Test that invalid market alias raises ValueError."""
@@ -135,21 +141,21 @@ class TestMarketContextIsolation:
         assert "WCMKTTEST" in primary_url_env
         assert "WCMKTNORTH" in deployment_url_env
 
-    def test_deployment_unaffected_by_environment(self):
+    def test_deployment_unaffected_by_environment(self, monkeypatch):
         """Test that deployment market is not affected by environment setting."""
-        from mkts_backend.config.market_context import MarketContext, _load_settings
+        from mkts_backend.config.market_context import MarketContext
+        from mkts_backend.config.settings_service import clear_cache
 
         # Test in development mode
-        dev_settings = _load_settings()
-        dev_settings["app"]["environment"] = "development"
-        with patch("mkts_backend.config.market_context._load_settings", return_value=dev_settings):
-            dev_ctx = MarketContext.from_settings("deployment")
+        monkeypatch.setenv("MKTS_ENVIRONMENT", "development")
+        clear_cache()
+        dev_ctx = MarketContext.from_settings("deployment")
 
         # Test in production mode
-        prod_settings = _load_settings()
-        prod_settings["app"]["environment"] = "production"
-        with patch("mkts_backend.config.market_context._load_settings", return_value=prod_settings):
-            prod_ctx = MarketContext.from_settings("deployment")
+        monkeypatch.setenv("MKTS_ENVIRONMENT", "production")
+        clear_cache()
+        prod_ctx = MarketContext.from_settings("deployment")
+        clear_cache()
 
         assert dev_ctx.database_alias == prod_ctx.database_alias == "wcmktnorth"
         assert dev_ctx.database_file == prod_ctx.database_file == "wcmktnorth2.db"

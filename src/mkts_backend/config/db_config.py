@@ -1,47 +1,42 @@
 import os
 from sqlalchemy import create_engine, text
 import pandas as pd
-import pathlib
 from typing import Optional, TYPE_CHECKING
-
-#os.environ.setdefault("RUST_LOG", "debug")
 
 import libsql
 from dotenv import load_dotenv
 from mkts_backend.config.logging_config import configure_logging
-from datetime import datetime, timezone
+from mkts_backend.config.settings_service import SettingsService
+from datetime import datetime
 from time import perf_counter
 import json
 from pathlib import Path
-import tomllib
 
 if TYPE_CHECKING:
     from mkts_backend.config.market_context import MarketContext
 
 load_dotenv()
-settings_file = "src/mkts_backend/config/settings.toml"
 
 logger = configure_logging(__name__)
 
-def load_settings(file_path: str = settings_file):
-    with open(file_path, "rb") as f:
-        settings = tomllib.load(f)
-        logger.debug(f"Settings loaded from {file_path}")
-    # Allow environment variable to override app.environment for temporary switching
-    env_override = os.environ.get("MKTS_ENVIRONMENT")
-    if env_override and "app" in settings:
-        logger.info(f"Environment overridden by MKTS_ENVIRONMENT: {env_override}")
-        settings["app"] = {**settings["app"], "environment": env_override}
-    return settings
+
+def _require_db_key(db_section: dict, key: str) -> str:
+    value = db_section.get(key)
+    if value is None:
+        raise ValueError(
+            f"settings.toml: [db].{key} is required but missing or null."
+        )
+    return value
+
 
 class DatabaseConfig:
-    settings = load_settings()
-    _production_db_alias = settings["db"]["production_database_alias"]
-    _production_db_file = settings["db"]["production_database_file"]
-    _testing_db_alias = settings["db"]["testing_database_alias"]
-    _testing_db_file = settings["db"]["testing_database_file"]
-    _deployment_db_alias = settings["db"].get("deployment_database_alias")
-    _deployment_db_file = settings["db"].get("deployment_database_file")
+    settings = SettingsService().settings_dict
+    _production_db_alias = _require_db_key(settings["db"], "production_database_alias")
+    _production_db_file = _require_db_key(settings["db"], "production_database_file")
+    _testing_db_alias = _require_db_key(settings["db"], "testing_database_alias")
+    _testing_db_file = _require_db_key(settings["db"], "testing_database_file")
+    _deployment_db_alias = _require_db_key(settings["db"], "deployment_database_alias")
+    _deployment_db_file = _require_db_key(settings["db"], "deployment_database_file")
 
 
     _db_paths = {
@@ -95,7 +90,10 @@ class DatabaseConfig:
             self.token = market_context.turso_token
             logger.info(f"DatabaseConfig initialized from MarketContext: {market_context.name}")
         else:
-            env = os.environ.get("MKTS_ENVIRONMENT", self.settings["app"]["environment"])
+            # SettingsService already applied MKTS_ENVIRONMENT override at load
+            # time — re-reading os.environ here would let the two configs drift
+            # if env was changed mid-process.
+            env = self.settings["app"]["environment"]
             if env == 'development':
                 alias = self._testing_db_alias
             elif alias is None or alias in ["wcmkt", "primary", "wcmktprod"]:

@@ -19,7 +19,8 @@ from mkts_backend.utils.utils import (
 )
 from mkts_backend.config.logging_config import configure_logging
 from mkts_backend.db.models import Base, MarketHistory, MarketOrders, UpdateLog, ESIRequestCache
-from mkts_backend.config.config import DatabaseConfig
+from mkts_backend.config.db_config import DatabaseConfig
+from mkts_backend.config.settings_service import SettingsService
 from mkts_backend.db.db_queries import get_table_length, get_remote_status
 
 if TYPE_CHECKING:
@@ -132,9 +133,9 @@ def upsert_database(
     Returns:
         True if successful, False otherwise
     """
-    WIPE_REPLACE_TABLES = ["marketstats", "doctrines", "jita_prices"]
+    wipe_replace_tables = SettingsService().wipe_replace_tables
     tabname = table.__tablename__
-    is_wipe_replace = tabname in WIPE_REPLACE_TABLES
+    is_wipe_replace = tabname in wipe_replace_tables
     logger.info(f"Processing table: {tabname}, wipe_replace: {is_wipe_replace}")
     logger.info(f"Upserting {len(df)} rows into {table.__tablename__}")
 

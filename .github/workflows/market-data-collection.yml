@@ -57,7 +57,8 @@ jobs:
         modules = [
             'mkts_backend',
             'mkts_backend.cli',
-            'mkts_backend.config.config',
+            'mkts_backend.config.db_config',
+            'mkts_backend.config.settings_service',
             'mkts_backend.config.market_context',
             'mkts_backend.config.logging_config',
             'mkts_backend.db.models',

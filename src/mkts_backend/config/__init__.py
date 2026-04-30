@@ -1,4 +1,4 @@
-from .config import DatabaseConfig as DatabaseConfig
+from .db_config import DatabaseConfig as DatabaseConfig
 from .esi_config import ESIConfig as ESIConfig
-from .config import load_settings as load_settings
 from .market_context import MarketContext
+from .settings_service import SettingsService

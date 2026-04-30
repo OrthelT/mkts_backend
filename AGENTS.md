@@ -82,9 +82,9 @@ The primary orchestration file that coordinates all data collection and processi
 - `calculate_doctrine_stats()` - Analyzes ship fitting availability
 - Regional order processing and system-specific market analysis
 
-### Database Layer (`config/config.py`, `db/db_handlers.py`)
+### Database Layer (`config/db_config.py`, `db/db_handlers.py`)
 Manages all database operations:
-- **DatabaseConfig class**: Handles both local SQLite and remote Turso database sync
+- **DatabaseConfig class** (in `config/db_config.py`): Handles both local SQLite and remote Turso database sync
   - Supports MarketContext-based initialization (preferred) or legacy alias-based init
   - `verify_db_exists()`: Ensures database and metadata are in consistent state
     - Handles 4 cases: neither exists, both exist, db without metadata, metadata without db
@@ -148,6 +148,51 @@ Configuration is now managed through `settings.toml` with market-specific config
 - **Market Settings:** `src/mkts_backend/config/settings.toml`
 - **ESI Config:** Auto-generated from MarketContext based on settings.toml
 - **Watchlist:** Database table with ~850 common items and WinterCo doctrine ships/fittings
+
+### Settings Access (`config/settings_service.py`)
+
+All `settings.toml` reads go through a single centralized service. **Do not parse the TOML
+directly** — import `SettingsService` and use a typed property or `settings_dict` for raw access.
+
+```python
+from mkts_backend.config.settings_service import (
+    SettingsService,
+    get_all_market_contexts,
+    get_all_characters,
+    clear_cache,
+)
+
+s = SettingsService()
+s.environment              # "production" or "development"
+s.log_level                # "INFO" / "DEBUG" / ...
+s.esi_user_agent           # User-Agent string for ESI requests
+s.wipe_replace_tables      # ["marketstats", "doctrines", "jita_prices"]
+s.settings_dict            # Raw dict, for keys without a typed accessor
+
+get_all_market_contexts()  # {"primary": MarketContext, "deployment": MarketContext}
+get_all_characters()       # list[CharacterConfig], merges legacy [chareacters] typo section
+```
+
+Behavior:
+- **Module-level cache.** First call parses the TOML; subsequent calls return the cached dict.
+- **Test reload.** Call `settings_service.clear_cache()` after mutating env vars or settings.toml in tests.
+- **Path resolution.** Uses `Path(__file__).parent / "settings.toml"` so it works from any CWD.
+- **Env override.** `MKTS_ENVIRONMENT=development` overrides `[app][environment]` at load time.
+
+### TOML Structure
+
+| Section | Purpose |
+|---|---|
+| `[app]` | Environment + log level |
+| `[esi]` | User-Agent, compatibility date |
+| `[auth]` | OAuth callback + token storage |
+| `[markets.<alias>]` | Per-market configuration (primary, deployment) — preferred over legacy `[market_data]` |
+| `[market_data]` | **Legacy.** Flat-keyed market values still read by `esi_config.py` class-level lookups. Falls back to deriving from `[markets.*]` if absent. |
+| `[db]` | Database aliases and shared file paths (`[db.shared]`) |
+| `[wipe_replace]` | `tables` — list of tables fully wiped/re-inserted on each upsert run (vs. incrementally upserted). Useful for resetting deployment history when switching regions. |
+| `[google_sheets]` | Sheets integration toggle + legacy URLs |
+| `[buildcost]` | `add_structure` CLI source sheet |
+| `[characters.<key>]` | Character definitions for asset checks |
 
 ## External Dependencies
 
@@ -612,7 +657,7 @@ For production deployment with remote database access:
 
 5. **Initial Sync**:
    ```python
-   from mkts_backend.config.config import DatabaseConfig
+   from mkts_backend.config.db_config import DatabaseConfig
 
    # Pull from Turso cloud → local (libsql sync is one-way: cloud → local)
    db = DatabaseConfig("wcmkt")
@@ -848,7 +893,8 @@ Side Channel:
 - **models.py**: Database schema definitions
 - **data_processing.py**: Statistics calculation
 - **gsheets_config.py**: Google Sheets integration
-- **config.py**: Database connection management
+- **db_config.py**: Database connection management (`DatabaseConfig` class)
+- **settings_service.py**: Centralized `settings.toml` loader (`SettingsService` class, module-level cache)
 - **cli_tools/prompter.py**: Multiline input prompter for paste mode (uses prompt_toolkit)
 - **cli_tools/fit_update.py**: Fit and doctrine management CLI commands (includes friendly name management)
 - **cli_tools/equiv_manager.py**: Module equivalents CLI commands (list, find, add, remove)

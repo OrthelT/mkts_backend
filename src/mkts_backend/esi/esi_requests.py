@@ -2,7 +2,7 @@ import os
 
 from mkts_backend.config.esi_config import ESIConfig
 from mkts_backend.config.logging_config import configure_logging
-from mkts_backend.config.config import load_settings, settings_file
+from mkts_backend.config.settings_service import SettingsService
 import requests
 import time
 import json
@@ -11,8 +11,7 @@ import millify
 
 logger = configure_logging(__name__)
 
-_settings = load_settings(settings_file)
-_USER_AGENT = _settings["esi"]["user_agent"]
+_USER_AGENT = SettingsService().esi_user_agent
 
 # Check if terminal output (progress prints) should be suppressed.
 # Set MKTS_QUIET=1 in CI/GitHub Actions to disable progress output.

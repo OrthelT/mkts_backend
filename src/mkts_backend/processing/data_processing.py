@@ -3,7 +3,7 @@ from typing import Optional, TYPE_CHECKING
 from mkts_backend.config.logging_config import configure_logging
 from mkts_backend.utils.db_utils import fix_null_doctrine_stats_timestamps
 from mkts_backend.db.models import MarketStats, MarketHistory
-from mkts_backend.config.config import DatabaseConfig
+from mkts_backend.config.db_config import DatabaseConfig
 from sqlalchemy.orm import Session
 from sqlalchemy import select, func
 from mkts_backend.db.db_queries import get_remote_status

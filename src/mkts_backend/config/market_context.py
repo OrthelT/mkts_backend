@@ -8,30 +8,11 @@ needed for a specific market (e.g., primary/4-HWWF or deployment/B-9C24).
 from dataclasses import dataclass
 from typing import Optional
 import os
-import tomllib
 
 from mkts_backend.config.logging_config import configure_logging
+from mkts_backend.config.settings_service import SettingsService
 
 logger = configure_logging(__name__)
-
-# Path to settings file - same as used in config.py
-SETTINGS_FILE = "src/mkts_backend/config/settings.toml"
-
-
-def _load_settings(file_path: str = SETTINGS_FILE) -> dict:
-    """Load settings from TOML file.
-
-    Respects the MKTS_ENVIRONMENT environment variable as a temporary override
-    for settings["app"]["environment"]. Use ``--env=development`` on the CLI
-    or ``export MKTS_ENVIRONMENT=development`` to switch without editing the file.
-    """
-    with open(file_path, "rb") as f:
-        settings = tomllib.load(f)
-    env_override = os.environ.get("MKTS_ENVIRONMENT")
-    if env_override and "app" in settings:
-        logger.info(f"Environment overridden by MKTS_ENVIRONMENT: {env_override}")
-        settings["app"] = {**settings["app"], "environment": env_override}
-    return settings
 
 
 @dataclass
@@ -56,13 +37,12 @@ class MarketContext:
     gsheets_worksheets: dict    # e.g., {"market_data": "market_data_4h", "doctrines": "doctrines_4h"}
 
     @classmethod
-    def from_settings(cls, alias: str, settings_file: str = SETTINGS_FILE) -> "MarketContext":
+    def from_settings(cls, alias: str) -> "MarketContext":
         """
-        Load market context from settings.toml.
+        Load market context from settings via the settings service.
 
         Args:
             alias: Market alias (e.g., "primary", "deployment")
-            settings_file: Path to settings.toml file
 
         Returns:
             MarketContext instance with all configuration for the specified market
@@ -70,24 +50,23 @@ class MarketContext:
         Raises:
             ValueError: If the alias is not found in settings
         """
-        settings = _load_settings(settings_file)
-        markets = settings.get("markets", {})
+        service = SettingsService()
+        markets = service.markets_raw
 
-        if alias not in markets:
-            available = [k for k in markets.keys() if k != "default"]
+        if alias not in markets or not isinstance(markets.get(alias), dict):
+            available = [k for k, v in markets.items() if k != "default" and isinstance(v, dict)]
             raise ValueError(f"Unknown market '{alias}'. Available: {available}")
 
         market_config = markets[alias]
 
-        # Determine database config based on environment
-        environment = settings.get("app", {}).get("environment", "production")
+        environment = service.environment
         db_alias = market_config["database_alias"]
         db_file = market_config["database_file"]
         turso_url_env = market_config["turso_url_env"]
         turso_token_env = market_config["turso_token_env"]
 
         if environment == "development" and alias == "primary":
-            db_section = settings.get("db", {})
+            db_section = service.db_section
             db_alias = db_section.get("testing_database_alias", db_alias)
             db_file = db_section.get("testing_database_file", db_file)
             turso_url_env = db_section.get("testing_turso_url_env", turso_url_env)
@@ -112,38 +91,35 @@ class MarketContext:
         return context
 
     @classmethod
-    def get_default(cls, settings_file: str = SETTINGS_FILE) -> "MarketContext":
+    def get_default(cls) -> "MarketContext":
         """
         Get the default market context as specified in settings.
 
         Returns:
             MarketContext for the default market (typically "primary")
         """
-        settings = _load_settings(settings_file)
-        default_alias = settings.get("markets", {}).get("default", "primary")
-        return cls.from_settings(default_alias, settings_file)
+        return cls.from_settings(SettingsService().default_market_alias)
 
     @classmethod
-    def list_available(cls, settings_file: str = SETTINGS_FILE) -> list[str]:
+    def list_available(cls) -> list[str]:
         """
         List all available market aliases.
 
         Returns:
             List of market alias strings (excludes "default" key)
         """
-        settings = _load_settings(settings_file)
-        markets = settings.get("markets", {})
-        return [k for k in markets.keys() if k != "default"]
+        markets = SettingsService().markets_raw
+        return [k for k, v in markets.items() if k != "default" and isinstance(v, dict)]
 
     @classmethod
-    def get_available_markets(cls, settings_file: str = SETTINGS_FILE) -> list[str]:
+    def get_available_markets(cls) -> list[str]:
         """
         Alias for list_available() - returns all available market aliases.
 
         Returns:
             List of market alias strings
         """
-        return cls.list_available(settings_file)
+        return cls.list_available()
 
     @property
     def turso_url(self) -> Optional[str]:

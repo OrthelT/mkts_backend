@@ -1,6 +1,6 @@
 import pandas as pd
 from sqlalchemy import text, insert, select, bindparam
-from mkts_backend.config.config import DatabaseConfig
+from mkts_backend.config.db_config import DatabaseConfig
 from mkts_backend.config.logging_config import configure_logging
 from mkts_backend.db.models import Watchlist, UpdateLog
 from datetime import datetime, timezone, timedelta

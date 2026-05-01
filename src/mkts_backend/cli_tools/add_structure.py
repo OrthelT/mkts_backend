@@ -70,8 +70,7 @@ def add_structure(args: list[str], market_alias: str = "primary") -> bool:
         print("Error: --local and --remote-only are mutually exclusive")
         return False
 
-    settings = SettingsService().settings_dict
-    buildcost_cfg = settings.get("buildcost", {})
+    buildcost_cfg = SettingsService().settings_dict.get("buildcost", {})
     if sheet_url is None:
         sheet_url = buildcost_cfg.get("sheet_url")
     if worksheet_name is None:

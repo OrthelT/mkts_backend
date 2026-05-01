@@ -11,6 +11,7 @@ from rich.console import Console
 from rich.table import Table
 from rich import box
 
+from mkts_backend.cli_tools.arg_utils import ParsedArgs
 from mkts_backend.config.logging_config import configure_logging
 from mkts_backend.config.market_context import MarketContext
 from mkts_backend.db.equiv_handlers import (
@@ -21,7 +22,6 @@ from mkts_backend.db.equiv_handlers import (
     resolve_type_id,
     find_equiv_by_attributes,
     ensure_equiv_table,
-    sync_equiv_to_remote,
 )
 
 logger = configure_logging(__name__)
@@ -35,10 +35,9 @@ def _get_target_markets(args: list[str], market_alias: str) -> list[str]:
     Defaults to ALL markets since equivalents are universal game data.
     Use --market=<alias> to target a single market.
     """
-    for arg in args:
-        if arg.startswith("--market="):
-            return [arg.split("=", 1)[1]]
-    # Default: all available markets
+    market = ParsedArgs(args).get_string("market")
+    if market:
+        return [market]
     return MarketContext.list_available()
 
 
@@ -60,11 +59,8 @@ def equiv_command(args: list[str], market_alias: str = "primary") -> bool:
 
     # Determine subcommand (first positional arg; "equiv" is already stripped
     # by the registry dispatcher before we're invoked).
-    subcommand = None
-    for arg in args:
-        if not arg.startswith("--"):
-            subcommand = arg
-            break
+    positionals = ParsedArgs(args).positionals()
+    subcommand = positionals[0] if positionals else None
 
     if subcommand == "list":
         # List only needs one market (they should be identical)
@@ -114,20 +110,16 @@ def _equiv_list(market_ctx) -> bool:
 
 def _equiv_add_all(args: list[str], target_aliases: list[str]) -> bool:
     """Add a new equivalence group to all target markets."""
-    type_ids_str = None
-    for arg in args:
-        if arg.startswith("--type-ids="):
-            type_ids_str = arg.split("=", 1)[1]
-
-    if not type_ids_str:
-        console.print("[red]Error: --type-ids is required[/red]")
-        console.print("Usage: mkts-backend equiv add --type-ids=13984,17838,15705")
+    p = ParsedArgs(args)
+    try:
+        type_ids = p.get_int_list("type-ids")
+    except Exception as e:
+        console.print(f"[red]Error: {e}[/red]")
         return False
 
-    try:
-        type_ids = [int(tid.strip()) for tid in type_ids_str.split(",") if tid.strip()]
-    except ValueError:
-        console.print("[red]Error: --type-ids must be comma-separated integers[/red]")
+    if not type_ids:
+        console.print("[red]Error: --type-ids is required[/red]")
+        console.print("Usage: mkts-backend equiv add --type-ids=13984,17838,15705")
         return False
 
     if len(type_ids) < 2:
@@ -161,14 +153,11 @@ def _equiv_add_all(args: list[str], target_aliases: list[str]) -> bool:
 
 def _equiv_remove_all(args: list[str], target_aliases: list[str]) -> bool:
     """Remove an equivalence group from all target markets."""
-    group_id = None
-    for arg in args:
-        if arg.startswith("--id="):
-            try:
-                group_id = int(arg.split("=", 1)[1])
-            except ValueError:
-                console.print("[red]Error: --id must be an integer[/red]")
-                return False
+    try:
+        group_id = ParsedArgs(args).get_int("id")
+    except Exception:
+        console.print("[red]Error: --id must be an integer[/red]")
+        return False
 
     if group_id is None:
         console.print("[red]Error: --id is required[/red]")
@@ -190,37 +179,29 @@ def _equiv_remove_all(args: list[str], target_aliases: list[str]) -> bool:
 
 def _equiv_find(args: list[str], target_aliases: list[str]) -> bool:
     """Find equivalent modules by attribute fingerprinting."""
-    type_id = None
-    name_query = None
-    do_add = "--add" in args
+    p = ParsedArgs(args)
+    do_add = p.has_flag("add")
+    name_query = p.get_string("name")
+    if name_query is not None:
+        name_query = name_query.strip('"').strip("'")
 
-    # Parse --type-id= flag
-    for arg in args:
-        if arg.startswith("--type-id="):
-            try:
-                type_id = int(arg.split("=", 1)[1])
-            except ValueError:
-                console.print("[red]Error: --type-id must be an integer[/red]")
-                return False
-        elif arg.startswith("--name="):
-            name_query = arg.split("=", 1)[1].strip('"').strip("'")
+    try:
+        type_id = p.get_int("type-id")
+    except Exception:
+        console.print("[red]Error: --type-id must be an integer[/red]")
+        return False
 
     # Positional arg: first non-flag arg after "find" ("equiv find" is
     # already stripped by the registry dispatcher).
     if type_id is None and name_query is None:
-        seen_find = False
-        for arg in args:
-            if arg.startswith("--"):
-                continue
-            if not seen_find and arg == "find":
-                seen_find = True
-                continue
-            # Numeric → type ID, otherwise name query
+        # First positional is "find" itself; the next is the query.
+        positionals = p.positionals()
+        candidate = positionals[1] if len(positionals) > 1 else None
+        if candidate is not None:
             try:
-                type_id = int(arg)
+                type_id = int(candidate)
             except ValueError:
-                name_query = arg
-            break
+                name_query = candidate
 
     if type_id is None and name_query is None:
         console.print("[red]Error: Provide a type ID or module name[/red]")

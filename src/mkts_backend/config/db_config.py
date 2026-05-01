@@ -20,30 +20,21 @@ load_dotenv()
 logger = configure_logging(__name__)
 
 
-def _require_db_key(db_section: dict, key: str) -> str:
-    value = db_section.get(key)
-    if value is None:
-        raise ValueError(
-            f"settings.toml: [db].{key} is required but missing or null."
-        )
-    return value
-
-
 class DatabaseConfig:
-    settings = SettingsService().settings_dict
-    _production_db_alias = _require_db_key(settings["db"], "production_database_alias")
-    _production_db_file = _require_db_key(settings["db"], "production_database_file")
-    _testing_db_alias = _require_db_key(settings["db"], "testing_database_alias")
-    _testing_db_file = _require_db_key(settings["db"], "testing_database_file")
-    _deployment_db_alias = _require_db_key(settings["db"], "deployment_database_alias")
-    _deployment_db_file = _require_db_key(settings["db"], "deployment_database_file")
+    _service = SettingsService()
+    _production_db_alias = _service.db_production_alias
+    _production_db_file = _service.db_production_file
+    _testing_db_alias = _service.db_testing_alias
+    _testing_db_file = _service.db_testing_file
+    _deployment_db_alias = _service.db_deployment_alias
+    _deployment_db_file = _service.db_deployment_file
 
 
     _db_paths = {
         _testing_db_alias: _testing_db_file,
-        "sde": settings["db"]["shared"]["sde_file"],
-        "fittings": settings["db"]["shared"]["fittings_file"],
-        "buildcost": settings["db"]["shared"]["buildcost_file"],
+        "sde": _service.db_sde_file,
+        "fittings": _service.db_fittings_file,
+        "buildcost": _service.db_buildcost_file,
         _production_db_alias: _production_db_file,
         _deployment_db_alias: _deployment_db_file,
     }

@@ -34,7 +34,8 @@ def _get_headers(market_ctx: Optional["MarketContext"] = None) -> dict:
             "X-Tenant": "tranquility",
         }
     if _DEFAULT_HEADERS is None:
-        esi = ESIConfig("primary")
+        from mkts_backend.config.market_context import MarketContext
+        esi = ESIConfig(market_context=MarketContext.from_settings("primary"))
         _DEFAULT_HEADERS = {
             "User-Agent": esi.user_agent,
             "Accept": "application/json",
@@ -178,7 +179,8 @@ async def async_history(watchlist: list[int] = None, region_id: int = None, mark
         if market_ctx is not None:
             region_id = market_ctx.region_id
         else:
-            region_id = ESIConfig("primary").region_id
+            from mkts_backend.config.market_context import MarketContext
+            region_id = MarketContext.from_settings("primary").region_id
 
     if watchlist is None:
         if market_ctx is not None:

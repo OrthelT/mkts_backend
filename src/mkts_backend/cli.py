@@ -35,7 +35,6 @@ from mkts_backend.cli_tools.args_parser import parse_args
 from mkts_backend.config.gsheets_config import GoogleSheetConfig
 from mkts_backend.config.market_context import MarketContext
 
-settings = SettingsService().settings_dict
 logger = configure_logging(__name__)
 
 
@@ -230,43 +229,26 @@ def process_doctrine_stats(market_ctx: Optional[MarketContext] = None):
         return False
 
 
-def google_sheets_update_workflow(market_ctx: Optional[MarketContext] = None):
-    """Update Google Sheets with market data."""
-    if market_ctx is not None:
-        # Use market-specific Google Sheets configuration
-        google_sheet_config = GoogleSheetConfig(market_context=market_ctx)
-        worksheets = market_ctx.gsheets_worksheets
+def google_sheets_update_workflow(market_ctx: MarketContext):
+    """Update Google Sheets with market data for the given market context."""
+    google_sheet_config = GoogleSheetConfig(market_context=market_ctx)
+    worksheets = market_ctx.gsheets_worksheets
 
-        # Update market orders sheet
-        market_orders_sheet = worksheets.get("market_orders", "market_orders")
-        update_google_sheet(
-            google_sheet_config,
-            sheet_name=market_orders_sheet,
-            table_name="marketorders",
-            market_ctx=market_ctx,
-        )
+    market_orders_sheet = worksheets.get("market_orders", "market_orders")
+    update_google_sheet(
+        google_sheet_config,
+        sheet_name=market_orders_sheet,
+        table_name="marketorders",
+        market_ctx=market_ctx,
+    )
 
-        # Update market data sheet
-        market_data_sheet = worksheets.get("market_data", "market_data")
-        update_google_sheet(
-            google_sheet_config,
-            sheet_name=market_data_sheet,
-            table_name="marketstats",
-            market_ctx=market_ctx,
-        )
-    else:
-        # Legacy behavior for backward compatibility
-        settings = SettingsService().settings_dict
-        google_sheet_url2 = settings["google_sheets"]["sheet_url2"]
-        google_sheet_config = GoogleSheetConfig(sheet_url=google_sheet_url2)
-        update_google_sheet(
-            google_sheet_config,
-            sheet_name="market_orders_4h",
-            table_name="marketorders",
-        )
-        update_google_sheet(
-            google_sheet_config, sheet_name="market_data_4h", table_name="marketstats"
-        )
+    market_data_sheet = worksheets.get("market_data", "market_data")
+    update_google_sheet(
+        google_sheet_config,
+        sheet_name=market_data_sheet,
+        table_name="marketstats",
+        market_ctx=market_ctx,
+    )
 
 
 def update_google_sheet(
@@ -439,7 +421,7 @@ def _run_market_pipeline(
 
     # Update Google Sheets if enabled and primary market
     if (
-        settings["google_sheets"]["enabled"]
+        SettingsService().gsheets_enabled
         and market_ctx.alias == "primary"
         and env != "development"
     ):

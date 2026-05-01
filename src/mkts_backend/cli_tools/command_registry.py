@@ -170,14 +170,12 @@ def _register_all(reg: CommandRegistry) -> None:
             display_fit_update_help()
             return True
 
-        # Determine subcommand (first positional arg)
-        subcommand = None
-        for arg in args:
-            if not arg.startswith("--"):
-                if arg == "fit-update":
-                    continue
-                subcommand = arg
-                break
+        # Determine subcommand (first positional arg, ignoring "fit-update"
+        # if the dispatcher left it in place).
+        subcommand = next(
+            (a for a in p.positionals() if a != "fit-update"),
+            None,
+        )
 
         if not subcommand:
             print("Error: fit-update requires a subcommand")
@@ -311,7 +309,7 @@ def _register_all(reg: CommandRegistry) -> None:
                 else:
                     metadata_dict = None
             else:
-                from fit_update import collect_fit_metadata_interactive
+                from mkts_backend.cli_tools.fit_update import collect_fit_metadata_interactive
                 metadata_dict = collect_fit_metadata_interactive(fit_id, fit_file)
 
             for target_market in target_markets:
@@ -555,7 +553,7 @@ def _register_all(reg: CommandRegistry) -> None:
     def _handle_esi_auth(args: list[str], market_alias: str) -> bool:
         from mkts_backend.cli_tools.arg_utils import ParsedArgs
         from mkts_backend.esi.esi_auth import authorize_character, REQUIRED_SCOPES
-        from mkts_backend.config.character_config import load_characters
+        from mkts_backend.config.settings_service import get_all_characters
 
         p = ParsedArgs(args)
         char_key = p.get_string("char")
@@ -563,7 +561,7 @@ def _register_all(reg: CommandRegistry) -> None:
         if char_key:
             authorize_character(char_key, REQUIRED_SCOPES)
         else:
-            characters = load_characters()
+            characters = get_all_characters()
             print("Available characters:")
             for i, char in enumerate(characters, 1):
                 print(f"  {i}. {char.name} (key: {char.key})")

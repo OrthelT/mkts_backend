@@ -1023,8 +1023,5 @@ def display_fit_market_status(
 
 
 if __name__ == "__main__":
-    # rni = "data/rni.txt"
-    # maelstrom = "data/maelstrom.txt"
-    # update_fit_workflow(901, rni, "data/rni.txt", remote=False, clear_existing=True, dry_run=True, target_alias="wcmkt")
     pass
 

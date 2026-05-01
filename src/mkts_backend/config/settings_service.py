@@ -18,6 +18,7 @@ import os
 import sys
 import tomllib
 from pathlib import Path
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Optional
 
 if TYPE_CHECKING:
@@ -28,6 +29,7 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_SETTINGS_PATH = Path(__file__).parent / "settings.toml"
 _cached_settings: dict | None = None
+_cached_settings_view: MappingProxyType | None = None
 
 
 def _load_settings(path: Optional[Path] = None) -> dict:
@@ -42,12 +44,13 @@ def _load_settings(path: Optional[Path] = None) -> dict:
     Default path: cached on first call.
     Explicit path: bypasses the cache entirely and never populates it.
     """
-    global _cached_settings
+    global _cached_settings, _cached_settings_view
     if path is not None:
         return _read_settings_file(path)
     if _cached_settings is not None:
         return _cached_settings
     _cached_settings = _read_settings_file(_DEFAULT_SETTINGS_PATH)
+    _cached_settings_view = MappingProxyType(_cached_settings)
     return _cached_settings
 
 
@@ -65,8 +68,9 @@ def _read_settings_file(settings_path: Path) -> dict:
 
 def clear_cache() -> None:
     """Drop the cached settings dict. Intended for tests that mutate the TOML."""
-    global _cached_settings
+    global _cached_settings, _cached_settings_view
     _cached_settings = None
+    _cached_settings_view = None
 
 
 class SettingsService:
@@ -80,11 +84,37 @@ class SettingsService:
     def __init__(self, settings_path: str | Path | None = None):
         path = Path(settings_path) if settings_path is not None else None
         self.settings = _load_settings(path)
+        # Reuse the module-level proxy when possible (default path, cache hit)
+        # so two instances return identical view objects. Explicit-path
+        # instances build a per-instance view since they bypass the cache.
+        if path is None and _cached_settings_view is not None and self.settings is _cached_settings:
+            self._view: MappingProxyType = _cached_settings_view
+        else:
+            self._view = MappingProxyType(self.settings)
 
     @property
-    def settings_dict(self) -> dict:
-        """Return the full settings dictionary for raw access."""
-        return self.settings
+    def settings_dict(self) -> MappingProxyType:
+        """Return the full settings dictionary as a read-only view.
+
+        The wrap is shallow — nested dicts can still be mutated, but the
+        top-level cache cannot be replaced or have keys added/removed.
+        Prefer the typed properties below for stable access.
+        """
+        return self._view
+
+    def _require(self, *path: str) -> str | int | bool | list:
+        """Walk a nested key path, raising KeyError with a helpful message
+        if any segment is absent or null."""
+        node = self.settings
+        for i, key in enumerate(path):
+            if not isinstance(node, dict) or key not in node:
+                trail = ".".join(path[: i + 1])
+                raise KeyError(f"settings.toml: [{trail}] is required but missing.")
+            node = node[key]
+        if node is None:
+            trail = ".".join(path)
+            raise KeyError(f"settings.toml: [{trail}] is required but null.")
+        return node
 
     # ---- [app] ----
 
@@ -157,57 +187,56 @@ class SettingsService:
         return self.settings.get("markets", {}).get("default", "primary")
 
     @property
-    def markets_raw(self) -> dict:
-        """Raw [markets] section, including the 'default' key."""
-        return self.settings.get("markets", {})
+    def markets_raw(self) -> MappingProxyType:
+        """Raw [markets] section as a read-only view, including the 'default' key."""
+        return MappingProxyType(self.settings.get("markets", {}))
 
     # ---- [db] ----
 
     @property
-    def db_section(self) -> dict:
-        return self.settings.get("db", {})
+    def db_section(self) -> MappingProxyType:
+        """Raw [db] section as a read-only view."""
+        return MappingProxyType(self.settings.get("db", {}))
 
-    # ---- [market_data] (legacy) ----
+    @property
+    def db_production_alias(self) -> str:
+        return self._require("db", "production_database_alias")
 
-    def get_market_data_legacy(self) -> dict:
-        """Return the legacy ``[market_data]`` section.
+    @property
+    def db_production_file(self) -> str:
+        return self._require("db", "production_database_file")
 
-        If the section is absent (or empty), derives equivalent values from the
-        modern ``[markets.primary]`` and ``[markets.deployment]`` sections so
-        callers that depend on the flat-keyed shape (``primary_region_id`` etc.)
-        keep working. Raises ``KeyError`` if a required ID is missing — there
-        is no EVE region/system/structure 0, so silent zero-defaults would just
-        produce 404s far from the root cause. New code should use
-        ``MarketContext`` via ``get_all_market_contexts()`` instead.
-        """
-        market_data = self.settings.get("market_data") or {}
-        if market_data:
-            return market_data
+    @property
+    def db_testing_alias(self) -> str:
+        return self._require("db", "testing_database_alias")
 
-        markets = self.settings.get("markets", {})
-        primary = markets.get("primary") if isinstance(markets.get("primary"), dict) else None
-        deployment = markets.get("deployment") if isinstance(markets.get("deployment"), dict) else None
-        if primary is None:
-            raise KeyError(
-                "settings.toml: [market_data] is absent and [markets.primary] "
-                "is missing — cannot derive legacy market data."
-            )
-        if deployment is None:
-            raise KeyError(
-                "settings.toml: [market_data] is absent and [markets.deployment] "
-                "is missing — cannot derive legacy market data."
-            )
-        return {
-            "primary_region_id": primary["region_id"],
-            "primary_system_id": primary["system_id"],
-            "primary_structure_id": primary["structure_id"],
-            "primary_market_name": primary.get("name", ""),
-            "deployment_region_id": deployment["region_id"],
-            "deployment_system_id": deployment["system_id"],
-            "deployment_structure_id": deployment["structure_id"],
-            "deployment_market_name": deployment.get("name", ""),
-        }
+    @property
+    def db_testing_file(self) -> str:
+        return self._require("db", "testing_database_file")
 
+    @property
+    def db_deployment_alias(self) -> str:
+        return self._require("db", "deployment_database_alias")
+
+    @property
+    def db_deployment_file(self) -> str:
+        return self._require("db", "deployment_database_file")
+
+    @property
+    def db_sde_file(self) -> str:
+        return self._require("db", "shared", "sde_file")
+
+    @property
+    def db_fittings_file(self) -> str:
+        return self._require("db", "shared", "fittings_file")
+
+    @property
+    def db_buildcost_file(self) -> str:
+        return self._require("db", "shared", "buildcost_file")
+
+    @property
+    def db_cli_cache_file(self) -> str:
+        return self._require("db", "shared", "cli_cache_file")
 
 # ---- Domain helpers ----
 

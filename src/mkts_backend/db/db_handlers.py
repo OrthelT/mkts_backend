@@ -5,8 +5,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from dotenv import load_dotenv
 from datetime import datetime, timezone
-from typing import Optional, TYPE_CHECKING
-import time
+from typing import Optional, TYPE_CHECKING, TypeVar
 import numpy as np
 import os
 import json
@@ -18,7 +17,7 @@ from mkts_backend.utils.utils import (
     get_type_names_from_df,
 )
 from mkts_backend.config.logging_config import configure_logging
-from mkts_backend.db.models import Base, MarketHistory, MarketOrders, UpdateLog, ESIRequestCache
+from mkts_backend.db.models import Base, MarketHistory, MarketOrders, UpdateLog
 from mkts_backend.config.db_config import DatabaseConfig
 from mkts_backend.config.settings_service import SettingsService
 from mkts_backend.db.db_queries import get_table_length, get_remote_status
@@ -33,6 +32,7 @@ QUIET = os.environ.get("MKTS_QUIET", "0") == "1"
 # Lazy initialization - these will be initialized on first use or via market_ctx
 _db = None
 _sde_db = None
+TableModel = TypeVar("TableModel", bound=Base)
 
 def _get_db(market_ctx: Optional["MarketContext"] = None) -> DatabaseConfig:
     """Get database config, optionally using market context."""
@@ -119,7 +119,7 @@ def handle_nulls(df: pd.DataFrame, tabname: str) -> pd.DataFrame:
     return df
 
 def upsert_database(
-    table: Base,
+    table: type[TableModel],
     df: pd.DataFrame,
     market_ctx: Optional["MarketContext"] = None
 ) -> bool:

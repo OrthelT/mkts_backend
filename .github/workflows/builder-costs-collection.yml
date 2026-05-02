@@ -1,0 +1,66 @@
+name: Builder Costs Collection
+
+on:
+  schedule:
+    - cron: '45 */6 * * *'
+  workflow_dispatch: # Allow manual triggering
+
+jobs:
+  collect-builder-costs:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: astral-sh/setup-uv@v5
+        with:
+          version: "latest"
+      - run: uv sync
+      - run: uv pip install -e .
+      - run: mkdir -p logs data databackup
+      - name: Restore cached databases
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            sdelite.db
+            sdelite.db-info
+            wcfitting.db
+            wcfitting.db-info
+            wcmktprod.db
+            wcmktprod.db-info
+            wcmktnorth2.db
+            wcmktnorth2.db-info
+          key: builder-cost-dbs-v1-${{ github.run_id }}
+          restore-keys: |
+            builder-cost-dbs-v1-
+      - name: Run builder costs collection
+        run: uv run mkts-backend update-builder-costs
+        env:
+          TURSO_WCMKTPROD_URL: ${{ secrets.TURSO_WCMKTPROD_URL }}
+          TURSO_WCMKTPROD_TOKEN: ${{ secrets.TURSO_WCMKTPROD_TOKEN }}
+          TURSO_WCMKTNORTH_URL: ${{ secrets.TURSO_WCMKTNORTH_URL }}
+          TURSO_WCMKTNORTH_TOKEN: ${{ secrets.TURSO_WCMKTNORTH_TOKEN }}
+          TURSO_SDE_URL: ${{ secrets.TURSO_SDE_URL }}
+          TURSO_SDE_TOKEN: ${{ secrets.TURSO_SDE_TOKEN }}
+      - name: Save cached databases
+        uses: actions/cache/save@v4
+        if: success()
+        with:
+          path: |
+            sdelite.db
+            sdelite.db-info
+            wcfitting.db
+            wcfitting.db-info
+            wcmktprod.db
+            wcmktprod.db-info
+            wcmktnorth2.db
+            wcmktnorth2.db-info
+          key: builder-cost-dbs-v1-${{ github.run_id }}
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: builder-costs-logs
+          path: logs/

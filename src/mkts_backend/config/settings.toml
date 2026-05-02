@@ -111,7 +111,7 @@ default_worksheet = ""  # empty = first worksheet in the spreadsheet
 # options = ["marketstats", "doctrines", "jita_prices", "marketorders", "market_history"]
 
 [wipe_replace]
-tables = ["marketstats", "doctrines", "jita_prices"]
+tables = ["marketstats", "doctrines", "jita_prices", "builder_costs"]
 
 
 # ============================================================================

@@ -204,6 +204,24 @@ class JitaPrices(Base):
         )
 
 
+class BuilderCosts(Base):
+    __tablename__ = "builder_costs"
+    type_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    total_cost_per_unit: Mapped[float] = mapped_column(Float)
+    time_per_unit: Mapped[float] = mapped_column(Float)
+    me: Mapped[int] = mapped_column(Integer)
+    runs: Mapped[int] = mapped_column(Integer)
+    fetched_at: Mapped[DateTime] = mapped_column(DateTime)
+
+    def __repr__(self) -> str:
+        return (
+            f"BuilderCosts(type_id={self.type_id!r}, "
+            f"total_cost_per_unit={self.total_cost_per_unit!r}, "
+            f"time_per_unit={self.time_per_unit!r}, me={self.me!r}, "
+            f"runs={self.runs!r}, fetched_at={self.fetched_at!r})"
+        )
+
+
 class ModuleEquivalents(Base):
     """
     Maps equivalent faction modules that can be used interchangeably.

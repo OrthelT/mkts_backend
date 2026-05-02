@@ -22,6 +22,9 @@ on:
         default: false
         type: boolean
 
+# DEPRECIATE [actions/cache/restore@v4, actions/cache/save@v4, actions/checkout@v4, 
+# actions/setup-python@v5, actions/upload-artifact@v4, astral-sh/setup-uv@v5]
+
 jobs:
   collect-market-data:
     runs-on: ubuntu-latest
@@ -32,15 +35,15 @@ jobs:
 
     steps:
     - name: Checkout repository
-      uses: actions/checkout@v4
+      uses: actions/checkout@v6
 
     - name: Set up Python
-      uses: actions/setup-python@v5
+      uses: actions/setup-python@v6
       with:
         python-version: '3.12'
 
     - name: Install uv
-      uses: astral-sh/setup-uv@v5
+      uses: astral-sh/setup-uv@v7
       with:
         version: "latest"
 
@@ -80,7 +83,7 @@ jobs:
         mkdir -p databackup
 
     - name: Restore cached databases
-      uses: actions/cache/restore@v4
+      uses: actions/cache/restore@v5
       id: db-cache
       with:
         path: |
@@ -167,10 +170,10 @@ jobs:
         fi
         echo "Running: uv run mkts-backend update-markets --market=${{ matrix.market }} $HISTORY_FLAG"
         uv run mkts-backend update-markets --market=${{ matrix.market }} $HISTORY_FLAG
-      timeout-minutes: 30
+      timeout-minutes: 15
 
     - name: Save database cache
-      uses: actions/cache/save@v4
+      uses: actions/cache/save@v5
       if: success()
       with:
         path: |
@@ -185,7 +188,7 @@ jobs:
         key: turso-dbs-v2-${{ matrix.market }}-${{ github.run_id }}
 
     - name: Upload logs as artifacts
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       if: always()
       with:
         name: market-data-logs-${{ matrix.market }}-${{ github.run_number }}

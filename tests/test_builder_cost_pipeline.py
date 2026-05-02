@@ -1,3 +1,4 @@
+from datetime import datetime, timezone
 from unittest.mock import MagicMock, patch
 
 import pandas as pd
@@ -63,7 +64,7 @@ class TestProcessBuilderCosts:
                 "time_per_unit": 60.0,
                 "me": 4,
                 "runs": 5,
-                "fetched_at": "2026-04-17T00:00:00+00:00",
+                "fetched_at": datetime(2026, 4, 17, tzinfo=timezone.utc),
             }
         ]
         mock_read_sql_query.return_value = pd.DataFrame(
@@ -135,7 +136,7 @@ class TestProcessBuilderCosts:
                 "time_per_unit": 60.0,
                 "me": 4,
                 "runs": 5,
-                "fetched_at": "2026-04-17T00:00:00+00:00",
+                "fetched_at": datetime(2026, 4, 17, tzinfo=timezone.utc),
             }
         ]
 
@@ -216,7 +217,7 @@ class TestProcessBuilderCosts:
                 "time_per_unit": 60.0,
                 "me": 4,
                 "runs": 5,
-                "fetched_at": "2026-04-17T00:00:00+00:00",
+                "fetched_at": datetime(2026, 4, 17, tzinfo=timezone.utc),
             }
         ]
         mock_upsert.side_effect = [True, False]

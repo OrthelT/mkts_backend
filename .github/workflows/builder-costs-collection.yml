@@ -46,7 +46,7 @@ jobs:
           TURSO_SDE_TOKEN: ${{ secrets.TURSO_SDE_TOKEN }}
       - name: Save cached databases
         uses: actions/cache/save@v4
-        if: always()
+        if: success()
         with:
           path: |
             sdelite.db

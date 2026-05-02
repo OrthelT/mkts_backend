@@ -49,10 +49,10 @@ class WatchlistMetadata(TypedDict):
 class BuilderCostRecord(TypedDict):
     type_id: int
     total_cost_per_unit: float
-    time_per_unit: float | None
+    time_per_unit: float
     me: int
     runs: int
-    fetched_at: str
+    fetched_at: datetime
 
 
 def _parse_iso_duration(value: str | None) -> float | None:
@@ -98,26 +98,29 @@ def _resolve_api_params(
     return (0, 1)
 
 
+_META_GROUP_CHUNK_SIZE = 500  # keep well under libsql/sqlite var limits (matches db_handlers)
+
+
 def _get_meta_groups(type_ids: list[int], sde_engine: Engine) -> dict[int, int]:
     if not type_ids:
         return {}
 
-    placeholders = ", ".join(f":type_id_{index}" for index, _ in enumerate(type_ids))
-    params = {f"type_id_{index}": type_id for index, type_id in enumerate(type_ids)}
-    query = text(
-        f"SELECT typeID, metaGroupID FROM sdetypes WHERE typeID IN ({placeholders})"
-    )
-
+    meta_groups: dict[int, int] = {}
     with sde_engine.connect() as conn:
-        result = conn.execute(query, params)
-        meta_groups: dict[int, int] = {}
-        for row in result.mappings():
-            type_id = row.get("typeID")
-            meta_group_id = row.get("metaGroupID")
-            if type_id is None or meta_group_id is None:
-                continue
-            meta_groups[int(type_id)] = int(meta_group_id)
-        return meta_groups
+        for start in range(0, len(type_ids), _META_GROUP_CHUNK_SIZE):
+            chunk = type_ids[start : start + _META_GROUP_CHUNK_SIZE]
+            placeholders = ", ".join(f":type_id_{index}" for index, _ in enumerate(chunk))
+            params = {f"type_id_{index}": type_id for index, type_id in enumerate(chunk)}
+            query = text(
+                f"SELECT typeID, metaGroupID FROM sdetypes WHERE typeID IN ({placeholders})"
+            )
+            for row in conn.execute(query, params).mappings():
+                type_id = row.get("typeID")
+                meta_group_id = row.get("metaGroupID")
+                if type_id is None or meta_group_id is None:
+                    continue
+                meta_groups[int(type_id)] = int(meta_group_id)
+    return meta_groups
 
 
 def _build_request_url(type_id: int, me: int, runs: int) -> str:
@@ -171,13 +174,18 @@ async def _fetch_one(
         logger.warning(f"EverRef response missing total_cost_per_unit for {type_id}")
         return None
 
+    time_per_unit = _parse_iso_duration(result.get("time_per_unit"))
+    if time_per_unit is None:
+        logger.warning(f"EverRef response missing time_per_unit for {type_id}")
+        return None
+
     return {
         "type_id": type_id,
         "total_cost_per_unit": float(total_cost),
-        "time_per_unit": _parse_iso_duration(result.get("time_per_unit")),
+        "time_per_unit": time_per_unit,
         "me": me,
         "runs": runs,
-        "fetched_at": datetime.now(timezone.utc).isoformat(),
+        "fetched_at": datetime.now(timezone.utc),
     }
 
 

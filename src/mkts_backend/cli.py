@@ -364,8 +364,6 @@ def process_builder_costs(market_contexts: list[MarketContext]) -> bool:
         except Exception as exc:
             logger.error(f"Failed to prepare database for {ctx.alias}: {exc}")
             return False
-        finally:
-            db.engine.dispose()
 
     if not available_contexts:
         logger.warning("No market databases available for builder cost collection")
@@ -379,8 +377,6 @@ def process_builder_costs(market_contexts: list[MarketContext]) -> bool:
         except SQLAlchemyError as exc:
             logger.error(f"Failed to read watchlist for {ctx.alias}: {exc}")
             return False
-        finally:
-            db.engine.dispose()
 
         if watchlist.empty:
             continue
@@ -425,8 +421,6 @@ def process_builder_costs(market_contexts: list[MarketContext]) -> bool:
             logger.warning(
                 f"Failed to read Jita prices from {ctx.alias}; continuing with empty map: {exc}"
             )
-        finally:
-            db.engine.dispose()
 
     sde_db = DatabaseConfig("sde")
     sde_engine = sde_db.engine

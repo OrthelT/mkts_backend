@@ -58,11 +58,11 @@ This keeps collection focused on items that can realistically be modeled as buil
 ```sql
 CREATE TABLE builder_costs (
     type_id INTEGER PRIMARY KEY,
-    total_cost_per_unit REAL,
-    time_per_unit REAL,
-    me INTEGER,
-    runs INTEGER,
-    fetched_at TEXT
+    total_cost_per_unit FLOAT NOT NULL,
+    time_per_unit FLOAT NOT NULL,
+    me INTEGER NOT NULL,
+    runs INTEGER NOT NULL,
+    fetched_at DATETIME NOT NULL
 );
 ```
 

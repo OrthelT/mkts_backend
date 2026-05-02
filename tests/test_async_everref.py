@@ -1,3 +1,4 @@
+from datetime import datetime, timezone
 from unittest.mock import patch
 
 import pytest
@@ -93,7 +94,7 @@ class TestAsyncFetchBuilderCosts:
                     "time_per_unit": 60.0,
                     "me": 10,
                     "runs": 10,
-                    "fetched_at": "2026-04-17T00:00:00+00:00",
+                    "fetched_at": datetime(2026, 4, 17, tzinfo=timezone.utc),
                 },
                 None,
             ],

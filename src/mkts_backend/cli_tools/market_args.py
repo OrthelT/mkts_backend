@@ -36,6 +36,27 @@ def resolve_market_alias(args: list[str]) -> str | None:
     return None if resolved == _UNSPECIFIED else resolved
 
 
+def resolve_market_alias_interactive(default: str = "primary") -> str:
+    """Prompt the user to pick a market alias when the current choice is ambiguous.
+
+    Returns one of ``primary`` / ``deployment`` / ``both``. In non-TTY
+    sessions returns ``default`` without prompting so scripts keep working.
+    """
+    if not sys.stdin.isatty():
+        return default
+    from rich.console import Console
+    from rich.prompt import Prompt
+
+    console = Console()
+    console.print("\n[yellow]This command needs a specific market — pick one:[/yellow]")
+    console.print("  1) primary")
+    console.print("  2) deployment")
+    console.print("  3) both")
+    default_choice = {"primary": "1", "deployment": "2", "both": "3"}.get(default, "1")
+    choice = Prompt.ask("Choice", choices=["1", "2", "3"], default=default_choice)
+    return {"1": "primary", "2": "deployment", "3": "both"}[choice]
+
+
 def parse_market_args(args: list[str], default: str = "primary") -> str:
     """Scan args for market flags and return a normalized market alias.
 

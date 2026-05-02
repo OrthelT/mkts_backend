@@ -2,6 +2,7 @@ import csv
 
 from mkts_backend.config.logging_config import configure_logging
 from mkts_backend.utils.db_utils import add_missing_items_to_watchlist
+from mkts_backend.cli_tools.arg_utils import ParsedArgs
 from mkts_backend.cli_tools.market_args import MARKET_DB_MAP
 from mkts_backend.cli_tools.prompter import get_multiline_input
 from mkts_backend.utils.get_type_info import get_type_from_list
@@ -36,22 +37,19 @@ def add_watchlist(args: list[str], market_alias: str = "primary") -> None:
         market_alias: Normalized market alias from parse_market_args
                       ("primary", "deployment", or "both").
     """
-    type_ids_str = None
-    file_path = None
-    for arg in args:
-        if arg.startswith("--type_id="):
-            type_ids_str = arg.split("=", 1)[1]
-        elif arg.startswith("--file="):
-            file_path = arg.split("=", 1)[1]
-        elif arg.startswith("--paste"):
-            paste = get_multiline_input()
-            if not paste:
-                logger.error("No paste input provided")
-                print("Error: No paste input provided")
-                return False
-            with open("paste.txt", "w") as f:
-                f.write(paste)
-            file_path = "paste.txt"
+    p = ParsedArgs(args)
+    type_ids_str = p.get_string("type_id", "type-id")
+    file_path = p.get_string("file")
+
+    if p.has_flag("paste"):
+        paste = get_multiline_input()
+        if not paste:
+            logger.error("No paste input provided")
+            print("Error: No paste input provided")
+            return False
+        with open("paste.txt", "w") as f:
+            f.write(paste)
+        file_path = "paste.txt"
 
     if type_ids_str and file_path:
         print("Error: --type_id and --file are mutually exclusive")
@@ -77,7 +75,7 @@ def add_watchlist(args: list[str], market_alias: str = "primary") -> None:
         return None
 
     # Default to remote database, use --local flag for local database
-    remote = "--local" not in args
+    remote = not p.has_flag("local")
 
     # Determine target database(s) from market alias
     if market_alias == "both":

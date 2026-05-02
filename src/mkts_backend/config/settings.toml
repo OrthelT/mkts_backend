@@ -38,7 +38,6 @@ database_alias = "wcmktprod"
 database_file = "wcmktprod.db"
 turso_url_env = "TURSO_WCMKTPROD_URL"
 turso_token_env = "TURSO_WCMKTPROD_TOKEN"
-#gsheets_url = "https://docs.google.com/spreadsheets/d/1sLr5VaUsHKfwZV_CA1K1o2bfywwzl4w-FGYWVnKmwKA/edit" #USER
 gsheets_url = "https://docs.google.com/spreadsheets/d/1I5XwtI9dfAVE4E73v3Lwr8z3od-ibr3h_evBeaAuhaw/edit" # wc_northern_supply
 
 
@@ -62,22 +61,6 @@ gsheets_url = "https://docs.google.com/spreadsheets/d/1I5XwtI9dfAVE4E73v3Lwr8z3o
 market_orders = "market_orders_b9"
 market_data = "market_data_b9"
 doctrines = "doctrines_mkt_b9"
-
-# ============================================================================
-# LEGACY MARKET DATA (for backward compatibility)
-# ============================================================================
-# These values are used by legacy code that hasn't been migrated to MarketContext.
-# Prefer using [markets] sections for new code.
-
-[market_data]
-primary_region_id = 10000003
-deployment_region_id = 10000023
-primary_system_id = 30000240
-deployment_system_id = 30001967
-primary_structure_id = 1053654548169
-deployment_structure_id = 1041669946862
-primary_market_name = "4-HWWF - Platestar"
-deployment_market_name = "X47L-Q - Rogue Threshold"
 
 # ============================================================================
 # SHARED DATABASE CONFIGURATION
@@ -113,9 +96,6 @@ buildcost_file = "buildcost.db"
 
 [google_sheets]
 enabled = false
-# Legacy URLs (prefer using market-specific URLs in [markets] sections)
-sheet_url = "https://docs.google.com/spreadsheets/d/1RmNJB9Yz4lG6kKKitGQ0zDuPbOiSe0ywn4SbSKabdwc/edit"
-sheet_url2 = "https://docs.google.com/spreadsheets/d/1sLr5VaUsHKfwZV_CA1K1o2bfywwzl4w-FGYWVnKmwKA/edit"
 
 # Source sheet for the `add_structure` CLI (imports rows into buildcost.db structures table).
 [buildcost]
@@ -128,9 +108,11 @@ default_worksheet = ""  # empty = first worksheet in the spreadsheet
 # Tables listed here are fully wiped and re-inserted on each upsert run,
 # rather than incrementally upserted. Useful when stale rows must disappear
 # (e.g., resetting deployment history when switching regions).
+# options = ["marketstats", "doctrines", "jita_prices", "marketorders", "market_history"]
 
 [wipe_replace]
 tables = ["marketstats", "doctrines", "jita_prices"]
+
 
 # ============================================================================
 # CHARACTERS - For Asset Checks

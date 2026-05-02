@@ -174,7 +174,8 @@ def fetch_market_orders(
 
 
 def fetch_history(watchlist: pd.DataFrame) -> list[dict]:
-    esi = ESIConfig("primary")
+    from mkts_backend.config.market_context import MarketContext
+    esi = ESIConfig(market_context=MarketContext.from_settings("primary"))
     url = esi.market_history_url
     error_count = 0
     total_time_taken = 0

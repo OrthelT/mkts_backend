@@ -62,32 +62,6 @@ def test_get_all_characters_returns_configured_characters():
     assert "Orthel Toralen" in names
 
 
-def test_market_data_legacy_falls_back_to_markets_section():
-    """When [market_data] is missing/empty, derive from [markets.*]."""
-    fake = {
-        "markets": {
-            "primary": {
-                "name": "Primary",
-                "region_id": 1,
-                "system_id": 2,
-                "structure_id": 3,
-            },
-            "deployment": {
-                "name": "Deployment",
-                "region_id": 4,
-                "system_id": 5,
-                "structure_id": 6,
-            },
-        },
-    }
-    s = SettingsService.__new__(SettingsService)
-    s.settings = fake
-    md = s.get_market_data_legacy()
-    assert md["primary_region_id"] == 1
-    assert md["deployment_structure_id"] == 6
-    assert md["primary_market_name"] == "Primary"
-
-
 # ---------------------------------------------------------------------------
 # Error-path coverage
 # ---------------------------------------------------------------------------
@@ -121,34 +95,6 @@ def test_explicit_path_bypasses_cache(tmp_path):
     # Default path still loads fresh — explicit path didn't poison the cache.
     default = SettingsService()
     assert default.app_name != "alt"
-
-
-def test_market_data_legacy_raises_when_primary_missing():
-    """Missing [markets.primary] should raise — not return zeros."""
-    s = SettingsService.__new__(SettingsService)
-    s.settings = {"markets": {"deployment": {"region_id": 1, "system_id": 2, "structure_id": 3}}}
-    with pytest.raises(KeyError, match=r"\[markets\.primary\]"):
-        s.get_market_data_legacy()
-
-
-def test_market_data_legacy_raises_when_deployment_missing():
-    s = SettingsService.__new__(SettingsService)
-    s.settings = {"markets": {"primary": {"region_id": 1, "system_id": 2, "structure_id": 3}}}
-    with pytest.raises(KeyError, match=r"\[markets\.deployment\]"):
-        s.get_market_data_legacy()
-
-
-def test_market_data_legacy_raises_when_required_id_missing():
-    """A [markets.primary] without region_id should fail loudly, not zero-default."""
-    s = SettingsService.__new__(SettingsService)
-    s.settings = {
-        "markets": {
-            "primary": {"name": "P", "system_id": 2, "structure_id": 3},  # no region_id
-            "deployment": {"region_id": 4, "system_id": 5, "structure_id": 6},
-        }
-    }
-    with pytest.raises(KeyError, match="region_id"):
-        s.get_market_data_legacy()
 
 
 def test_environment_override_applies_after_first_load(monkeypatch):

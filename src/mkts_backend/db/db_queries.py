@@ -1,5 +1,5 @@
 from sqlalchemy import text
-from typing import Optional, TYPE_CHECKING
+from typing import Any, Optional, TYPE_CHECKING
 import pandas as pd
 from mkts_backend.config.db_config import DatabaseConfig
 
@@ -14,89 +14,81 @@ def _get_db(market_ctx: Optional["MarketContext"] = None) -> DatabaseConfig:
     return DatabaseConfig("wcmkt")
 
 
-def get_market_history(type_id: int, market_ctx: Optional["MarketContext"] = None) -> pd.DataFrame:
+def _read_market_df(
+    sql: str,
+    params: dict[str, Any],
+    market_ctx: Optional["MarketContext"] = None,
+) -> pd.DataFrame:
+    """Run a parameterized SELECT against the market DB and return a DataFrame."""
     db = _get_db(market_ctx)
-    engine = db.engine
-    with engine.connect() as conn:
-        stmt = "SELECT * FROM market_history WHERE type_id = ?"
-        result = conn.execute(stmt, (type_id,))
-        headers = [col[0] for col in result.description]
-    conn.close()
-    return pd.DataFrame(result.fetchall(), columns=headers)
+    with db.engine.connect() as conn:
+        return pd.read_sql_query(text(sql), conn, params=params)
+
+
+def get_market_history(type_id: int, market_ctx: Optional["MarketContext"] = None) -> pd.DataFrame:
+    return _read_market_df(
+        "SELECT * FROM market_history WHERE type_id = :type_id",
+        {"type_id": type_id},
+        market_ctx,
+    )
+
 
 def get_market_orders(type_id: int, market_ctx: Optional["MarketContext"] = None) -> pd.DataFrame:
-    db = _get_db(market_ctx)
-    engine = db.engine
-    with engine.connect() as conn:
-        stmt = "SELECT * FROM market_orders WHERE type_id = ?"
-        result = conn.execute(stmt, (type_id,))
-        headers = [col[0] for col in result.description]
-    conn.close()
-    return pd.DataFrame(result.fetchall(), columns=headers)
+    return _read_market_df(
+        "SELECT * FROM market_orders WHERE type_id = :type_id",
+        {"type_id": type_id},
+        market_ctx,
+    )
+
 
 def get_market_stats(type_id: int, market_ctx: Optional["MarketContext"] = None) -> pd.DataFrame:
-    db = _get_db(market_ctx)
-    engine = db.engine
-    with engine.connect() as conn:
-        stmt = text("SELECT * FROM marketstats WHERE type_id = :type_id")
-        df = pd.read_sql_query(stmt, conn, params={"type_id": type_id})
-    conn.close()
-    return df
+    return _read_market_df(
+        "SELECT * FROM marketstats WHERE type_id = :type_id",
+        {"type_id": type_id},
+        market_ctx,
+    )
+
 
 def get_remote_status(market_ctx: Optional["MarketContext"] = None):
-    db = _get_db(market_ctx)
-    status_dict = db.get_status()
-    return status_dict
+    return _get_db(market_ctx).get_status()
+
 
 def get_doctrine_stats(type_id: int, market_ctx: Optional["MarketContext"] = None) -> pd.DataFrame:
-    db = _get_db(market_ctx)
-    engine = db.engine
-    with engine.connect() as conn:
-        stmt = text("SELECT * FROM doctrines WHERE type_id = :type_id")
-        df = pd.read_sql_query(stmt, conn, params={"type_id": type_id})
-    conn.close()
-    return df
+    return _read_market_df(
+        "SELECT * FROM doctrines WHERE type_id = :type_id",
+        {"type_id": type_id},
+        market_ctx,
+    )
+
 
 def get_table_length(table: str, market_ctx: Optional["MarketContext"] = None) -> int:
     db = _get_db(market_ctx)
-    engine = db.engine
-    with engine.connect() as conn:
-        stmt = text(f"SELECT COUNT(*) FROM {table}")
-        result = conn.execute(stmt)
-        return result.fetchone()[0]
+    with db.engine.connect() as conn:
+        return conn.execute(text(f"SELECT COUNT(*) FROM {table}")).scalar()
 
-def get_watchlist_ids(market_ctx: Optional["MarketContext"] = None):
-    stmt = text("SELECT DISTINCT type_id FROM watchlist")
+
+def get_watchlist_ids(market_ctx: Optional["MarketContext"] = None) -> list[int]:
     db = _get_db(market_ctx)
-    engine = db.engine
-    with engine.connect() as conn:
-        result = conn.execute(stmt)
-        watchlist_ids = [row[0] for row in result]
-    conn.close()
-    engine.dispose()
-    return watchlist_ids
+    with db.engine.connect() as conn:
+        result = conn.execute(text("SELECT DISTINCT type_id FROM watchlist"))
+        return [row[0] for row in result]
+
 
 def get_fit_items(fit_id: int) -> list[int]:
-    stmt = text("SELECT type_id FROM fittings_fittingitem WHERE fit_id = :fit_id")
     db = DatabaseConfig("fittings")
-    engine = db.engine
-    with engine.connect() as conn:
-        result = conn.execute(stmt, {"fit_id": fit_id})
-        fit_items = [row[0] for row in result]
-    conn.close()
-    engine.dispose()
-    return fit_items
+    with db.engine.connect() as conn:
+        result = conn.execute(
+            text("SELECT type_id FROM fittings_fittingitem WHERE fit_id = :fit_id"),
+            {"fit_id": fit_id},
+        )
+        return [row[0] for row in result]
 
-def get_fit_ids(doctrine_id: int):
-    stmt = text("SELECT fitting_id FROM fittings_doctrine_fittings WHERE doctrine_id = :doctrine_id")
+
+def get_fit_ids(doctrine_id: int) -> list[int]:
     db = DatabaseConfig("fittings")
-    engine = db.engine
-    with engine.connect() as conn:
-        result = conn.execute(stmt, {"doctrine_id": doctrine_id})
-        fit_ids = [row[0] for row in result]
-    conn.close()
-    engine.dispose()
-    return fit_ids
-
-if __name__ == "__main__":
-    pass
+    with db.engine.connect() as conn:
+        result = conn.execute(
+            text("SELECT fitting_id FROM fittings_doctrine_fittings WHERE doctrine_id = :doctrine_id"),
+            {"doctrine_id": doctrine_id},
+        )
+        return [row[0] for row in result]

@@ -11,8 +11,9 @@ from typing import Dict, List, Optional
 
 import requests
 
-from mkts_backend.config.character_config import CharacterConfig, load_characters
+from mkts_backend.config.character_config import CharacterConfig
 from mkts_backend.config.logging_config import configure_logging
+from mkts_backend.config.settings_service import get_all_characters
 from mkts_backend.esi.asset_cache import read_cache, write_cache
 from mkts_backend.esi.esi_auth import get_token_for_character
 
@@ -136,7 +137,7 @@ def fetch_all_character_assets(
         List of (CharacterConfig, {type_id: qty}) tuples, one per character.
         Characters that fail auth are included with empty dicts.
     """
-    characters = load_characters()
+    characters = get_all_characters()
     results = []
 
     for char in characters:

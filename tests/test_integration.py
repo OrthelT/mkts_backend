@@ -132,33 +132,6 @@ class TestBackwardCompatibility:
         # wcmkt maps to wcmktprod in the new configuration
         assert db.alias in ["wcmkt", "wcmktprod"]
 
-    def test_legacy_esi_alias_initialization_works(self):
-        """Test that legacy ESIConfig alias initialization still works."""
-        from mkts_backend.config.esi_config import ESIConfig
-
-        # Legacy way of creating ESI config
-        esi = ESIConfig("primary")
-
-        assert esi.region_id is not None
-        assert esi.structure_id is not None
-
-    def test_legacy_esi_deployment_alias_initialization_works(self):
-        """Test that legacy ESIConfig deployment alias initialization works.
-
-        This test catches the bug where legacy lookup dictionaries used
-        'secondary_*' keys but the valid alias was 'deployment'.
-        """
-        from mkts_backend.config.esi_config import ESIConfig
-
-        # Legacy way of creating ESI config with deployment alias
-        esi = ESIConfig("deployment")
-
-        assert esi.alias == "deployment"
-        assert esi.region_id == 10000023  # Pure Blind
-        assert esi.structure_id == 1041669946862  # X47L-Q
-        assert esi.market_orders_url is not None
-        assert "structures" in esi.market_orders_url
-
     def test_none_market_context_uses_defaults(self):
         """Test that None market_ctx uses default behavior."""
         from mkts_backend.db.db_handlers import _get_db as handlers_get_db

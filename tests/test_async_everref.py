@@ -64,6 +64,23 @@ class TestGetMetaGroups:
 
         assert result == {34: 1, 35: 1}
 
+    def test_filters_out_items_with_no_manufacturing_blueprint(self, in_memory_sde_db):
+        """type_id 36 (Mexallon) exists in sdetypes but has no industryActivityProducts row.
+
+        Mirrors EverRef HTTP 400 "not produced from a blueprint" for meta-T1 NPC
+        drops; filtering at the SDE saves wasted rate-limited requests.
+        """
+        from mkts_backend.esi.async_everref import _get_meta_groups
+
+        engine = create_engine(f"sqlite:///{in_memory_sde_db}")
+        try:
+            result = _get_meta_groups([34, 35, 36], engine)
+        finally:
+            engine.dispose()
+
+        assert 36 not in result
+        assert result == {34: 1, 35: 1}
+
 
 class TestAsyncFetchBuilderCosts:
     @pytest.mark.asyncio

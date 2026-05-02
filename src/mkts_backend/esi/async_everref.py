@@ -102,6 +102,14 @@ _META_GROUP_CHUNK_SIZE = 500  # keep well under libsql/sqlite var limits (matche
 
 
 def _get_meta_groups(type_ids: list[int], sde_engine: Engine) -> dict[int, int]:
+    """Return meta_group_id only for type_ids that are produced by a manufacturing blueprint.
+
+    Inner-joins `industryActivityProducts` (activityID=1) so meta-level T1 NPC
+    drops (e.g. "Compact"/"Enduring"/"Scoped" modules) are filtered out before
+    we waste EverRef requests that would return HTTP 400 "not produced from a
+    blueprint". Items missing from the SDE or without a blueprint are absent
+    from the returned dict.
+    """
     if not type_ids:
         return {}
 
@@ -112,7 +120,13 @@ def _get_meta_groups(type_ids: list[int], sde_engine: Engine) -> dict[int, int]:
             placeholders = ", ".join(f":type_id_{index}" for index, _ in enumerate(chunk))
             params = {f"type_id_{index}": type_id for index, type_id in enumerate(chunk)}
             query = text(
-                f"SELECT typeID, metaGroupID FROM sdetypes WHERE typeID IN ({placeholders})"
+                f"""
+                SELECT s.typeID, s.metaGroupID
+                FROM sdetypes s
+                INNER JOIN industryActivityProducts iap
+                  ON iap.productTypeID = s.typeID AND iap.activityID = 1
+                WHERE s.typeID IN ({placeholders})
+                """
             )
             for row in conn.execute(query, params).mappings():
                 type_id = row.get("typeID")
@@ -197,6 +211,12 @@ async def async_fetch_builder_costs(
 ) -> list[BuilderCostRecord]:
     watchlist_metadata = watchlist_metadata or {}
     meta_groups = _get_meta_groups(type_ids, sde_engine)
+    unbuildable = len(type_ids) - len(meta_groups)
+    if unbuildable:
+        logger.info(
+            f"Filtered {unbuildable}/{len(type_ids)} watchlist items "
+            "with no manufacturing blueprint in the SDE"
+        )
 
     fetch_jobs: list[tuple[int, int, int]] = []
     for type_id in type_ids:

@@ -74,7 +74,10 @@ The table is treated as a wipe-and-replace dataset, so a fresh fetch replaces th
 2. Sync the databases locally so the current watchlist and Jita price data are available.
 3. Merge watchlist items across markets.
 4. Read the first available `jita_prices` table.
-5. Load SDE metadata from `sdelite.db`.
+5. Load SDE metadata from `sdelite.db`. Items without a manufacturing blueprint
+   (`industryActivityProducts.activityID = 1`) are filtered out here so we
+   don't waste rate-limited Everef requests on meta-T1 NPC drops and other
+   non-buildable items.
 6. Fetch builder costs asynchronously from Everef.
 7. Create `builder_costs` if needed.
 8. Replace the table contents in each market database.

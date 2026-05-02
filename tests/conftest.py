@@ -443,6 +443,20 @@ def in_memory_sde_db(tmp_path):
         """))
         conn.execute(sa_text("INSERT INTO invCategories VALUES (4,'Material')"))
 
+        # Mark 34 and 35 as buildable (productTypeID with activityID=1 = manufacturing).
+        # Fixture stand-ins for "items produced from a blueprint"; 36 is intentionally
+        # absent so tests can exercise the unbuildable-filter behavior in _get_meta_groups.
+        conn.execute(sa_text("""
+            CREATE TABLE industryActivityProducts (
+                typeID INTEGER,
+                activityID INTEGER,
+                productTypeID INTEGER,
+                quantity INTEGER
+            )
+        """))
+        conn.execute(sa_text("INSERT INTO industryActivityProducts VALUES (1001, 1, 34, 100)"))
+        conn.execute(sa_text("INSERT INTO industryActivityProducts VALUES (1002, 1, 35, 100)"))
+
         conn.commit()
     yield db_path
     engine.dispose()

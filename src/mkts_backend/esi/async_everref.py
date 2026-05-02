@@ -9,7 +9,7 @@ from aiolimiter import AsyncLimiter
 from sqlalchemy import text
 from sqlalchemy.engine import Engine
 
-from mkts_backend.config.esi_config import ESIConfig
+from mkts_backend.config.settings_service import SettingsService
 from mkts_backend.config.logging_config import configure_logging
 
 logger = configure_logging(__name__)
@@ -211,7 +211,7 @@ async def async_fetch_builder_costs(
 
     semaphore = asyncio.Semaphore(MAX_CONCURRENCY)
     limiter = AsyncLimiter(30, time_period=60.0)
-    headers = {"User-Agent": ESIConfig("primary").user_agent}
+    headers = {"User-Agent": SettingsService().esi_user_agent}
 
     async with httpx.AsyncClient(http2=True, headers=headers) as client:
         results = await asyncio.gather(

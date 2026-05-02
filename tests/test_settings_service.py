@@ -25,7 +25,7 @@ def test_settings_loads_and_exposes_typed_properties():
     assert s.environment in {"production", "development"}
     assert s.log_level in {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
     assert s.esi_user_agent.startswith("wcmkts_backend/")
-    assert s.wipe_replace_tables == ["marketstats", "doctrines", "jita_prices"]
+    assert s.wipe_replace_tables == ["marketstats", "doctrines", "jita_prices", "builder_costs"]
 
 
 def test_cache_is_shared_across_instances():

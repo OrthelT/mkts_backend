@@ -7,6 +7,8 @@ target the remote engine; the local mirror is refreshed via
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
+
 import pandas as pd
 from sqlalchemy import text
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
@@ -85,6 +87,13 @@ def read_build_watchlist_type_ids(db: DatabaseConfig) -> set[int]:
     return {int(row[0]) for row in rows}
 
 
+def read_builder_cost_type_ids(db: DatabaseConfig) -> set[int]:
+    """Return builder_costs type_ids from the remote table."""
+    with db.remote_engine.connect() as conn:
+        rows = conn.execute(text("SELECT type_id FROM builder_costs")).all()
+    return {int(row[0]) for row in rows}
+
+
 def delete_build_watchlist_rows(db: DatabaseConfig, type_ids: list[int]) -> int:
     """Delete the given type_ids from build_watchlist on the remote.
 
@@ -151,7 +160,43 @@ def upsert_build_watchlist(db: DatabaseConfig, items: list[dict]) -> int:
     return len(items)
 
 
-def upsert_builder_costs(db: DatabaseConfig, records: list[dict]) -> int:
+def backfill_build_watchlist_metadata(db: DatabaseConfig, items: list[dict]) -> int:
+    """Fill missing build_watchlist metadata without changing last_seen_at.
+
+    Existing rows only get ``type_name``, ``group_name`` and ``category_id``
+    refreshed. ``added_at`` / ``last_seen_at`` are only used if a row somehow
+    needs to be inserted.
+    """
+    if not items:
+        return 0
+
+    table = BuildWatchlist.__table__
+    engine = db.remote_engine
+    session = Session(bind=engine)
+    try:
+        with session.begin():
+            for start in range(0, len(items), _UPSERT_CHUNK_SIZE):
+                chunk = items[start : start + _UPSERT_CHUNK_SIZE]
+                stmt = sqlite_insert(table).values(chunk)
+                stmt = stmt.on_conflict_do_update(
+                    index_elements=["type_id"],
+                    set_={
+                        "type_name": stmt.excluded.type_name,
+                        "group_name": stmt.excluded.group_name,
+                        "category_id": stmt.excluded.category_id,
+                    },
+                )
+                session.execute(stmt)
+    finally:
+        session.close()
+    logger.info(f"Backfilled metadata for {len(items)} build_watchlist rows")
+    return len(items)
+
+
+def upsert_builder_costs(
+    db: DatabaseConfig,
+    records: Sequence[Mapping[str, object]],
+) -> int:
     """Upsert builder_costs rows. On conflict, replaces every non-PK column."""
     if not records:
         return 0
@@ -179,3 +224,31 @@ def upsert_builder_costs(db: DatabaseConfig, records: list[dict]) -> int:
         session.close()
     logger.info(f"Upserted {len(records)} rows to builder_costs")
     return len(records)
+
+
+def delete_builder_cost_rows(db: DatabaseConfig, type_ids: list[int]) -> int:
+    """Delete builder_costs rows for the given type_ids on the remote."""
+    if not type_ids:
+        return 0
+
+    table = BuilderCosts.__table__
+    engine = db.remote_engine
+    deleted = 0
+    session = Session(bind=engine)
+    try:
+        with session.begin():
+            for start in range(0, len(type_ids), _UPSERT_CHUNK_SIZE):
+                chunk = type_ids[start : start + _UPSERT_CHUNK_SIZE]
+                placeholders = ", ".join(f":t_{i}" for i, _ in enumerate(chunk))
+                params = {f"t_{i}": tid for i, tid in enumerate(chunk)}
+                result = session.execute(
+                    text(
+                        f"DELETE FROM {table.name} WHERE type_id IN ({placeholders})"
+                    ),
+                    params,
+                )
+                deleted += result.rowcount or 0
+    finally:
+        session.close()
+    logger.info(f"Deleted {deleted} rows from builder_costs")
+    return deleted

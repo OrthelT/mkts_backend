@@ -6,7 +6,8 @@ and reuses the existing in_memory_sde_db fixture for SDE metadata + buildable fi
 
 from __future__ import annotations
 
-from unittest.mock import patch
+from datetime import datetime, timezone
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from sqlalchemy import create_engine, text
@@ -223,3 +224,199 @@ class TestSyncFromMarket:
 
         assert result.added == 0
         assert sorted(result.skipped) == [36]
+
+
+class TestBuilderCostsRunner:
+    def test_backfills_missing_watchlist_metadata_before_fetch(
+        self, buildcost_db, sde_db, primary_market_db, monkeypatch
+    ):
+        from mkts_backend.builder_costs import runner
+
+        type_id = 400001
+        fresh_time = datetime(2026, 5, 7, tzinfo=timezone.utc)
+
+        with sde_db.engine.begin() as conn:
+            conn.execute(
+                text(
+                    "INSERT INTO sdetypes VALUES ("
+                    ":type_id, :type_name, :group_id, :group_name, "
+                    ":category_id, :category_name, :volume, :meta_group_id, :meta_group_name"
+                    ")"
+                ),
+                {
+                    "type_id": type_id,
+                    "type_name": "Large Shield Extender I",
+                    "group_id": 38,
+                    "group_name": "Shield Extender",
+                    "category_id": 7,
+                    "category_name": "Module",
+                    "volume": 5.0,
+                    "meta_group_id": 1,
+                    "meta_group_name": "Tech I",
+                },
+            )
+            conn.execute(
+                text(
+                    "INSERT INTO industryActivityProducts VALUES ("
+                    ":blueprint_type_id, :activity_id, :product_type_id, :quantity"
+                    ")"
+                ),
+                {
+                    "blueprint_type_id": 900001,
+                    "activity_id": 1,
+                    "product_type_id": type_id,
+                    "quantity": 1,
+                },
+            )
+
+        buildcost_db.verify_db_exists = lambda: True
+        sde_db.verify_db_exists = lambda: True
+        primary_market_db.verify_db_exists = lambda: True
+
+        monkeypatch.setattr(
+            runner,
+            "DatabaseConfig",
+            lambda alias: {
+                "buildcost": buildcost_db,
+                "sde": sde_db,
+                "primary": primary_market_db,
+            }[alias],
+        )
+        monkeypatch.setattr(runner, "init_buildcost_tables", lambda db: None)
+        monkeypatch.setattr(
+            runner,
+            "read_build_watchlist",
+            lambda db: [
+                {
+                    "type_id": type_id,
+                    "type_name": None,
+                    "group_name": None,
+                    "category_id": None,
+                }
+            ],
+        )
+        monkeypatch.setattr(runner, "read_jita_prices", lambda db: {})
+
+        fetch_mock = AsyncMock(
+            return_value={
+                "type_id": type_id,
+                "total_cost_per_unit": 150.0,
+                "time_per_unit": 90.0,
+                "me": 10,
+                "runs": 10,
+                "fetched_at": fresh_time,
+            }
+        )
+
+        with patch("mkts_backend.esi.async_everref._fetch_one", new=fetch_mock):
+            result = runner.run()
+
+        assert result.success is True
+        assert result.fetched == 1
+        assert fetch_mock.await_count == 1
+
+        with buildcost_db.engine.connect() as conn:
+            row = conn.execute(
+                text(
+                    "SELECT type_id, total_cost_per_unit, fetched_at "
+                    "FROM builder_costs WHERE type_id = :type_id"
+                ),
+                {"type_id": type_id},
+            ).mappings().one()
+
+        assert row["type_id"] == type_id
+        assert row["total_cost_per_unit"] == 150.0
+
+    def test_prunes_builder_cost_rows_missing_from_build_watchlist(
+        self, buildcost_db, sde_db, primary_market_db, monkeypatch
+    ):
+        from mkts_backend.builder_costs import runner
+        from mkts_backend.esi.async_everref import FetchSummary
+
+        stale_time = datetime(2026, 5, 4, tzinfo=timezone.utc)
+        fresh_time = datetime(2026, 5, 7, tzinfo=timezone.utc)
+
+        with buildcost_db.remote_engine.begin() as conn:
+            conn.execute(
+                text(
+                    "INSERT INTO builder_costs ("
+                    "type_id, total_cost_per_unit, time_per_unit, me, runs, fetched_at"
+                    ") VALUES ("
+                    ":type_id, :total_cost_per_unit, :time_per_unit, :me, :runs, :fetched_at"
+                    ")"
+                ),
+                [
+                    {
+                        "type_id": 34,
+                        "total_cost_per_unit": 100.0,
+                        "time_per_unit": 60.0,
+                        "me": 10,
+                        "runs": 10,
+                        "fetched_at": stale_time,
+                    },
+                    {
+                        "type_id": 35,
+                        "total_cost_per_unit": 200.0,
+                        "time_per_unit": 120.0,
+                        "me": 10,
+                        "runs": 10,
+                        "fetched_at": stale_time,
+                    },
+                ],
+            )
+
+        buildcost_db.verify_db_exists = lambda: True
+        sde_db.verify_db_exists = lambda: True
+        primary_market_db.verify_db_exists = lambda: True
+
+        monkeypatch.setattr(
+            runner,
+            "DatabaseConfig",
+            lambda alias: {
+                "buildcost": buildcost_db,
+                "sde": sde_db,
+                "primary": primary_market_db,
+            }[alias],
+        )
+        monkeypatch.setattr(runner, "init_buildcost_tables", lambda db: None)
+        monkeypatch.setattr(
+            runner,
+            "read_build_watchlist",
+            lambda db: [
+                {
+                    "type_id": 34,
+                    "type_name": "Tritanium",
+                    "group_name": "Mineral",
+                    "category_id": 4,
+                }
+            ],
+        )
+        monkeypatch.setattr(runner, "read_jita_prices", lambda db: {})
+        monkeypatch.setattr(
+            runner,
+            "run_async_fetch_builder_costs",
+            lambda *args, **kwargs: FetchSummary(
+                records=[
+                    {
+                        "type_id": 34,
+                        "total_cost_per_unit": 150.0,
+                        "time_per_unit": 90.0,
+                        "me": 10,
+                        "runs": 10,
+                        "fetched_at": fresh_time,
+                    }
+                ],
+                attempted=1,
+            ),
+        )
+
+        result = runner.run()
+
+        assert result.success is True
+
+        with buildcost_db.engine.connect() as conn:
+            remaining = conn.execute(
+                text("SELECT type_id FROM builder_costs ORDER BY type_id")
+            ).scalars().all()
+
+        assert remaining == [34]

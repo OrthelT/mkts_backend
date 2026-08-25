@@ -157,35 +157,17 @@ class DatabaseConfig:
         return self._turso_connect
 
     def sync(self):
-        conn = self.turso_sync_connection
-        logger.info("\n--------------------------------")
         logger.info(f"========== START SYNC {self.alias} ({self.path}) ==========")
         logger.info(f"Start sync for {self.alias} at {self.path}")
         logger.debug(f"using url: {self.turso_url}")
-
-        # time the sync for performance monitoring
-        sync_start_time = datetime.now()
-        logger.info(f"Sync start time: {sync_start_time}")
-        start_time = perf_counter()
-
-        with conn:
-            conn.pull()
-            stats = conn.stats()
-        conn.close()
-
-        end_time = perf_counter()
-        logger.info(f"Database: {self.alias} ({self.path})")
-        logger.info(f"Sync time: {end_time - start_time:.1f} seconds")
-        logger.info(f"Sync end time: {datetime.now()}")
-        logger.info(f"stats = {stats}")
-        logger.info(f"========== END SYNC {self.alias} ==========")
-        logger.info("--------------------------------\n")
+        self.pull()
 
     def push(self):
         push_start = perf_counter()
         conn = self.turso_sync_connection
         with conn:
             conn.push()
+            conn.checkpoint()
             logger.debug(conn.stats())
         conn.close()
         push_end = perf_counter()
@@ -219,6 +201,7 @@ class DatabaseConfig:
         conn = self.turso_sync_connection
         with conn:
             conn.pull()
+            conn.checkpoint()
             logger.debug(conn.stats())
         conn.close()
         pull_end = perf_counter()
@@ -405,6 +388,10 @@ class DatabaseConfig:
                 all_ok = False
         return all_ok
 
+    def get_stats(self):
+        with self.turso_sync_connection as conn:
+            stats  = conn.stats()
+        return stats
 
 if __name__ == "__main__":
     pass

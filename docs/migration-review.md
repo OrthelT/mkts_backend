@@ -1,5 +1,7 @@
 # pyturso Migration Review — Confirmed Outstanding Work
 
+docs/migration-review.md now independently verified by code.
+
 **Date:** 2026-08-23
 **Original reviewer:** Claude (Opus 5)
 **Independent verification:** Codex
@@ -21,10 +23,13 @@ and both suites pass, but three cutover-safety items remain:
 
 1. Both applications accept libsql-era metadata as valid, so a persistent replica
    or CI cache from production can fail on its first pyturso connection.
+   UC: Fix 
 2. Several backend management commands commit to the local replica without a final
    `push()`, so they can report success without updating Turso.
-3. `validate` currently reports pending work after a successful push, so it cannot
+   UC: Identify them and let me choose. 
+3. `validate` currently reports pen:ding work after a successful push, so it cannot
    be used to prove item 2 has been fixed.
+   UC: Evaluate deprecating this function altogether. Do we really need it?
 
 The frontend admin write path remains disabled, but the owner has explicitly
 accepted that regression for a later refactor because the admin UI is not currently
@@ -43,6 +48,7 @@ Backend `DatabaseConfig.confirm_metadata_exists()` only checks whether
 A libsql-era file such as `{"hash": ..., "version": 0, ...}` is valid JSON, so all
 three checks accept it. pyturso metadata currently has a string version (`"v1"`) and
 a string `client_unique_id`.
+- Upon encountering libsql metadata, delete the metadata file and run .pull() to  repopulate it.
 
 This is a cutover risk for **any surviving production replica or cache**, rather
 than literally every host: ephemeral hosts without a persisted database will cold
@@ -58,16 +64,19 @@ Required changes:
 - Centralize a metadata predicate in each repository. At minimum, require a JSON
   object with a non-empty string `version` and non-empty string
   `client_unique_id`; reject integer-version libsql metadata.
+  UC: No. Delete libsql metadata .db-info file. Run pull. Correct file will populate.d 
 - Run that predicate before every `tursosync.connect()` bootstrap/pull path. An
   invalid pair must be disposed, removed as one six-file replica bundle, and cold
-  pulled.
+  pulled. 
+  UC: No. Only delete the .db-info and .pull()
 - Add regression fixtures for valid pyturso metadata, libsql metadata, corrupt JSON,
   missing metadata, and orphaned metadata.
 - Preserve a useful named error if connecting still fails after the guard, including
-  the database alias/path and the `nuke + pull` remedy.
+  the database alias/path and the `nuke + pull` remedy. yes. but for missing metadata .pull() should heal. 
 
 The replica bundle is the `.db` plus five sidecars: `-shm`, `-wal`, `-info`,
 `-changes`, and `-wal-revert`. Partial deletion is unsafe.
+UC: deleting .db-info files is ok if regenerated with .pull()
 
 #### Refresh scripts and pull coverage
 
@@ -322,3 +331,8 @@ state without nuking a replica again.
 6. Derive CI database paths from settings and prepare the production settings edit.
 7. Clean up migration documentation and dependency alignment.
 8. Leave admin writes disabled until the explicitly deferred refactor.
+
+UC: Changes made to src/mkts_backend/config/db_config.py
+- refactor sync() to call .pull() instead of initiating it's own connection. 
+- add conn.checkpoint() after successful pull or push to checkpoint WAL. 
+

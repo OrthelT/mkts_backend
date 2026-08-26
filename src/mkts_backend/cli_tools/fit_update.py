@@ -763,7 +763,11 @@ def assign_doctrine_market(
     if result.get("step_failures"):
         summary += f", [red]{result['step_failures']} step failures[/red]"
     console.print(summary)
-    return result["updated"] > 0
+    return (
+        result["updated"] > 0
+        and not result.get("push_failed")
+        and not result.get("bucket_failures")
+    )
 
 
 def _flag_to_aliases(flag: str) -> set[str]:
@@ -1285,6 +1289,11 @@ def _execute_market_plan(
     deleted_fit_ids: set[int] = set()
     heal_worked: dict[int, bool] = {}
     plan_by_fit: dict[int, dict] = {}
+    # Aliases actually written (Phase 3 and/or Phase 4) and aliases whose
+    # bucket raised and rolled back. Populated across both write phases below;
+    # pushed once, after both phases, at the bottom of this function.
+    touched: set[str] = set()
+    failed: set[str] = set()
 
     # Phase 1: bucket every action by (is_remote, alias)
     for p in plans:
@@ -1397,10 +1406,12 @@ def _execute_market_plan(
                         continue
                     if p["action"] == "heal" and did_work:
                         heal_worked[id(p)] = True
+            touched.add(alias)
         except (OperationalError, DatabaseError, ConnectionError, TimeoutError) as e:
             console.print(
                 f"[yellow]Skipped {loc} (rolled back at fit {current_fit_id}): {e}[/yellow]"
             )
+            failed.add(alias)
         finally:
             engine.dispose()
 
@@ -1436,14 +1447,34 @@ def _execute_market_plan(
                                 console.print(
                                     f"  [dim]Cleaned up ship_targets for fit {fid} on {loc}[/dim]"
                                 )
+                touched.add(alias)
             except (OperationalError, DatabaseError, ConnectionError, TimeoutError) as e:
                 console.print(
                     f"[yellow]Orphan cleanup skipped for {loc} "
                     f"(rolled back at fit {current_fit_id}): {e}[/yellow]"
                 )
+                failed.add(alias)
             finally:
                 engine.dispose()
 
+    # Phase 5: push every alias touched by either phase above — once each,
+    # sorted, and only after both write phases have finished (the orphan
+    # cleanup pass in Phase 4 can add writes to an alias Phase 3 already
+    # processed). An alias with any failed bucket is excluded so a rolled-back
+    # bucket never masks a genuinely-pending push for that alias; its
+    # already-committed writes (from a different, successful bucket for the
+    # same alias) stay queued locally for a later command to push.
+    pushed_ok = True
+    for alias in sorted(touched - failed):
+        try:
+            DatabaseConfig(alias).push()
+        except Exception as exc:
+            logger.error(f"{alias}: push failed: {exc}")
+            console.print(f"[red]Push failed for {alias}: {exc}[/red]")
+            pushed_ok = False
+
+    counters["push_failed"] = not pushed_ok
+    counters["bucket_failures"] = len(failed)
     return counters
 
 
@@ -1605,7 +1636,11 @@ def unassign_doctrine_market(
     if result.get("step_failures"):
         summary += f", [red]{result['step_failures']} step failures[/red]"
     console.print(summary)
-    return result["updated"] > 0 or result["deleted"] > 0
+    return (
+        (result["updated"] > 0 or result["deleted"] > 0)
+        and not result.get("push_failed")
+        and not result.get("bucket_failures")
+    )
 
 
 def list_fits_command(db_alias: str = "wcmkt", remote: bool = False) -> None:
@@ -2152,6 +2187,8 @@ def doctrine_add_fit_command(
 
     # Stage 3: one transaction per market DB — all fits for that DB in one batch.
     fit_alias_success: dict[int, int] = {df.fit_id: 0 for _, df, _ in prepared}
+    touched: set[str] = set()
+    failed: set[str] = set()
     for alias in target_aliases:
         db = DatabaseConfig(alias)
         engine = db.remote_engine if remote else db.engine
@@ -2174,14 +2211,27 @@ def doctrine_add_fit_command(
                     _report_lead_ship(adopted, doctrine_fit.fit_id, doctrine_fit.doctrine_id)
             for _, doctrine_fit, _ in prepared:
                 fit_alias_success[doctrine_fit.fit_id] += 1
+            touched.add(alias)
         except (OperationalError, DatabaseError, ConnectionError, TimeoutError) as e:
             console.print(
                 f"[yellow]Bucket {loc} failed "
                 f"(rolled back at fit {current_fit_id}): {e}[/yellow]"
             )
             logger.exception(f"Error provisioning {alias} for doctrine {doctrine_id}")
+            failed.add(alias)
         finally:
             engine.dispose()
+
+    # Push every touched alias once, after the write loop above, skipping any
+    # alias whose bucket raised (see _execute_market_plan for the same shape).
+    pushed_ok = True
+    for alias in sorted(touched - failed):
+        try:
+            DatabaseConfig(alias).push()
+        except Exception as exc:
+            logger.error(f"{alias}: push failed: {exc}")
+            console.print(f"[red]Push failed for {alias}: {exc}[/red]")
+            pushed_ok = False
 
     # Per-fit success reporting
     for _, doctrine_fit, fit_target in prepared:
@@ -2212,7 +2262,7 @@ def doctrine_add_fit_command(
     if fail_count > 0:
         console.print(f"[red]Failed to add {fail_count} fit(s)[/red]")
 
-    return success_count > 0
+    return success_count > 0 and pushed_ok
 
     """
     Display help for the update-fit command.
@@ -2441,6 +2491,8 @@ def update_lead_ship_command(
 
     successes = 0
     failures = 0
+    touched: set[str] = set()
+    failed: set[str] = set()
     for alias in target_aliases:
         db = DatabaseConfig(alias)
         engine = db.remote_engine if remote else db.engine
@@ -2459,17 +2511,31 @@ def update_lead_ship_command(
                 f"{fit_info['ship_name']} (fit {fit_id}) in {loc}[/green]"
             )
             successes += 1
+            touched.add(alias)
         except (OperationalError, DatabaseError, ConnectionError, TimeoutError) as e:
             console.print(f"[yellow]Skipped {loc}: {e}[/yellow]")
             failures += 1
+            failed.add(alias)
         except Exception as e:
             console.print(f"[red]✗ Error in {loc}: {e}[/red]")
             logger.exception("Error in update_lead_ship_command for %s", loc)
             failures += 1
+            failed.add(alias)
         finally:
             engine.dispose()
 
-    return successes > 0 and failures == 0
+    # Push every touched alias once, after the write loop above, skipping any
+    # alias whose bucket raised (see _execute_market_plan for the same shape).
+    pushed_ok = True
+    for alias in sorted(touched - failed):
+        try:
+            DatabaseConfig(alias).push()
+        except Exception as exc:
+            logger.error(f"{alias}: push failed: {exc}")
+            console.print(f"[red]Push failed for {alias}: {exc}[/red]")
+            pushed_ok = False
+
+    return successes > 0 and failures == 0 and pushed_ok
 
 
 def doctrine_remove_fit_command(
@@ -3044,7 +3110,11 @@ def fit_update_command(
         result = assign_market_command(
             fit_id, market_flag, remote=use_remote, db_alias=target_alias
         )
-        return bool(result.get("updated", 0))
+        return (
+            bool(result.get("updated", 0))
+            and not result.get("push_failed")
+            and not result.get("bucket_failures")
+        )
 
     elif subcommand == "unassign-market":
         if doctrine_id is not None:
@@ -3059,7 +3129,11 @@ def fit_update_command(
         result = unassign_market_command(
             fit_id, market_flag, remote=use_remote, db_alias=target_alias
         )
-        return bool(result.get("updated", 0) or result.get("deleted", 0))
+        return (
+            bool(result.get("updated", 0) or result.get("deleted", 0))
+            and not result.get("push_failed")
+            and not result.get("bucket_failures")
+        )
 
     elif subcommand == "add":
         eft_text = None

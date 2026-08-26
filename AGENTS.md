@@ -52,23 +52,16 @@ uv run mkts-backend --check_tables
 uv run mkts-backend --check_tables --deployment  # Check deployment market tables
 ```
 
-**Sync and validate databases:**
+**Sync databases:**
 ```bash
 uv run mkts-backend sync              # Pull every market mirror + buildcost from Turso
 uv run mkts-backend sync --deployment # Pull the deployment market only
 uv run mkts-backend sync --no-buildcost   # Skip the buildcost mirror
-uv run mkts-backend validate          # Report whether local writes are still waiting to be pushed
-uv run mkts-backend validate --market=all
 # NOTE: `sync` is a PULL (Turso → local). Local writes reach Turso only via push();
 # see "Turso sync model" below.
 # NOTE: --both is a legacy market-alias synonym for --all. It now spans all three
 # markets, not just primary+deployment. Use --all.
 ```
-
-**Known issue:** `validate` currently reports "has local changes that have not
-reached Turso" even on a freshly pushed replica — pyturso leaves one trailing CDC
-transaction marker, so `validate_sync()`'s `pending == 0` test is unreachable on
-any market DB that has ever been written. Tracked in `docs/migration-review.md`.
 
 **Check market availability for a ship fit:**
 ```bash

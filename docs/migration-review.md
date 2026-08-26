@@ -1,6 +1,5 @@
 # pyturso Migration Review — Confirmed Outstanding Work
 
-docs/migration-review.md now independently verified by code.
 
 **Date:** 2026-08-23
 **Original reviewer:** Claude (Opus 5)

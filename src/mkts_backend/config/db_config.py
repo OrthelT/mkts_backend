@@ -186,25 +186,6 @@ class DatabaseConfig:
             "========================================================================="
         )
 
-    def validate_sync(self) -> bool:
-        """True when no local writes are waiting to reach Turso.
-
-        pyturso is local-first: writes land in the local CDC queue and reach
-        the remote only on push(). ``cdc_operations`` counts the rows in that
-        queue past the last pushed change, so a non-zero count means the local
-        database is ahead of Turso and push() has not run (or failed).
-        """
-        conn = self.turso_sync_connection
-        with conn:
-            stats = conn.stats()
-        conn.close()
-        pending = stats.cdc_operations
-        logger.info(f"Database: {self.alias} ({self.path})")
-        logger.info(f"Pending operations to push: {pending}")
-        logger.info(f"Last pull: {datetime.fromtimestamp(stats.last_pull_unix_time)}")
-        logger.info(f"Last push: {datetime.fromtimestamp(stats.last_push_unix_time)}")
-        return pending == 0
-
     def pull(self):
         pull_start = perf_counter()
         conn = self.turso_sync_connection

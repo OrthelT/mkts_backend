@@ -600,30 +600,6 @@ def _register_all(reg: CommandRegistry) -> None:
         default_market="all",
     )
 
-    # ── validate ────────────────────────────────────────────────
-    def _handle_validate(args: list[str], market_alias: str) -> bool:
-        from mkts_backend.config.market_context import MarketContext
-        from mkts_backend.config.db_config import DatabaseConfig
-        from mkts_backend.cli_tools.market_args import expand_market_alias
-
-        all_valid = True
-        for mkt in expand_market_alias(market_alias):
-            market_ctx = MarketContext.from_settings(mkt)
-            db = DatabaseConfig(market_context=market_ctx)
-            print(f"Validating database for market: {market_ctx.name} ({market_ctx.alias})")
-            if db.validate_sync():
-                print(f"Database validated: {db.alias} (no local changes pending push)")
-            else:
-                print(f"Database {db.alias} has local changes that have not reached Turso.")
-                all_valid = False
-        return all_valid
-
-    reg.register(
-        "validate",
-        _handle_validate,
-        description="Report whether local writes are still waiting to be pushed to Turso",
-    )
-
     # ── update-builder-costs ───────────────────────────────────
     def _handle_update_builder_costs(args: list[str], market_alias: str) -> bool:
         del market_alias  # buildcost data is market-agnostic

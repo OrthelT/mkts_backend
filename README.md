@@ -288,7 +288,7 @@ uv run mkts-backend equiv remove --id=1
 - `find` uses SDE attribute fingerprinting (`dgmTypeAttributes` table) to identify identical modules
 - After changes, sync to remote: `uv run mkts-backend sync`
 
-### sync / validate - Database Sync and Validation
+### sync - Database Sync
 
 ```bash
 # Sync primary market database with Turso
@@ -299,12 +299,6 @@ uv run mkts-backend sync --market=deployment
 
 # Sync both markets
 uv run mkts-backend sync --market=both
-
-# Validate primary market database sync status
-uv run mkts-backend validate
-
-# Validate deployment market
-uv run mkts-backend validate --market=deployment
 ```
 
 ### assets - Character Asset Lookup

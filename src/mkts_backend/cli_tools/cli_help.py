@@ -54,7 +54,6 @@ Examples:
   mkts-backend sync --markets-only            # Markets only, skip shared databases
   mkts-backend sync --no-buildcost            # Skip the optional buildcost replica
   mkts-backend sync --include-testing         # Also pull the dev/test database
-  mkts-backend validate --market=all          # Validate all databases
   mkts-backend fit-check --file=fits/hfi.txt  # Check fit availability
   mkts-backend assets --name='Damage Control'   # Look up assets by partial name
   mkts-backend assets --id=11379                # Look up assets by type ID

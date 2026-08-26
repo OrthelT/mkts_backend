@@ -393,7 +393,7 @@ def _register_all(reg: CommandRegistry) -> None:
             if not dry_run:
                 from mkts_backend.config.db_config import DatabaseConfig
 
-                for touched_alias in touched_aliases:
+                for touched_alias in sorted(touched_aliases):
                     try:
                         DatabaseConfig(touched_alias).push()
                     except Exception as exc:

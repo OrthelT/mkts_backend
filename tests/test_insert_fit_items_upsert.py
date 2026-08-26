@@ -181,3 +181,144 @@ class TestInsertFitItemsUpsert:
             k: v.id for k, v in ids_after.items()
         }
         assert len(ids_after) == 3
+
+    def test_duplicate_key_rows_are_treated_as_a_multiset(
+        self, tmp_path, monkeypatch, fake_db_factory
+    ):
+        """Reproduces the real wcfittingtest.db shape found by a live audit:
+        multiple rows sharing one (fit_id, flag, type_id) key (e.g. fit 404's
+        two Cargo/15463 rows with quantities 1 and 11; fit 492's five
+        HighSlot0/14278 rows) — the table has no UNIQUE constraint and the
+        EFT parser legitimately emits repeated Cargo/DroneBay lines for the
+        same item. The upsert must consume existing same-key rows one at a
+        time as matching incoming lines are processed — never collapse them
+        into a single UPDATE while leaving the rest neither updated nor
+        deleted — and rows it keeps must retain their rowid."""
+        fit_id = 404
+        type_id = 15463
+        db = _build_fittings_engine(fake_db_factory, tmp_path, fit_id, [type_id])
+        monkeypatch.setattr(parse_fits, "DatabaseConfig", lambda *a, **k: db)
+
+        def _rows():
+            with db.engine.connect() as conn:
+                return conn.execute(
+                    text(
+                        "SELECT id, quantity FROM fittings_fittingitem "
+                        "WHERE fit_id = :f ORDER BY id"
+                    ),
+                    {"f": fit_id},
+                ).fetchall()
+
+        # Seed 3 pre-existing rows sharing the same (Cargo, type_id) key —
+        # the real duplicate shape, generalized to three occurrences.
+        first_items = [
+            {"flag": "Cargo", "quantity": 1, "type_id": type_id, "type_fk_id": type_id},
+            {"flag": "Cargo", "quantity": 11, "type_id": type_id, "type_fk_id": type_id},
+            {"flag": "Cargo", "quantity": 99, "type_id": type_id, "type_fk_id": type_id},
+        ]
+        parse_fits.insert_fit_items_to_db(first_items, fit_id=fit_id, clear_existing=True)
+        seeded = _rows()
+        assert len(seeded) == 3
+        id1, id2, id3 = (r.id for r in seeded)
+
+        # New EFT source has only 2 occurrences of the same key (count
+        # shrank by one).
+        second_items = [
+            {"flag": "Cargo", "quantity": 50, "type_id": type_id, "type_fk_id": type_id},
+            {"flag": "Cargo", "quantity": 60, "type_id": type_id, "type_fk_id": type_id},
+        ]
+        parse_fits.insert_fit_items_to_db(second_items, fit_id=fit_id, clear_existing=True)
+        rows = _rows()
+
+        # Final rows exactly match the new EFT source: 2 rows. The earliest
+        # two existing ids were reused (updated in place, oldest-first);
+        # the third (now-surplus) id was deleted, not left dangling.
+        assert [r.id for r in rows] == [id1, id2]
+        assert [r.quantity for r in rows] == [50, 60]
+
+        with db.engine.connect() as conn:
+            assert conn.execute(
+                text("SELECT count(*) FROM fittings_fittingitem WHERE id = :i"),
+                {"i": id3},
+            ).scalar() == 0
+
+        # Count grows back to 3 — the two surviving ids stay stable, and a
+        # fresh row is inserted for the extra occurrence.
+        third_items = [
+            {"flag": "Cargo", "quantity": 50, "type_id": type_id, "type_fk_id": type_id},
+            {"flag": "Cargo", "quantity": 60, "type_id": type_id, "type_fk_id": type_id},
+            {"flag": "Cargo", "quantity": 70, "type_id": type_id, "type_fk_id": type_id},
+        ]
+        parse_fits.insert_fit_items_to_db(third_items, fit_id=fit_id, clear_existing=True)
+        rows = _rows()
+
+        assert len(rows) == 3
+        assert [r.id for r in rows[:2]] == [id1, id2]
+        assert [r.quantity for r in rows] == [50, 60, 70]
+        assert rows[2].id not in (id1, id2, id3)
+
+    def test_list_form_item_does_not_redirect_the_scoped_fit_id(
+        self, tmp_path, monkeypatch, fake_db_factory
+    ):
+        """A list/tuple-form item's own embedded fit_id must never leak
+        into the SELECT/DELETE that scopes the upsert to the caller's
+        fit_id parameter. Before the fix, the normalization loop's tuple
+        unpacking (``flag, quantity, type_id, fit_id, type_fk_id = item``)
+        rebound the very ``fit_id`` name the SELECT/DELETE used, so a
+        list-form item carrying a different fit_id could silently redirect
+        which fit's rows were read and deleted."""
+        target_fit_id = 700
+        other_fit_id = 800
+        type_ids = [2048, 519, 3841]
+        db = _build_fittings_engine(fake_db_factory, tmp_path, target_fit_id, type_ids)
+        with db.engine.begin() as conn:
+            conn.execute(
+                text(
+                    "INSERT INTO fittings_fitting (id, description, name, "
+                    "ship_type_type_id, ship_type_id, created, last_updated) "
+                    "VALUES (:id, 'd', 'n', :ship, :ship, 'c', 'u')"
+                ),
+                {"id": other_fit_id, "ship": type_ids[0]},
+            )
+        monkeypatch.setattr(parse_fits, "DatabaseConfig", lambda *a, **k: db)
+
+        # Seed one existing row under each of two distinct fits.
+        parse_fits.insert_fit_items_to_db(
+            [{"flag": "LoSlot0", "quantity": 1, "type_id": 2048, "type_fk_id": 2048}],
+            fit_id=target_fit_id, clear_existing=True,
+        )
+        parse_fits.insert_fit_items_to_db(
+            [{"flag": "LoSlot0", "quantity": 1, "type_id": 3841, "type_fk_id": 3841}],
+            fit_id=other_fit_id, clear_existing=True,
+        )
+
+        # A list-form item embedding a DIFFERENT fit_id (other_fit_id),
+        # passed into a call scoped to target_fit_id.
+        list_item = ["MedSlot0", 1, 519, other_fit_id, 519]
+        parse_fits.insert_fit_items_to_db(
+            [list_item], fit_id=target_fit_id, clear_existing=True,
+        )
+
+        with db.engine.connect() as conn:
+            other_rows = conn.execute(
+                text("SELECT type_id FROM fittings_fittingitem WHERE fit_id = :f"),
+                {"f": other_fit_id},
+            ).fetchall()
+            target_rows = conn.execute(
+                text("SELECT type_id FROM fittings_fittingitem WHERE fit_id = :f"),
+                {"f": target_fit_id},
+            ).fetchall()
+
+        # other_fit_id's pre-existing row (3841) must survive untouched by a
+        # call scoped to target_fit_id -- before the fix, unpacking the
+        # list-form item would have rebound the SELECT/DELETE's fit_id to
+        # other_fit_id, deleting this row instead. (The list-item's own
+        # INSERT legitimately lands under its embedded fit_id, 800 -- that
+        # per-item routing is preserved legacy behavior, not the bug.)
+        assert 3841 in [r.type_id for r in other_rows]
+
+        # target_fit_id's own pre-existing row (2048) WAS correctly removed
+        # by this call, since none of its incoming items reasserted that
+        # key -- proving the DELETE really was scoped to target_fit_id, not
+        # silently redirected into a no-op on the wrong fit.
+        assert target_rows == []

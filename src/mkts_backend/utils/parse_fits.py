@@ -449,16 +449,21 @@ def insert_fit_items_to_db(
     """
     Upsert parsed fit items into the fittings_fittingitem table in place.
 
-    Rows are matched on the natural key ``(fit_id, flag, type_id)`` — ``flag``
-    alone is not unique within a fit (every Cargo/DroneBay item shares the
-    bare flag "Cargo"/"DroneBay" with no counter suffix, unlike the
-    Lo/Med/Hi/RigSlot flags), and ``type_id`` alone is not unique either (the
-    same module fitted into several slots, e.g. six "720mm Howitzer
-    Artillery II" turrets, repeats the same type_id across distinct rows).
-    ``(flag, type_id)`` together is unique for every fit observed in
-    production data and is exactly what changes when a module is swapped in
-    a slot (old key gone, new key appears) versus when only its quantity
-    changes (same key, same row).
+    Rows are matched on the natural key ``(fit_id, flag, type_id)`` treated
+    as a MULTISET, not a set: a live audit of wcfittingtest.db found 22
+    groups of rows sharing one ``(fit_id, flag, type_id)`` key (e.g. fit 404
+    has two "Cargo"/15463 rows with quantities 1 and 11; fit 492 has five
+    "HighSlot0"/14278 rows) — the table has no UNIQUE constraint, and the EFT
+    parser legitimately emits repeated Cargo/DroneBay lines for the same
+    item (only Lo/Med/Hi/RigSlot flags get a per-slot counter suffix; every
+    Cargo/DroneBay item shares the bare flag with no counter, and the same
+    module fitted into several slots, e.g. six "720mm Howitzer Artillery II"
+    turrets, repeats the same type_id across distinct rows too). Each
+    existing row for a key is consumed one at a time, in id order, as
+    matching incoming lines are processed; extra incoming lines beyond what
+    already exists become INSERTs, and existing rows beyond what the new fit
+    still needs become DELETEs (when ``clear_existing``) — never a same-key
+    row silently left both unmatched and unremoved.
 
     This replaces a delete-then-reinsert that toggled
     ``PRAGMA foreign_keys = OFF`` around the whole transaction. That pragma
@@ -474,9 +479,10 @@ def insert_fit_items_to_db(
         fit_items: List of fit items where each item is [flag, quantity, type_id, fit_id, type_fk_id]
         fit_id: The fit ID these items belong to
         clear_existing: If True, delete rows for this fit_id whose
-            (flag, type_id) key is no longer present in ``fit_items`` (i.e.
-            items removed from the fit). If False, existing rows are only
-            ever updated or added to, never removed.
+            (flag, type_id) occurrence count exceeds what ``fit_items`` still
+            needs (i.e. items removed from the fit, including surplus
+            duplicates). If False, existing rows are only ever updated or
+            added to, never removed.
     """
     engine = _get_engine("fittings", remote)
 
@@ -487,13 +493,18 @@ def insert_fit_items_to_db(
             quantity = item.get("quantity")
             type_id = item.get("type_id")
             type_fk_id = item.get("type_fk_id")
+            item_fit_id = fit_id
         else:
-            flag, quantity, type_id, fit_id, type_fk_id = item
+            # List/tuple form carries its own fit_id positionally. Bind it
+            # to a name distinct from the ``fit_id`` parameter — the
+            # SELECT/DELETE below must always stay pinned to the caller's
+            # fit_id, never silently redirected by an item's own value.
+            flag, quantity, type_id, item_fit_id, type_fk_id = item
 
         if type_id is None:
             logger.warning(f"Skipping item with missing type_id: {item}")
             continue
-        normalized.append((flag, quantity, type_id, type_fk_id))
+        normalized.append((flag, quantity, type_id, item_fit_id, type_fk_id))
 
     update_stmt = text(
         "UPDATE fittings_fittingitem SET quantity = :quantity, type_fk_id = :type_fk_id "
@@ -507,20 +518,27 @@ def insert_fit_items_to_db(
     with engine.connect() as conn:
         existing_rows = conn.execute(
             text(
-                "SELECT id, flag, type_id FROM fittings_fittingitem WHERE fit_id = :fit_id"
+                "SELECT id, flag, type_id FROM fittings_fittingitem "
+                "WHERE fit_id = :fit_id ORDER BY id"
             ),
             {"fit_id": fit_id},
         ).fetchall()
-        existing_by_key = {(row.flag, row.type_id): row.id for row in existing_rows}
 
-        seen_keys = set()
+        # Multiset of surviving-candidate ids per (flag, type_id) key. Each
+        # incoming occurrence of a key pops (consumes) one id; ids left in
+        # the bucket after all incoming items are processed are surplus and
+        # get deleted (when clear_existing).
+        existing_by_key: dict[tuple, list[int]] = {}
+        for row in existing_rows:
+            existing_by_key.setdefault((row.flag, row.type_id), []).append(row.id)
+
         inserted = 0
         updated = 0
-        for flag, quantity, type_id, type_fk_id in normalized:
+        for flag, quantity, type_id, item_fit_id, type_fk_id in normalized:
             key = (flag, type_id)
-            seen_keys.add(key)
-            existing_id = existing_by_key.get(key)
-            if existing_id is not None:
+            bucket = existing_by_key.get(key)
+            if bucket:
+                existing_id = bucket.pop(0)
                 conn.execute(
                     update_stmt,
                     {"quantity": quantity, "type_fk_id": type_fk_id, "id": existing_id},
@@ -533,7 +551,7 @@ def insert_fit_items_to_db(
                         "flag": flag,
                         "quantity": quantity,
                         "type_id": type_id,
-                        "fit_id": fit_id,
+                        "fit_id": item_fit_id,
                         "type_fk_id": type_fk_id,
                     },
                 )
@@ -541,9 +559,7 @@ def insert_fit_items_to_db(
 
         removed = 0
         if clear_existing:
-            stale_ids = [
-                row.id for row in existing_rows if (row.flag, row.type_id) not in seen_keys
-            ]
+            stale_ids = [rid for bucket in existing_by_key.values() for rid in bucket]
             if stale_ids:
                 conn.execute(
                     text(

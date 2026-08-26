@@ -589,7 +589,7 @@ def interactive_add_fit(
                         f"{parse_result.ship_name}[/green]"
                     )
 
-        for touched_alias in touched_aliases:
+        for touched_alias in sorted(touched_aliases):
             try:
                 DatabaseConfig(touched_alias).push()
             except Exception as e:
@@ -3063,7 +3063,7 @@ def fit_update_command(
                     )
                     console.print(f"Items: {len(result['items'])}")
                 else:
-                    for touched_alias in touched_aliases:
+                    for touched_alias in sorted(touched_aliases):
                         try:
                             DatabaseConfig(touched_alias).push()
                         except Exception as e:
@@ -3173,7 +3173,7 @@ def fit_update_command(
                               result['ship_type_id']})")
                 console.print(f"Items: {len(result['items'])}")
             else:
-                for touched_alias in touched_aliases:
+                for touched_alias in sorted(touched_aliases):
                     try:
                         DatabaseConfig(touched_alias).push()
                     except Exception as e:

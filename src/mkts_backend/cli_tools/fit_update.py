@@ -767,6 +767,7 @@ def assign_doctrine_market(
         result["updated"] > 0
         and not result.get("push_failed")
         and not result.get("bucket_failures")
+        and not result.get("step_failures")
     )
 
 
@@ -1640,6 +1641,7 @@ def unassign_doctrine_market(
         (result["updated"] > 0 or result["deleted"] > 0)
         and not result.get("push_failed")
         and not result.get("bucket_failures")
+        and not result.get("step_failures")
     )
 
 
@@ -2262,28 +2264,7 @@ def doctrine_add_fit_command(
     if fail_count > 0:
         console.print(f"[red]Failed to add {fail_count} fit(s)[/red]")
 
-    return success_count > 0 and pushed_ok
-
-    """
-    Display help for the update-fit command.
-    """
-    print("""
-    update-fit - Update the target quantity for a fit.
-    """)
-    print("""
-    USAGE:
-    mkts-backend update-fit --fit-id=<id> --target=<qty>
-    """)
-    print("""
-    OPTIONS:
-    --fit-id=<id>        Fit ID to update
-    --target=<qty>       Target quantity
-    """)
-    print("""
-    EXAMPLES:
-    mkts-backend update-fit --fit-id=123 --target=100
-    """)
-    return True
+    return success_count > 0 and pushed_ok and not failed
 
 
 def remove_fit_command(
@@ -3114,6 +3095,7 @@ def fit_update_command(
             bool(result.get("updated", 0))
             and not result.get("push_failed")
             and not result.get("bucket_failures")
+            and not result.get("step_failures")
         )
 
     elif subcommand == "unassign-market":
@@ -3133,6 +3115,7 @@ def fit_update_command(
             bool(result.get("updated", 0) or result.get("deleted", 0))
             and not result.get("push_failed")
             and not result.get("bucket_failures")
+            and not result.get("step_failures")
         )
 
     elif subcommand == "add":

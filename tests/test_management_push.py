@@ -1371,16 +1371,273 @@ class TestMultiAliasPush:
         captured = capsys.readouterr()
         assert "Push failed for aliasA" in captured.out
 
+    def test_step_failure_does_not_block_the_alias_push_but_is_visible_in_counters(
+        self, tmp_path, monkeypatch, fake_db_factory
+    ):
+        """Controller ruling (item 3): a per-step non-fatal exception is
+        swallowed by _apply_step's inner try/except as a step failure and
+        does NOT roll back the bucket (see the `continue` at fit_update.py's
+        Phase 3 inner handler) — the bucket's other, already-applied work is
+        genuine local truth, so it is still pushed; the CDC queue converges.
+        But the failure must remain visible via counters["step_failures"] so
+        a consumer can still fail the command (see
+        TestAssignMarketDispatcherPushGate's step-failure tests below)."""
+        from mkts_backend.cli_tools import fit_update
+
+        dbs = {}
+        factory = self._plan_dbs_factory(tmp_path, fake_db_factory, dbs)
+        monkeypatch.setattr(fit_update, "DatabaseConfig", factory)
+        self._patch_flag_and_aliases(
+            monkeypatch, fit_update,
+            flag_map={"flagA": {"aliasA"}},
+            configured=["aliasA"],
+        )
+        monkeypatch.setattr(fit_update, "_prepare_watchlist_for_fit", lambda *a, **k: None)
+
+        def fake_apply_step(conn, step_type, p, arg, alias=""):
+            # A generic (non-DB) exception — hits the inner "step failure"
+            # except, not the outer bucket-level except.
+            raise RuntimeError("non-fatal step error")
+
+        monkeypatch.setattr(fit_update, "_apply_step", fake_apply_step)
+
+        plans = [
+            {"fit_id": 1, "doctrine_id": 10, "action": "update",
+             "market_flag": "flagA", "new_flag": "flagA", "doctrine_name": "D"},
+        ]
+
+        result = fit_update._execute_market_plan(plans, remote=False, db_alias="aliasA")
+
+        assert result["step_failures"] == 1
+        assert result["bucket_failures"] == 0
+        assert result["push_failed"] is False
+        assert dbs["aliasA"].pushes == 1, (
+            "the bucket did not roll back, so its alias must still be pushed"
+        )
+
+
+class TestDoctrineAddFitPush:
+    """``doctrine_add_fit_command``'s Stage 3 loop (one transaction per
+    target market alias) had no push at all before Task 11. DoctrineFit's
+    real constructor does DB lookups against the fittings DB, so it is
+    monkeypatched to a plain stand-in here to keep the fixture hermetic —
+    Stage 3's provisioning itself (_provision_fit_in_market) is already
+    covered by TestFittingsPush/TestDoctrinePush elsewhere in this file.
+    """
+
+    def _bare_dbs_factory(self, tmp_path, fake_db_factory, dbs):
+        def factory(alias=None, market_context=None):
+            key = alias or market_context.database_alias
+            if key not in dbs:
+                dbs[key] = fake_db_factory(tmp_path / f"{key}.db", alias=key)
+            return dbs[key]
+        return factory
+
+    def _patch_common(self, monkeypatch, fit_update, dbs, tmp_path, fake_db_factory):
+        factory = self._bare_dbs_factory(tmp_path, fake_db_factory, dbs)
+        monkeypatch.setattr(fit_update, "DatabaseConfig", factory)
+        monkeypatch.setattr(
+            fit_update, "_configured_market_db_aliases",
+            lambda *a, **k: ["aliasA", "aliasB"],
+        )
+        monkeypatch.setattr(fit_update, "get_doctrine_fits_from_market", lambda *a, **k: [])
+        monkeypatch.setattr(
+            fit_update, "get_available_doctrines",
+            lambda remote=False: [{"id": 10, "name": "Test Doctrine"}],
+        )
+        monkeypatch.setattr(
+            fit_update, "get_fit_info",
+            lambda fid, remote=False: {
+                "fit_id": fid, "fit_name": "Test Fit", "ship_name": "Rifter",
+                "ship_type_id": 587,
+            },
+        )
+        monkeypatch.setattr(fit_update, "get_fit_target", lambda *a, **k: None)
+        monkeypatch.setattr(fit_update, "ensure_doctrine_link", lambda *a, **k: None)
+        monkeypatch.setattr(fit_update, "_prepare_watchlist_for_fit", lambda *a, **k: None)
+
+        class _FakeDoctrineFit:
+            def __init__(self, doctrine_id, fit_id, target, remote=False):
+                self.doctrine_id = doctrine_id
+                self.fit_id = fit_id
+                self.target = target
+                self.doctrine_name = "Test Doctrine"
+                self.fit_name = "Test Fit"
+                self.ship_type_id = 587
+                self.ship_name = "Rifter"
+
+        monkeypatch.setattr(fit_update, "DoctrineFit", _FakeDoctrineFit)
+
+    def test_pushes_each_touched_alias_once(self, tmp_path, monkeypatch, fake_db_factory):
+        """Two target aliases, two pushes, one each."""
+        from mkts_backend.cli_tools import fit_update
+
+        dbs = {}
+        self._patch_common(monkeypatch, fit_update, dbs, tmp_path, fake_db_factory)
+        monkeypatch.setattr(fit_update, "_provision_fit_in_market", lambda conn, p, market_flag: False)
+
+        result = fit_update.doctrine_add_fit_command(
+            doctrine_id=10, fit_ids=[1], target=100, market_flag="all",
+            remote=False, interactive=False, db_alias="aliasA",
+        )
+
+        assert result is True
+        assert set(dbs) == {"aliasA", "aliasB"}
+        assert dbs["aliasA"].pushes == 1, {a: d.pushes for a, d in dbs.items()}
+        assert dbs["aliasB"].pushes == 1, {a: d.pushes for a, d in dbs.items()}
+
+    def test_alias_whose_bucket_raised_is_not_pushed_and_command_fails(
+        self, tmp_path, monkeypatch, fake_db_factory
+    ):
+        """A raised bucket must not be pushed, and — per the fix for item 1
+        — a doctrine_add_fit_command run with any failed bucket must return
+        False even though the other alias's partial success still counts
+        toward success_count under this command's pre-existing partial-
+        success semantics."""
+        from mkts_backend.cli_tools import fit_update
+
+        dbs = {}
+        self._patch_common(monkeypatch, fit_update, dbs, tmp_path, fake_db_factory)
+
+        calls: list[int] = []
+
+        def fake_provision(conn, p, market_flag):
+            calls.append(p["fit_id"])
+            if len(calls) == 2:
+                # aliasA (first in the deterministic ["aliasA", "aliasB"]
+                # order) succeeds; aliasB's bucket raises.
+                raise ConnectionError("simulated turso outage")
+            return False
+
+        monkeypatch.setattr(fit_update, "_provision_fit_in_market", fake_provision)
+
+        result = fit_update.doctrine_add_fit_command(
+            doctrine_id=10, fit_ids=[1], target=100, market_flag="all",
+            remote=False, interactive=False, db_alias="aliasA",
+        )
+
+        assert result is False
+        assert set(dbs) == {"aliasA", "aliasB"}
+        assert dbs["aliasA"].pushes == 1, "the healthy alias must still be pushed"
+        assert dbs["aliasB"].pushes == 0, "a bucket that raised must not be pushed"
+
+
+class TestUpdateLeadShipPush:
+    """``update_lead_ship_command``'s per-alias loop had no push at all
+    before Task 11. Unlike ``_execute_market_plan``, its bucket-level
+    exception handling has TWO except clauses — the specific DB-error tuple
+    and a generic ``except Exception`` catch-all — both of which must add
+    the alias to ``failed`` and both are exercised below.
+    """
+
+    def _bare_dbs_factory(self, tmp_path, fake_db_factory, dbs):
+        def factory(alias=None, market_context=None):
+            key = alias or market_context.database_alias
+            if key not in dbs:
+                dbs[key] = fake_db_factory(tmp_path / f"{key}.db", alias=key)
+            return dbs[key]
+        return factory
+
+    def _patch_common(self, monkeypatch, fit_update, dbs, tmp_path, fake_db_factory):
+        factory = self._bare_dbs_factory(tmp_path, fake_db_factory, dbs)
+        monkeypatch.setattr(fit_update, "DatabaseConfig", factory)
+        monkeypatch.setattr(
+            fit_update, "_configured_market_db_aliases",
+            lambda *a, **k: ["aliasA", "aliasB"],
+        )
+        monkeypatch.setattr(
+            fit_update, "get_available_doctrines",
+            lambda remote=False: [{"id": 10, "name": "Test Doctrine"}],
+        )
+        monkeypatch.setattr(
+            fit_update, "get_fit_info",
+            lambda fid, remote=False: {
+                "fit_id": fid, "fit_name": "Test Fit", "ship_name": "Rifter",
+                "ship_type_id": 587,
+            },
+        )
+        monkeypatch.setattr("mkts_backend.cli_tools.fit_update.Confirm.ask", lambda *a, **k: True)
+
+    def test_pushes_each_touched_alias_once(self, tmp_path, monkeypatch, fake_db_factory):
+        from mkts_backend.cli_tools import fit_update
+
+        dbs = {}
+        self._patch_common(monkeypatch, fit_update, dbs, tmp_path, fake_db_factory)
+        monkeypatch.setattr(fit_update, "set_lead_ship", lambda **k: None)
+
+        result = fit_update.update_lead_ship_command(
+            doctrine_id=10, fit_id=1, market_flag="all", remote=False,
+        )
+
+        assert result is True
+        assert set(dbs) == {"aliasA", "aliasB"}
+        assert dbs["aliasA"].pushes == 1, {a: d.pushes for a, d in dbs.items()}
+        assert dbs["aliasB"].pushes == 1, {a: d.pushes for a, d in dbs.items()}
+
+    def test_alias_whose_bucket_raised_a_db_error_is_not_pushed(
+        self, tmp_path, monkeypatch, fake_db_factory
+    ):
+        from mkts_backend.cli_tools import fit_update
+
+        dbs = {}
+        self._patch_common(monkeypatch, fit_update, dbs, tmp_path, fake_db_factory)
+
+        calls: list[dict] = []
+
+        def fake_set_lead_ship(**kwargs):
+            calls.append(kwargs)
+            if len(calls) == 2:
+                raise ConnectionError("simulated turso outage")
+
+        monkeypatch.setattr(fit_update, "set_lead_ship", fake_set_lead_ship)
+
+        result = fit_update.update_lead_ship_command(
+            doctrine_id=10, fit_id=1, market_flag="all", remote=False,
+        )
+
+        assert result is False
+        assert dbs["aliasA"].pushes == 1, "the healthy alias must still be pushed"
+        assert dbs["aliasB"].pushes == 0, "a bucket that raised must not be pushed"
+
+    def test_alias_whose_bucket_raised_a_generic_exception_is_not_pushed(
+        self, tmp_path, monkeypatch, fake_db_factory
+    ):
+        """Covers the second (generic ``except Exception``) branch, which
+        ``ConnectionError`` above does not exercise."""
+        from mkts_backend.cli_tools import fit_update
+
+        dbs = {}
+        self._patch_common(monkeypatch, fit_update, dbs, tmp_path, fake_db_factory)
+
+        calls: list[dict] = []
+
+        def fake_set_lead_ship(**kwargs):
+            calls.append(kwargs)
+            if len(calls) == 2:
+                raise RuntimeError("unexpected error")
+
+        monkeypatch.setattr(fit_update, "set_lead_ship", fake_set_lead_ship)
+
+        result = fit_update.update_lead_ship_command(
+            doctrine_id=10, fit_id=1, market_flag="all", remote=False,
+        )
+
+        assert result is False
+        assert dbs["aliasA"].pushes == 1, "the healthy alias must still be pushed"
+        assert dbs["aliasB"].pushes == 0, "a bucket that raised must not be pushed"
+
 
 class TestAssignMarketDispatcherPushGate:
-    """The ``assign-market`` CLI dispatch branch in ``fit_update_command``
-    must treat a push failure or a bucket failure reported by
-    ``_execute_market_plan`` (via ``assign_market_command``) as command
-    failure — ``updated > 0`` alone is not enough, since a later bucket or
-    its push can still have failed. Exercised here by mocking
-    ``assign_market_command`` directly so the dispatcher's own boolean
-    composition is what's under test, independent of the plan-execution
-    internals covered by ``TestMultiAliasPush`` above.
+    """The ``assign-market``/``unassign-market`` CLI dispatch branches in
+    ``fit_update_command`` must treat a push failure, a bucket failure, or a
+    non-fatal step failure reported by ``_execute_market_plan`` (via
+    ``assign_market_command``/``unassign_market_command``) as command
+    failure — ``updated > 0`` alone is not enough, since a later bucket, its
+    push, or an individual step within an otherwise-successful bucket can
+    still have failed. Exercised here by mocking the command functions
+    directly so the dispatcher's own boolean composition is what's under
+    test, independent of the plan-execution internals covered by
+    ``TestMultiAliasPush`` above.
     """
 
     def _base_result(self, **overrides):
@@ -1411,6 +1668,31 @@ class TestAssignMarketDispatcherPushGate:
         )
         assert fit_update.fit_update_command(
             subcommand="assign-market", fit_id=1, market_flag="primary",
+        ) is False
+
+    def test_step_failures_fail_the_dispatched_assign_command(self, monkeypatch):
+        """Controller ruling (item 3): a non-fatal per-step failure still
+        pushes the alias (see TestMultiAliasPush's step-failure test), but
+        the command result must be False, not just a printed warning."""
+        from mkts_backend.cli_tools import fit_update
+
+        monkeypatch.setattr(
+            fit_update, "assign_market_command",
+            lambda *a, **k: self._base_result(step_failures=1),
+        )
+        assert fit_update.fit_update_command(
+            subcommand="assign-market", fit_id=1, market_flag="primary",
+        ) is False
+
+    def test_step_failures_fail_the_dispatched_unassign_command(self, monkeypatch):
+        from mkts_backend.cli_tools import fit_update
+
+        monkeypatch.setattr(
+            fit_update, "unassign_market_command",
+            lambda *a, **k: self._base_result(step_failures=1),
+        )
+        assert fit_update.fit_update_command(
+            subcommand="unassign-market", fit_id=1, market_flag="primary",
         ) is False
 
     def test_clean_result_still_succeeds(self, monkeypatch):

@@ -55,7 +55,6 @@ from mkts_backend.utils.doctrine_update import (
     ensure_friendly_name_column,
     update_doctrine_friendly_name,
     populate_friendly_names_from_json,
-    sync_friendly_names_to_remote,
 )
 from mkts_backend.utils.parse_fits import (
     update_fit_workflow,
@@ -2352,6 +2351,21 @@ def remove_fit_command(
             f"  [dim]ship_targets:[/dim] {'removed' if target_removed else 'not found'}"
         )
 
+        # Push the market-side writes (steps 1, 2, 3, 5); push the shared
+        # fittings db too, but only when a link actually changed (step 4).
+        try:
+            DatabaseConfig(db_alias).push()
+        except Exception as e:
+            console.print(f"[red]Push failed for {db_alias}: {e}[/red]")
+            return False
+
+        if links_removed > 0:
+            try:
+                DatabaseConfig("fittings").push()
+            except Exception as e:
+                console.print(f"[red]Push failed for fittings: {e}[/red]")
+                return False
+
         console.print()
         console.print(
             f"[green]✓ Fit {fit_id} ({fit_info['fit_name']}) completely removed[/green]"
@@ -2683,6 +2697,7 @@ def doctrine_remove_fit_command(
     # Process all valid fits - REVERSE ORDER of add operations
     success_count = 0
     fail_count = 0
+    touched_aliases: set = set()
 
     for fit_info in valid_fits:
         fit_id = fit_info["fit_id"]
@@ -2700,6 +2715,8 @@ def doctrine_remove_fit_command(
             remove_doctrine_fits(doctrine_id, fit_id,
                                  remote=remote, db_alias=db_alias)
 
+            touched_aliases.add(db_alias)
+
             # Step 4: Remove from fittings_doctrine_fittings ONLY if the fit
             # is no longer in this doctrine on ANY market database.
             still_in_other_market = False
@@ -2714,7 +2731,9 @@ def doctrine_remove_fit_command(
                     break
 
             if not still_in_other_market:
-                remove_doctrine_link(doctrine_id, fit_id, remote=remote)
+                link_removed = remove_doctrine_link(doctrine_id, fit_id, remote=remote)
+                if link_removed:
+                    touched_aliases.add("fittings")
             else:
                 logger.info(
                     f"Fit {fit_id} still in doctrine {doctrine_id} on another market; "
@@ -2744,6 +2763,13 @@ def doctrine_remove_fit_command(
         )
     if fail_count > 0:
         console.print(f"[red]Failed to remove {fail_count} fit(s)[/red]")
+
+    for alias in sorted(touched_aliases):
+        try:
+            DatabaseConfig(alias).push()
+        except Exception as e:
+            console.print(f"[red]Push failed for {alias}: {e}[/red]")
+            return False
 
     return success_count > 0
 
@@ -2834,6 +2860,8 @@ def _update_target_single(
             remote=remote, db_alias=db_alias,
         )
 
+        db.push()
+
         console.print(
             f"[green]Updated target for fit {fit_id} from [yellow]{existing_target}[/yellow] "
             f"to [yellow]{target}[/yellow] for {db_alias} (remote: {remote})[/green]"
@@ -2851,26 +2879,34 @@ def update_friendly_name_command(
     remote: bool = False,
     db_alias: str = "wcmkt",
 ) -> bool:
-    """Update friendly_name for all fits in a doctrine (local + remote)."""
-    ensure_friendly_name_column(db_alias=db_alias, remote=False)
-    ok = update_doctrine_friendly_name(doctrine_id, friendly_name, db_alias=db_alias, remote=False)
-    if ok:
-        console.print(f"[green]Updated friendly_name for doctrine_id {doctrine_id} to '{friendly_name}' (local)[/green]")
-    else:
-        console.print(f"[red]No rows found for doctrine_id {doctrine_id}[/red]")
-        return False
+    """Update friendly_name for all fits in a doctrine across every configured market.
 
-    # Push to every configured market's remote
-    for target in _configured_market_db_aliases():
+    ``db_alias`` and the configured market aliases are deduplicated into a
+    single target-alias loop (each alias is written and pushed exactly
+    once) — this used to write ``db_alias`` twice, once as "local" and
+    again as "remote" whenever it also appeared in the configured markets.
+    """
+    target_aliases = sorted({db_alias} | set(_configured_market_db_aliases()))
+
+    any_success = False
+    for alias in target_aliases:
+        ensure_friendly_name_column(db_alias=alias, remote=False)
+        ok = update_doctrine_friendly_name(doctrine_id, friendly_name, db_alias=alias, remote=False)
+        if not ok:
+            console.print(f"[yellow]No rows found for doctrine_id {doctrine_id} on {alias}[/yellow]")
+            continue
+
+        console.print(f"[green]Updated friendly_name for doctrine_id {doctrine_id} to '{friendly_name}' ({alias})[/green]")
         try:
-            ensure_friendly_name_column(db_alias=target, remote=True)
-            remote_ok = update_doctrine_friendly_name(doctrine_id, friendly_name, db_alias=target, remote=True)
-            if remote_ok:
-                console.print(f"[green]Updated friendly_name on remote ({target})[/green]")
-            else:
-                console.print(f"[yellow]No remote rows for doctrine_id {doctrine_id} on {target}[/yellow]")
+            DatabaseConfig(alias).push()
         except Exception as e:
-            console.print(f"[yellow]Remote update skipped for {target}: {e}[/yellow]")
+            console.print(f"[red]Push failed for {alias}: {e}[/red]")
+            return False
+        any_success = True
+
+    if not any_success:
+        console.print(f"[red]No rows found for doctrine_id {doctrine_id} on any configured market[/red]")
+        return False
 
     return True
 
@@ -2879,24 +2915,39 @@ def populate_friendly_names_command(
     json_path: str = "doctrine_names.json",
     db_alias: str = "wcmkt",
 ) -> bool:
-    """Bulk populate friendly_names from JSON — auto-syncs local + remote."""
+    """Bulk populate friendly_names from JSON across every configured market.
+
+    Runs ``populate_friendly_names_from_json`` once per distinct alias in
+    ``{db_alias} ∪ configured market aliases`` and pushes each alias that
+    actually updated a row. Previously this updated ``db_alias`` locally and
+    then re-synced via ``sync_friendly_names_to_remote`` (deleted — same
+    self-referential shape as ``sync_equiv_to_remote``); pushing only the
+    source alias here would silently stop propagating friendly names to the
+    other markets.
+    """
     import os
     if not os.path.exists(json_path):
         console.print(f"[red]JSON file not found: {json_path}[/red]")
         return False
 
-    # Local update
-    ensure_friendly_name_column(db_alias=db_alias, remote=False)
-    count = populate_friendly_names_from_json(json_path, db_alias=db_alias, remote=False)
-    console.print(f"[green]Updated {count} rows locally ({db_alias})[/green]")
+    target_aliases = sorted({db_alias} | set(_configured_market_db_aliases()))
 
-    # Sync local → every configured market's remote (doctrine_fits identical across)
-    for target in _configured_market_db_aliases():
-        ok = sync_friendly_names_to_remote(source_alias=db_alias, target_alias=target)
-        if ok:
-            console.print(f"[green]Synced friendly_names to remote ({target})[/green]")
-        else:
-            console.print(f"[yellow]Remote sync skipped for {target}[/yellow]")
+    any_success = False
+    for alias in target_aliases:
+        ensure_friendly_name_column(db_alias=alias, remote=False)
+        count = populate_friendly_names_from_json(json_path, db_alias=alias, remote=False)
+        console.print(f"[green]Updated {count} rows ({alias})[/green]")
+        if count <= 0:
+            continue
+        try:
+            DatabaseConfig(alias).push()
+        except Exception as e:
+            console.print(f"[red]Push failed for {alias}: {e}[/red]")
+            return False
+        any_success = True
+
+    if not any_success:
+        console.print("[yellow]No friendly_name rows updated on any configured market[/yellow]")
 
     return True
 

@@ -628,6 +628,437 @@ class TestCreateDoctrineCommandPush:
             ).scalar() == 1
 
 
+class TestDoctrinePush:
+    """Task 10 — ``update-target``, ``update-friendly-name``,
+    ``populate-friendly-names``, ``remove``, and ``doctrine-remove-fit`` must
+    each push their touched aliases; the friendly-name commands used to write
+    ``db_alias`` twice under a local/remote split that no longer exists.
+    """
+
+    def _target_dbs_factory(self, tmp_path, fake_db_factory, dbs):
+        """Alias-keyed factory with a doctrine_fits + ship_targets market schema.
+
+        Used for the update-target tests, which only touch a single market
+        database (no fittings/sde involved).
+        """
+        def factory(alias=None, market_context=None):
+            key = alias or market_context.database_alias
+            if key not in dbs:
+                db = fake_db_factory(tmp_path / f"{key}.db", alias=key)
+                with db.engine.begin() as conn:
+                    conn.execute(text(
+                        "CREATE TABLE doctrine_fits (fit_id INTEGER PRIMARY KEY, "
+                        "fit_name TEXT, ship_type_id INTEGER, ship_name TEXT, "
+                        "target INTEGER, market_flag TEXT)"
+                    ))
+                    conn.execute(text(
+                        "CREATE TABLE ship_targets (fit_id INTEGER PRIMARY KEY, "
+                        "fit_name TEXT, ship_id INTEGER, ship_name TEXT, "
+                        "ship_target INTEGER, created_at TEXT)"
+                    ))
+                dbs[key] = db
+            return dbs[key]
+        return factory
+
+    def test_update_target_pushes(self, tmp_path, monkeypatch, fake_db_factory):
+        from mkts_backend.cli_tools import fit_update
+
+        dbs = {}
+        factory = self._target_dbs_factory(tmp_path, fake_db_factory, dbs)
+        monkeypatch.setattr(fit_update, "DatabaseConfig", factory)
+        monkeypatch.setattr("mkts_backend.utils.doctrine_update.DatabaseConfig", factory)
+
+        db = factory(alias="wcmktnewkeeptest")
+        with db.engine.begin() as conn:
+            conn.execute(text(
+                "INSERT INTO doctrine_fits (fit_id, fit_name, ship_type_id, "
+                "ship_name, target, market_flag) VALUES "
+                "(39, 'Test Fit', 587, 'Rifter', 10, 'primary')"
+            ))
+
+        assert fit_update._update_target_single(
+            fit_id=39, target=20, remote=False, market_flag="primary",
+            db_alias="wcmktnewkeeptest",
+        )
+
+        with db.engine.connect() as conn:
+            target_row = conn.execute(
+                text("SELECT target FROM doctrine_fits WHERE fit_id = 39")
+            ).fetchone()
+            assert target_row[0] == 20
+            ship_target_row = conn.execute(
+                text("SELECT ship_target FROM ship_targets WHERE fit_id = 39")
+            ).fetchone()
+            assert ship_target_row[0] == 20
+        assert db.pushes == 1, "update-target never reached Turso"
+
+    def test_update_target_push_failure_fails_the_command(
+        self, tmp_path, monkeypatch, fake_db_factory, capsys
+    ):
+        from mkts_backend.cli_tools import fit_update
+
+        dbs = {}
+        factory = self._target_dbs_factory(tmp_path, fake_db_factory, dbs)
+        monkeypatch.setattr(fit_update, "DatabaseConfig", factory)
+        monkeypatch.setattr("mkts_backend.utils.doctrine_update.DatabaseConfig", factory)
+
+        db = factory(alias="wcmktnewkeeptest")
+        with db.engine.begin() as conn:
+            conn.execute(text(
+                "INSERT INTO doctrine_fits (fit_id, fit_name, ship_type_id, "
+                "ship_name, target, market_flag) VALUES "
+                "(39, 'Test Fit', 587, 'Rifter', 10, 'primary')"
+            ))
+
+        def boom():
+            raise RuntimeError("turso unreachable")
+        db.push = boom
+
+        result = fit_update._update_target_single(
+            fit_id=39, target=20, remote=False, market_flag="primary",
+            db_alias="wcmktnewkeeptest",
+        )
+
+        assert result is False
+        # The local write is the writer's job and happens before the push
+        # that reports failure.
+        with db.engine.connect() as conn:
+            target_row = conn.execute(
+                text("SELECT target FROM doctrine_fits WHERE fit_id = 39")
+            ).fetchone()
+            assert target_row[0] == 20
+        captured = capsys.readouterr()
+        assert "turso unreachable" in captured.out, (
+            "push() must actually have been called and raised for this "
+            "test to be meaningful"
+        )
+
+    def test_update_friendly_name_writes_once_and_pushes_once(
+        self, tmp_path, monkeypatch, fake_db_factory
+    ):
+        """The command used to write the same replica twice under a
+        local/remote split that no longer exists."""
+        from mkts_backend.cli_tools import fit_update
+        from mkts_backend.config.market_context import MarketContext
+
+        expected_markets = {
+            MarketContext.from_settings(m).database_alias
+            for m in MarketContext.list_available()
+        }
+        primary_alias = MarketContext.from_settings("primary").database_alias
+        assert primary_alias in expected_markets
+
+        dbs = {}
+
+        def factory(alias=None, market_context=None):
+            key = alias or market_context.database_alias
+            if key not in dbs:
+                db = fake_db_factory(tmp_path / f"{key}.db", alias=key)
+                with db.engine.begin() as conn:
+                    conn.execute(text(
+                        "CREATE TABLE doctrine_fits (fit_id INTEGER PRIMARY KEY, "
+                        "doctrine_id INTEGER, friendly_name TEXT)"
+                    ))
+                    conn.execute(text(
+                        "INSERT INTO doctrine_fits (fit_id, doctrine_id) VALUES (1, 501)"
+                    ))
+                dbs[key] = db
+            return dbs[key]
+
+        monkeypatch.setattr(fit_update, "DatabaseConfig", factory)
+        monkeypatch.setattr("mkts_backend.utils.doctrine_update.DatabaseConfig", factory)
+
+        update_calls: list[str] = []
+        original_update = fit_update.update_doctrine_friendly_name
+
+        def counted_update(doctrine_id, friendly_name, db_alias="wcmkt", remote=False):
+            update_calls.append(db_alias)
+            return original_update(
+                doctrine_id, friendly_name, db_alias=db_alias, remote=remote
+            )
+
+        monkeypatch.setattr(fit_update, "update_doctrine_friendly_name", counted_update)
+
+        assert fit_update.update_friendly_name_command(
+            doctrine_id=501, friendly_name="Test Doctrine", db_alias=primary_alias,
+        )
+
+        assert set(dbs) == expected_markets
+        # Each alias updated exactly once — the old code updated db_alias
+        # twice (once as "local", once as "remote" whenever db_alias also
+        # appeared in the configured markets).
+        assert sorted(update_calls) == sorted(expected_markets), update_calls
+        for alias in expected_markets:
+            assert dbs[alias].pushes == 1, {a: d.pushes for a, d in dbs.items()}
+            with dbs[alias].engine.connect() as conn:
+                name = conn.execute(
+                    text("SELECT friendly_name FROM doctrine_fits WHERE fit_id = 1")
+                ).scalar()
+                assert name == "Test Doctrine"
+
+    def test_populate_friendly_names_pushes_each_configured_market(
+        self, tmp_path, monkeypatch, fake_db_factory
+    ):
+        """``sync_friendly_names_to_remote`` is gone; propagation now comes
+        from calling ``populate_friendly_names_from_json`` once per
+        configured market and pushing each one that actually updated rows."""
+        import json as json_module
+        from mkts_backend.cli_tools import fit_update
+        from mkts_backend.config.market_context import MarketContext
+
+        expected_markets = {
+            MarketContext.from_settings(m).database_alias
+            for m in MarketContext.list_available()
+        }
+        primary_alias = MarketContext.from_settings("primary").database_alias
+
+        dbs = {}
+
+        def factory(alias=None, market_context=None):
+            key = alias or market_context.database_alias
+            if key not in dbs:
+                db = fake_db_factory(tmp_path / f"{key}.db", alias=key)
+                with db.engine.begin() as conn:
+                    conn.execute(text(
+                        "CREATE TABLE doctrine_fits (fit_id INTEGER PRIMARY KEY, "
+                        "doctrine_id INTEGER, friendly_name TEXT)"
+                    ))
+                    conn.execute(text(
+                        "INSERT INTO doctrine_fits (fit_id, doctrine_id) VALUES (7, 900)"
+                    ))
+                dbs[key] = db
+            return dbs[key]
+
+        monkeypatch.setattr(fit_update, "DatabaseConfig", factory)
+        monkeypatch.setattr("mkts_backend.utils.doctrine_update.DatabaseConfig", factory)
+
+        json_path = tmp_path / "doctrine_names.json"
+        json_path.write_text(json_module.dumps(
+            [{"fit_id": 7, "doctrine_id": 900, "friendly_name": "Hurricane"}]
+        ))
+
+        assert fit_update.populate_friendly_names_command(
+            json_path=str(json_path), db_alias=primary_alias,
+        )
+
+        assert set(dbs) == expected_markets
+        for alias in expected_markets:
+            assert dbs[alias].pushes == 1, {a: d.pushes for a, d in dbs.items()}
+            with dbs[alias].engine.connect() as conn:
+                name = conn.execute(
+                    text("SELECT friendly_name FROM doctrine_fits WHERE fit_id = 7")
+                ).scalar()
+                assert name == "Hurricane"
+
+    def _doctrine_remove_dbs_factory(self, tmp_path, fake_db_factory, dbs):
+        """Alias-keyed factory for ``remove_fit_command``'s three DB roles."""
+        def factory(alias=None, market_context=None):
+            key = alias or market_context.database_alias
+            if key not in dbs:
+                db = fake_db_factory(tmp_path / f"{key}.db", alias=key)
+                with db.engine.begin() as conn:
+                    if key == "fittings":
+                        conn.execute(text(
+                            "CREATE TABLE fittings_fitting (id INTEGER PRIMARY KEY, "
+                            "description TEXT, name TEXT, ship_type_id INTEGER)"
+                        ))
+                        conn.execute(text(
+                            "CREATE TABLE fittings_doctrine (id INTEGER PRIMARY KEY, "
+                            "name TEXT, description TEXT)"
+                        ))
+                        conn.execute(text(
+                            "CREATE TABLE fittings_doctrine_fittings (id INTEGER "
+                            "PRIMARY KEY, doctrine_id INTEGER, fitting_id INTEGER)"
+                        ))
+                    elif key == "sde":
+                        conn.execute(text(
+                            "CREATE TABLE sdetypes (typeID INTEGER PRIMARY KEY, "
+                            "typeName TEXT)"
+                        ))
+                    else:
+                        conn.execute(text(
+                            "CREATE TABLE doctrines (fit_id INTEGER)"
+                        ))
+                        conn.execute(text(
+                            "CREATE TABLE doctrine_map (fitting_id INTEGER, "
+                            "doctrine_id INTEGER)"
+                        ))
+                        conn.execute(text(
+                            "CREATE TABLE doctrine_fits (fit_id INTEGER, "
+                            "doctrine_id INTEGER)"
+                        ))
+                        conn.execute(text(
+                            "CREATE TABLE ship_targets (fit_id INTEGER PRIMARY KEY)"
+                        ))
+                dbs[key] = db
+            return dbs[key]
+        return factory
+
+    def test_remove_fit_pushes_market_and_fittings(
+        self, tmp_path, monkeypatch, fake_db_factory
+    ):
+        from mkts_backend.cli_tools import fit_update
+
+        dbs = {}
+        factory = self._doctrine_remove_dbs_factory(tmp_path, fake_db_factory, dbs)
+        monkeypatch.setattr(fit_update, "DatabaseConfig", factory)
+        monkeypatch.setattr("mkts_backend.utils.doctrine_update.DatabaseConfig", factory)
+        monkeypatch.setattr("mkts_backend.utils.parse_fits.DatabaseConfig", factory)
+        monkeypatch.setattr("mkts_backend.cli_tools.fit_update.Confirm.ask", lambda *a, **k: True)
+
+        market_alias = "wcmktnewkeeptest"
+        fittings_db = factory(alias="fittings")
+        with fittings_db.engine.begin() as conn:
+            conn.execute(text(
+                "INSERT INTO fittings_fitting (id, name, description, ship_type_id) "
+                "VALUES (501, 'Test Fit', 'desc', 587)"
+            ))
+            conn.execute(text(
+                "INSERT INTO fittings_doctrine (id, name, description) "
+                "VALUES (10, 'Test Doctrine', '')"
+            ))
+            conn.execute(text(
+                "INSERT INTO fittings_doctrine_fittings (id, doctrine_id, fitting_id) "
+                "VALUES (1, 10, 501)"
+            ))
+
+        sde_db = factory(alias="sde")
+        with sde_db.engine.begin() as conn:
+            conn.execute(text("INSERT INTO sdetypes (typeID, typeName) VALUES (587, 'Rifter')"))
+
+        market_db = factory(alias=market_alias)
+        with market_db.engine.begin() as conn:
+            conn.execute(text("INSERT INTO doctrines (fit_id) VALUES (501)"))
+            conn.execute(text(
+                "INSERT INTO doctrine_map (fitting_id, doctrine_id) VALUES (501, 10)"
+            ))
+            conn.execute(text("INSERT INTO doctrine_fits (fit_id) VALUES (501)"))
+            conn.execute(text("INSERT INTO ship_targets (fit_id) VALUES (501)"))
+
+        assert fit_update.remove_fit_command(
+            fit_id=501, remote=False, db_alias=market_alias,
+        )
+
+        assert dbs[market_alias].pushes == 1, "market replica never reached Turso"
+        assert dbs["fittings"].pushes == 1, "fittings replica never reached Turso"
+
+        with dbs[market_alias].engine.connect() as conn:
+            assert conn.execute(
+                text("SELECT count(*) FROM doctrines WHERE fit_id = 501")
+            ).scalar() == 0
+        with dbs["fittings"].engine.connect() as conn:
+            assert conn.execute(
+                text("SELECT count(*) FROM fittings_doctrine_fittings WHERE fitting_id = 501")
+            ).scalar() == 0
+
+    def test_remove_fit_push_failure_fails_the_command(
+        self, tmp_path, monkeypatch, fake_db_factory, capsys
+    ):
+        from mkts_backend.cli_tools import fit_update
+
+        dbs = {}
+        factory = self._doctrine_remove_dbs_factory(tmp_path, fake_db_factory, dbs)
+        monkeypatch.setattr(fit_update, "DatabaseConfig", factory)
+        monkeypatch.setattr("mkts_backend.utils.doctrine_update.DatabaseConfig", factory)
+        monkeypatch.setattr("mkts_backend.utils.parse_fits.DatabaseConfig", factory)
+        monkeypatch.setattr("mkts_backend.cli_tools.fit_update.Confirm.ask", lambda *a, **k: True)
+
+        market_alias = "wcmktnewkeeptest"
+        fittings_db = factory(alias="fittings")
+        with fittings_db.engine.begin() as conn:
+            conn.execute(text(
+                "INSERT INTO fittings_fitting (id, name, description, ship_type_id) "
+                "VALUES (502, 'Test Fit 2', 'desc', 587)"
+            ))
+            conn.execute(text(
+                "INSERT INTO fittings_doctrine (id, name, description) "
+                "VALUES (11, 'Test Doctrine 2', '')"
+            ))
+            conn.execute(text(
+                "INSERT INTO fittings_doctrine_fittings (id, doctrine_id, fitting_id) "
+                "VALUES (2, 11, 502)"
+            ))
+
+        sde_db = factory(alias="sde")
+        with sde_db.engine.begin() as conn:
+            conn.execute(text("INSERT INTO sdetypes (typeID, typeName) VALUES (587, 'Rifter')"))
+
+        market_db = factory(alias=market_alias)
+        with market_db.engine.begin() as conn:
+            conn.execute(text("INSERT INTO doctrines (fit_id) VALUES (502)"))
+            conn.execute(text(
+                "INSERT INTO doctrine_map (fitting_id, doctrine_id) VALUES (502, 11)"
+            ))
+            conn.execute(text("INSERT INTO doctrine_fits (fit_id) VALUES (502)"))
+            conn.execute(text("INSERT INTO ship_targets (fit_id) VALUES (502)"))
+
+        def boom():
+            raise RuntimeError("turso unreachable")
+        market_db.push = boom
+
+        result = fit_update.remove_fit_command(
+            fit_id=502, remote=False, db_alias=market_alias,
+        )
+
+        assert result is False
+        # The market-side deletes ran (the writer's job) before the failed push.
+        with market_db.engine.connect() as conn:
+            assert conn.execute(
+                text("SELECT count(*) FROM doctrines WHERE fit_id = 502")
+            ).scalar() == 0
+        # fittings must not be pushed either — the command fails on the
+        # market push before it ever reaches the fittings push.
+        assert dbs["fittings"].pushes == 0
+        captured = capsys.readouterr()
+        assert "turso unreachable" in captured.out
+
+    def test_doctrine_remove_fit_pushes_market_and_fittings(
+        self, tmp_path, monkeypatch, fake_db_factory
+    ):
+        from mkts_backend.cli_tools import fit_update
+
+        dbs = {}
+        factory = self._doctrine_remove_dbs_factory(tmp_path, fake_db_factory, dbs)
+        monkeypatch.setattr(fit_update, "DatabaseConfig", factory)
+        monkeypatch.setattr("mkts_backend.utils.doctrine_update.DatabaseConfig", factory)
+        monkeypatch.setattr("mkts_backend.utils.parse_fits.DatabaseConfig", factory)
+
+        market_alias = "wcmktnewkeeptest"
+        fittings_db = factory(alias="fittings")
+        with fittings_db.engine.begin() as conn:
+            conn.execute(text(
+                "INSERT INTO fittings_fitting (id, name, description, ship_type_id) "
+                "VALUES (503, 'Test Fit 3', 'desc', 587)"
+            ))
+            conn.execute(text(
+                "INSERT INTO fittings_doctrine (id, name, description) "
+                "VALUES (12, 'Test Doctrine 3', '')"
+            ))
+            conn.execute(text(
+                "INSERT INTO fittings_doctrine_fittings (id, doctrine_id, fitting_id) "
+                "VALUES (3, 12, 503)"
+            ))
+
+        market_db = factory(alias=market_alias)
+        with market_db.engine.begin() as conn:
+            conn.execute(text("INSERT INTO doctrine_map (fitting_id, doctrine_id) VALUES (503, 12)"))
+            conn.execute(text(
+                "INSERT INTO doctrine_fits (fit_id, doctrine_id) VALUES (503, 12)"
+            ))
+
+        assert fit_update.doctrine_remove_fit_command(
+            doctrine_id=12, fit_ids=[503], remote=False, interactive=False,
+            db_alias=market_alias,
+        )
+
+        assert dbs[market_alias].pushes == 1, "market replica never reached Turso"
+        assert dbs["fittings"].pushes == 1, "fittings replica never reached Turso"
+        with dbs["fittings"].engine.connect() as conn:
+            assert conn.execute(
+                text("SELECT count(*) FROM fittings_doctrine_fittings WHERE fitting_id = 503")
+            ).scalar() == 0
+
+
 class TestUpdateFitWorkflowCallSiteCoverage:
     """Guard against a new caller silently omitting the accumulator.
 

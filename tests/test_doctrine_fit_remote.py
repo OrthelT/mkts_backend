@@ -108,3 +108,13 @@ def test_doctrine_fit_local_lookup_still_reads_local(fittings_env):
     """Default (remote=False) must not silently fall back to the remote."""
     with pytest.raises(ValueError, match="not found in fittings_doctrine"):
         DoctrineFit(doctrine_id=42, fit_id=997, target=20)
+
+
+def test_sync_friendly_names_to_remote_removed():
+    """``sync_friendly_names_to_remote`` had the same self-referential
+    local-read/remote-write shape as ``sync_equiv_to_remote`` (deleted in
+    Task 8) and is deleted here (Task 10): friendly-name propagation now
+    comes from calling ``populate_friendly_names_from_json`` /
+    ``update_doctrine_friendly_name`` once per configured market and
+    pushing each one directly."""
+    assert not hasattr(doctrine_update, "sync_friendly_names_to_remote")

@@ -45,8 +45,13 @@ Examples:
   mkts-backend update-markets                 # Run full pipeline for all markets
   mkts-backend update-markets --history       # With history processing
   mkts-backend update-markets --primary       # Primary market only
-  mkts-backend sync                           # Sync all databases
-  mkts-backend sync --deployment              # Sync deployment only
+  mkts-backend sync                           # Pull every routed replica: all
+                                               #   markets + shared sde/fittings/buildcost
+                                               #   (excludes the dev/test DB)
+  mkts-backend sync --deployment              # Sync deployment market only
+  mkts-backend sync --markets-only            # Markets only, skip shared databases
+  mkts-backend sync --no-buildcost            # Skip the optional buildcost replica
+  mkts-backend sync --include-testing         # Also pull the dev/test database
   mkts-backend validate --market=all          # Validate all databases
   mkts-backend fit-check --file=fits/hfi.txt  # Check fit availability
   mkts-backend assets --name='Damage Control'   # Look up assets by partial name

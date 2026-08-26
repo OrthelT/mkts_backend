@@ -15,6 +15,7 @@ Handlers return ``True`` on success, ``False`` on failure.  They should
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 from typing import Callable, TYPE_CHECKING, Any
 
@@ -504,41 +505,98 @@ def _register_all(reg: CommandRegistry) -> None:
 
     # ── sync ────────────────────────────────────────────────────
     def _handle_sync(args: list[str], market_alias: str) -> bool:
+        """Pull every configured replica from Turso.
+
+        Markets come from the market selector; shared databases come from
+        database_routing(), so a new [shared.*] block in settings.toml is
+        picked up with no code change. This is the whole of the old
+        dbrefresh*.sh procedure: the scripts used `turso db export`, which
+        cannot produce pyturso metadata.
+        """
         from mkts_backend.cli_tools.arg_utils import ParsedArgs
-        from mkts_backend.config.market_context import MarketContext
-        from mkts_backend.config.db_config import DatabaseConfig
-        from mkts_backend.config.logging_config import configure_logging
         from mkts_backend.cli_tools.market_args import expand_market_alias
+        from mkts_backend.config import db_config
+        from mkts_backend.config.logging_config import configure_logging
+        from mkts_backend.config.market_context import MarketContext
+        from mkts_backend.config.settings_service import (
+            SettingsService,
+            get_all_market_contexts,
+        )
 
         logger = configure_logging(__name__)
         p = ParsedArgs(args)
         skip_buildcost = p.has_flag("no-buildcost")
+        markets_only = p.has_flag("markets-only")
+        include_testing = p.has_flag("include-testing")
+
+        routing = SettingsService().database_routing()
+        market_db_aliases = {
+            ctx.database_alias for ctx in get_all_market_contexts().values()
+        }
+        testing_alias = SettingsService().shared_testing["database_alias"]
+
+        ok = True
+
+        def credentials_present(cfg: dict) -> bool:
+            return bool(
+                cfg["turso_url_env"]
+                and cfg["turso_token_env"]
+                and os.getenv(cfg["turso_url_env"])
+                and os.getenv(cfg["turso_token_env"])
+            )
+
+        def pull_one(db, label: str, required: bool) -> bool:
+            print(f"Syncing database: {label}")
+            try:
+                db.assert_remote_compatible()
+                if not db.heal_metadata():
+                    raise RuntimeError("replica metadata could not be repaired")
+                db.sync()
+            except Exception as exc:
+                logger.warning(f"{label} sync failed: {exc}")
+                print(f"{'Error' if required else 'Warning'}: {label} sync failed: {exc}")
+                return False
+            logger.info(f"Database synced: {db.alias}")
+            print(f"Database synced: {db.alias} ({db.path})")
+            return True
 
         for mkt in expand_market_alias(market_alias):
             market_ctx = MarketContext.from_settings(mkt)
-            db = DatabaseConfig(market_context=market_ctx)
-            print(f"Syncing database for market: {market_ctx.name} ({market_ctx.alias})")
-            db.sync()
-            logger.info(f"Database synced: {db.alias}")
-            print(f"Database synced: {db.alias} ({db.path})")
+            cfg = routing[market_ctx.database_alias]
+            if not credentials_present(cfg):
+                print(f"Error: required credentials are incomplete for {mkt}")
+                ok = False
+                continue
+            db = db_config.DatabaseConfig(market_context=market_ctx)
+            ok &= pull_one(db, f"{market_ctx.name} ({market_ctx.alias})", required=True)
 
-        if not skip_buildcost:
-            buildcost = DatabaseConfig("buildcost")
-            print("Syncing database: buildcost")
-            try:
-                buildcost.sync()
-                logger.info("Database synced: buildcost")
-                print(f"Database synced: buildcost ({buildcost.path})")
-            except Exception as exc:
-                logger.warning(f"buildcost sync failed: {exc}")
-                print(f"Warning: buildcost sync failed: {exc}")
+        if markets_only:
+            return ok
 
-        return True
+        for alias, cfg in routing.items():
+            if alias in market_db_aliases:
+                continue
+            if alias == testing_alias and not include_testing:
+                continue
+            if skip_buildcost and "buildcost" in alias:
+                continue
+            if not credentials_present(cfg):
+                level = "Warning" if cfg["optional"] else "Error"
+                print(f"{level}: credentials are incomplete for {alias}")
+                ok &= bool(cfg["optional"])
+                continue
+            db = db_config.DatabaseConfig(alias)
+            ok &= pull_one(db, alias, required=not cfg["optional"])
+
+        return ok
 
     reg.register(
         "sync",
         _handle_sync,
-        description="Sync local mirrors from remote (markets + buildcost; --no-buildcost to skip)",
+        description=(
+            "Pull every configured replica from Turso "
+            "(--markets-only, --no-buildcost, --include-testing to narrow)"
+        ),
         default_market="all",
     )
 

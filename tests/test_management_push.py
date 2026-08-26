@@ -27,7 +27,24 @@ this file and should re-audit before assuming a row above is still accurate.
 """
 import importlib
 
+import pandas as pd
 from sqlalchemy import text
+
+
+def _fake_type_info(type_id: int = 34, type_name: str = "Tritanium") -> pd.DataFrame:
+    """Stand-in for db_utils.get_type_info's SDE lookup.
+
+    ``get_type_info`` reads through the module-level ``sde_db = DatabaseConfig("sde")``
+    bound at db_utils import time — a monkeypatch of the ``DatabaseConfig`` *class*
+    inside db_utils does not affect that already-constructed instance, so without
+    this patch these tests transitively hit the real local sdelitetest.db (present
+    in this worktree but absent on a clean checkout/CI runner). Pattern matches
+    tests/test_schema_integrity.py's ``test_add_missing_items_to_watchlist_skips_existing_type_id``.
+    """
+    return pd.DataFrame([{
+        "type_id": type_id, "type_name": type_name, "group_id": 18,
+        "group_name": "Mineral", "category_id": 4, "category_name": "Material",
+    }])
 
 
 def _import_add_watchlist_module():
@@ -60,6 +77,15 @@ class TestWatchlistPush:
             ))
         monkeypatch.setattr("mkts_backend.utils.db_utils.DatabaseConfig", lambda *a, **k: db)
         monkeypatch.setattr(add_watchlist, "DatabaseConfig", lambda *a, **k: db)
+        monkeypatch.setattr(
+            "mkts_backend.utils.db_utils.get_type_info",
+            lambda type_ids, remote=False: _fake_type_info(),
+        )
+        mirror_calls: list[list[int]] = []
+        monkeypatch.setattr(
+            add_watchlist, "_mirror_to_build_watchlist",
+            lambda type_ids: mirror_calls.append(type_ids),
+        )
 
         assert add_watchlist.add_watchlist(["--type-id=34"], market_alias="primary")
 
@@ -68,13 +94,24 @@ class TestWatchlistPush:
                 text("SELECT count(*) FROM watchlist WHERE type_id = 34")
             ).scalar() == 1
         assert db.pushes == 1, "watchlist insert never reached Turso"
+        assert mirror_calls == [[34]], (
+            "build_watchlist mirror must run once every market write and push succeeded"
+        )
 
-    def test_push_failure_fails_the_command(self, tmp_path, monkeypatch, fake_db_factory):
+    def test_push_failure_fails_the_command(self, tmp_path, monkeypatch, fake_db_factory, capsys):
         add_watchlist = _import_add_watchlist_module()
 
         db = fake_db_factory(tmp_path / "market.db", alias="wcmktnewkeeptest")
         with db.engine.begin() as conn:
-            conn.execute(text("CREATE TABLE watchlist (type_id INTEGER PRIMARY KEY)"))
+            # Full column set so the insert genuinely succeeds inside
+            # add_missing_items_to_watchlist and execution actually reaches
+            # push() below — a one-column table makes the INSERT itself fail
+            # first, leaving `db.push = boom` dead code.
+            conn.execute(text(
+                "CREATE TABLE watchlist (type_id INTEGER PRIMARY KEY, "
+                "type_name TEXT, group_id INTEGER, group_name TEXT, "
+                "category_id INTEGER, category_name TEXT)"
+            ))
 
         def boom():
             raise RuntimeError("turso unreachable")
@@ -82,5 +119,28 @@ class TestWatchlistPush:
         db.push = boom
         monkeypatch.setattr("mkts_backend.utils.db_utils.DatabaseConfig", lambda *a, **k: db)
         monkeypatch.setattr(add_watchlist, "DatabaseConfig", lambda *a, **k: db)
+        monkeypatch.setattr(
+            "mkts_backend.utils.db_utils.get_type_info",
+            lambda type_ids, remote=False: _fake_type_info(),
+        )
+        mirror_calls: list[list[int]] = []
+        monkeypatch.setattr(
+            add_watchlist, "_mirror_to_build_watchlist",
+            lambda type_ids: mirror_calls.append(type_ids),
+        )
 
         assert add_watchlist.add_watchlist(["--type-id=34"], market_alias="primary") is False
+
+        # The row was written locally (the writer's job) before the push
+        # that reports it failed.
+        with db.engine.connect() as conn:
+            assert conn.execute(
+                text("SELECT count(*) FROM watchlist WHERE type_id = 34")
+            ).scalar() == 1
+        assert mirror_calls == [], (
+            "mirror must not run when a market write's push failed"
+        )
+        captured = capsys.readouterr()
+        assert "push failed" in captured.out, (
+            "push() must actually have been called and raised for this test to be meaningful"
+        )

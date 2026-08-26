@@ -349,6 +349,7 @@ def _register_all(reg: CommandRegistry) -> None:
                 from mkts_backend.cli_tools.fit_update import collect_fit_metadata_interactive
                 metadata_dict = collect_fit_metadata_interactive(fit_id, fit_file)
 
+            touched_aliases: set = set()
             for target_market in target_markets:
                 target_alias = MARKET_DB_MAP[target_market]
                 print(f"\n--- Processing for {target_market} market ({target_alias}) ---")
@@ -372,6 +373,7 @@ def _register_all(reg: CommandRegistry) -> None:
                     target_alias=target_alias,
                     update_targets=update_targets,
                     metadata_override=metadata_dict,
+                    touched_aliases=touched_aliases,
                 )
 
                 if dry_run:
@@ -387,6 +389,16 @@ def _register_all(reg: CommandRegistry) -> None:
                     )
                     if update_targets:
                         print("  ship_targets updated")
+
+            if not dry_run:
+                from mkts_backend.config.db_config import DatabaseConfig
+
+                for touched_alias in touched_aliases:
+                    try:
+                        DatabaseConfig(touched_alias).push()
+                    except Exception as exc:
+                        print(f"Error: push failed for {touched_alias}: {exc}")
+                        return False
 
             return True
         except Exception as e:

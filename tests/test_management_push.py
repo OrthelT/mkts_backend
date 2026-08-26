@@ -17,8 +17,8 @@ rather than trusting them.
 | `add_watchlist`                  | `db_utils.add_missing_items_to_watchlist` (via `db.engine`, conn.commit()) | one market alias per invocation, e.g. `wcmktnewkeeptest` | none | **Task 7 (this task)**: push once per touched alias in `add_watchlist.py`'s market loop, after `process_add_watchlist()` succeeds |
 | `equiv add` / `equiv remove`     | `equiv_handlers.py` (`db.engine.begin()`), then `sync_equiv_to_remote()` deletes+reinserts via `remote_engine` (no push) | every configured market (`_equiv_add_all` / `_equiv_remove_all`) | none (fake local-only "sync") | **Task 8 (this task)**: deleted `sync_equiv_to_remote` and its 3 call sites (`add_equiv_group` x2, `remove_equiv_group` x1); added `DatabaseConfig(market_context=...).push()` after each market's write in all three loops that call `add_equiv_group`/`remove_equiv_group` — `_equiv_add_all` (`--all`/default), `_equiv_remove_all` (`--all`/default), and `_equiv_find`'s `--add` branch (single-market via `--market=` or default-all) — the third loop was not named in the brief but writes through the same handlers and was found by the `rg` audit below |
 | `equiv find <id> --add`          | `equiv_handlers.py add_equiv_group` via `equiv_manager._equiv_find`'s `do_add` branch (`equiv_manager.py:270-280`) | target markets from `--market=` or all (same `_get_target_markets` default as add/remove) | none (same fake sync as above, now deleted) | **Task 8 (this task)**: single-market/all-market audit finding — pushes now added at this loop too |
-| `fit-update <subcommand>`        | `fit_update.py` + `doctrine_update.py` (many `engine.begin()` / session.commit() sites); also calls `add_missing_items_to_watchlist` at `fit_update.py:1086` (`_prepare_watchlist_for_fit`) | target market alias (`--market`/`--db-alias`) | none | Task 10 (per Task 7 brief cross-reference) — not implemented here; `add_missing_items_to_watchlist`'s push stays at the *command* boundary, not inside the writer, so fit-update's own push (when added) must not double-push |
-| `parse` (fit import, `parse_fits.py`) | `parse_fits.py` (conn.commit() at several lines); calls `add_missing_items_to_watchlist` at `parse_fits.py:837` | target market alias | none | Task 9 (per Task 7 brief cross-reference) — not implemented here |
+| `fit-update add` / `update-fit` (shared `fittings` writes via `update_fit_workflow`) | `parse_fits.py`'s `update_fit_workflow` (writes `fittings` + one market replica per call); also calls `add_missing_items_to_watchlist` | shared `fittings` + the resolved target market alias, once per CLI invocation | none | **Task 9 (this task)**: `update_fit_workflow` never pushes itself — it takes an optional `touched_aliases: set` accumulator and adds `"fittings"` and its resolved `target_alias` on success (never on a dry run). Every outer caller (`interactive_add_fit`, `fit_update_command`'s `add` and `update` subcommands in `fit_update.py`, and `command_registry.py`'s `update-fit` handler) owns one set for its whole invocation, threads it through every workflow call, and pushes each distinct alias once at the end (skipped entirely on `--dry-run`; a push failure fails the command). Standalone `create_doctrine_command` pushes `"fittings"` once after `create_doctrine()` succeeds. A source-scan test (`TestUpdateFitWorkflowCallSiteCoverage`) asserts every `update_fit_workflow(` call site passes `touched_aliases=`. Two dead unreachable wrappers, `update_existing_fit`/`update_fit` in `parse_fits.py` (no callers anywhere in `src`/`tests`), were deleted rather than plumbed, per the "minimize codebase size" standing preference. |
+| `fit-update update-target` / `update-friendly-name` / `populate-friendly-names` / `remove` / `doctrine-remove-fit` | `fit_update.py` (many `engine.begin()` / session.commit() sites); also calls `add_missing_items_to_watchlist` at `fit_update.py:1086` (`_prepare_watchlist_for_fit`) | target market alias (`--market`/`--db-alias`) | none | Task 10 — not implemented here; `add_missing_items_to_watchlist`'s push stays at the *command* boundary, not inside the writer, so fit-update's own push (when added) must not double-push |
 | `add_structure`                  | `build_cost_utils.upsert_structures(local_db.remote_engine, ...)` (`add_structure.py:154`) | `buildcost` | none | Not yet assigned a task brief as of 2026-08-26; flagged gap, out of scope here |
 | `build-watchlist add/remove/mirror` | `build_watchlist_cli.py` → `builder_costs/repository.py` (`upsert_build_watchlist`, `upsert_builder_costs`, ...) | `buildcost` | **yes** — `repository.py` calls `db.push()` at the end of every writer (`:125`, `:161`, `:193`, `:226`, `:252`); `build_watchlist_cli.py:121` also pushes directly | Already compliant — no action needed |
 | `update-markets` (main pipeline) | `cli.py` (`db.push()` at `:379`, end of run) | all configured markets processed in the run | **yes** | Already compliant (earlier phase) |
@@ -27,6 +27,7 @@ This table covers the writers visible in the Task 7 audit; Tasks 8-12 extend
 this file and should re-audit before assuming a row above is still accurate.
 """
 import importlib
+import json
 
 import pandas as pd
 from sqlalchemy import text
@@ -316,3 +317,356 @@ class TestEquivPush:
 
         assert result is False
         assert set(dbs) == {primary_alias}
+
+
+# ---------------------------------------------------------------------------
+# TestFittingsPush (Task 9) — update_fit_workflow's touched_aliases design
+# ---------------------------------------------------------------------------
+#
+# update_fit_workflow writes the shared `fittings` replica plus one market
+# replica per call, and is called once per market by every outer command. It
+# must NOT push itself (see module docstring's Task 9 row); instead it takes
+# an optional `touched_aliases: set` accumulator and adds "fittings" and its
+# resolved `target_alias` to it on success (never on a dry run). Every outer
+# caller owns one accumulator for the whole CLI invocation and pushes each
+# distinct alias once at the end.
+#
+# EFT text below is copied verbatim from
+# tests/test_eft_parser.py::TestEFTParserString.test_parse_simple_fit (not
+# importable as a fixture there — it's a local string inside that test
+# method), per the brief's "use an existing EFT fixture" instruction.
+
+_FITTINGS_EFT_TYPE_MAP = {
+    "Hurricane Fleet Issue": 33157,
+    "Damage Control II": 2048,
+    "Gyrostabilizer II": 519,
+    "Large Shield Extender II": 3841,
+    "720mm Howitzer Artillery II": 2961,
+    "Valkyrie II": 2446,
+    "Nanite Repair Paste": 28668,
+}
+
+_FITTINGS_EFT_TEXT = """[Hurricane Fleet Issue, Test Fit]
+Damage Control II
+Gyrostabilizer II
+
+Large Shield Extender II
+
+720mm Howitzer Artillery II
+
+
+Valkyrie II x5
+
+Nanite Repair Paste x100
+"""
+
+
+def _create_fittings_schema(conn) -> None:
+    conn.execute(text(
+        "CREATE TABLE fittings_doctrine (id INTEGER PRIMARY KEY, name TEXT, "
+        "icon_url TEXT, description TEXT, created TEXT, last_updated TEXT)"
+    ))
+    conn.execute(text(
+        "CREATE TABLE watch_doctrines (id INTEGER PRIMARY KEY, name TEXT, "
+        "icon_url TEXT, description TEXT, created TEXT, last_updated TEXT)"
+    ))
+    conn.execute(text(
+        "CREATE TABLE fittings_fitting (id INTEGER PRIMARY KEY, description TEXT, "
+        "name TEXT, ship_type_type_id INTEGER, ship_type_id INTEGER, "
+        "created TEXT, last_updated TEXT)"
+    ))
+    conn.execute(text(
+        "CREATE TABLE fittings_fittingitem (id INTEGER PRIMARY KEY AUTOINCREMENT, "
+        "flag TEXT, quantity INTEGER, type_id INTEGER, fit_id INTEGER, type_fk_id INTEGER)"
+    ))
+    conn.execute(text(
+        "CREATE TABLE fittings_doctrine_fittings (id INTEGER PRIMARY KEY, "
+        "doctrine_id INTEGER, fitting_id INTEGER)"
+    ))
+
+
+def _create_fittings_market_schema(conn) -> None:
+    conn.execute(text(
+        "CREATE TABLE doctrine_fits (id INTEGER PRIMARY KEY AUTOINCREMENT, "
+        "doctrine_name TEXT, fit_name TEXT, ship_type_id INTEGER, doctrine_id INTEGER, "
+        "fit_id INTEGER, ship_name TEXT, target INTEGER, market_flag TEXT)"
+    ))
+    conn.execute(text(
+        "CREATE TABLE doctrine_map (id INTEGER PRIMARY KEY, doctrine_id INTEGER, "
+        "fitting_id INTEGER)"
+    ))
+    conn.execute(text(
+        "CREATE TABLE ship_targets (fit_id INTEGER PRIMARY KEY, fit_name TEXT, "
+        "ship_id INTEGER, ship_name TEXT, ship_target INTEGER, created_at TEXT)"
+    ))
+    conn.execute(text(
+        "CREATE TABLE doctrines (id INTEGER PRIMARY KEY AUTOINCREMENT, fit_id INTEGER, "
+        "ship_id INTEGER, ship_name TEXT, type_id INTEGER, type_name TEXT, "
+        "fit_qty INTEGER, hulls INTEGER, fits_on_mkt REAL, total_stock INTEGER, "
+        "price REAL, avg_vol REAL, days REAL, group_id INTEGER, group_name TEXT, "
+        "category_id INTEGER, category_name TEXT, timestamp TEXT)"
+    ))
+    conn.execute(text(
+        "CREATE TABLE marketstats (type_id INTEGER PRIMARY KEY, price REAL, "
+        "avg_price REAL, avg_volume REAL, days_remaining REAL, total_volume_remain INTEGER)"
+    ))
+    conn.execute(text(
+        "CREATE TABLE watchlist (type_id INTEGER PRIMARY KEY, type_name TEXT, "
+        "group_id INTEGER, group_name TEXT, category_id INTEGER, category_name TEXT)"
+    ))
+
+
+def _create_fittings_sde_schema(conn) -> None:
+    conn.execute(text(
+        "CREATE TABLE inv_info (typeID INTEGER PRIMARY KEY, typeName TEXT, "
+        "groupID INTEGER, groupName TEXT, categoryID INTEGER, categoryName TEXT, "
+        "volume REAL)"
+    ))
+    for type_name, type_id in _FITTINGS_EFT_TYPE_MAP.items():
+        conn.execute(
+            text(
+                "INSERT INTO inv_info VALUES "
+                "(:id, :name, 18, 'Group', 6, 'Category', 1.0)"
+            ),
+            {"id": type_id, "name": type_name},
+        )
+
+
+def _fittings_workflow_dbs_factory(tmp_path, fake_db_factory, dbs):
+    """Build a ``DatabaseConfig``-shaped factory keyed by database_alias.
+
+    Every module under test (``parse_fits``, ``doctrine_update``,
+    ``get_type_info``, ``db_utils``, ``fit_update``) resolves a *fresh*
+    ``DatabaseConfig(alias)`` on every call rather than caching one, so a
+    single alias-keyed cache here is shared correctly across every writer in
+    the workflow, exactly like ``_equiv_dbs_factory`` above.
+    """
+    def factory(alias=None, market_context=None):
+        key = alias or market_context.database_alias
+        if key not in dbs:
+            db = fake_db_factory(tmp_path / f"{key}.db", alias=key)
+            with db.engine.begin() as conn:
+                if key == "fittings":
+                    _create_fittings_schema(conn)
+                elif key == "sde":
+                    _create_fittings_sde_schema(conn)
+                else:
+                    _create_fittings_market_schema(conn)
+            dbs[key] = db
+        return dbs[key]
+    return factory
+
+
+def _patch_fittings_workflow_dbs(monkeypatch, factory) -> None:
+    """Point every module that resolves ``DatabaseConfig`` fresh at ``factory``.
+
+    Each module below did ``from ... import DatabaseConfig`` at its own
+    module top, so a class patch anywhere else does not reach an
+    already-bound name in another module's namespace — each must be patched
+    individually, same reasoning as ``TestEquivPush``'s
+    equiv_handlers/equiv_manager double-patch.
+    """
+    monkeypatch.setattr("mkts_backend.utils.parse_fits.DatabaseConfig", factory)
+    monkeypatch.setattr("mkts_backend.utils.doctrine_update.DatabaseConfig", factory)
+    monkeypatch.setattr("mkts_backend.utils.get_type_info.DatabaseConfig", factory)
+    monkeypatch.setattr("mkts_backend.utils.db_utils.DatabaseConfig", factory)
+    monkeypatch.setattr("mkts_backend.cli_tools.fit_update.DatabaseConfig", factory)
+    monkeypatch.setattr("mkts_backend.config.db_config.DatabaseConfig", factory)
+
+
+def _fake_multi_type_info(type_ids) -> pd.DataFrame:
+    """Stand-in for db_utils.get_type_info's SDE lookup, multi-row version.
+
+    Same rationale as ``_fake_type_info`` above: ``get_type_info`` reads
+    through the module-level ``sde_db`` bound at ``db_utils`` import time,
+    which a ``DatabaseConfig`` class patch does not reach.
+    """
+    return pd.DataFrame([
+        {
+            "type_id": tid, "type_name": f"Type {tid}", "group_id": 18,
+            "group_name": "Group", "category_id": 6, "category_name": "Category",
+        }
+        for tid in type_ids
+    ])
+
+
+def _write_fittings_eft_fixture(tmp_path, suffix: str = ""):
+    fit_file = tmp_path / f"fit{suffix}.txt"
+    fit_file.write_text(_FITTINGS_EFT_TEXT)
+    return fit_file
+
+
+def _write_fittings_meta_fixture(tmp_path, fit_id: int, doctrine_id: int, suffix: str = ""):
+    meta_file = tmp_path / f"meta{suffix}.json"
+    meta_file.write_text(json.dumps({
+        "fit_id": fit_id,
+        "name": "Test HFI",
+        "description": "test fit",
+        "doctrine_id": doctrine_id,
+        "target": 10,
+    }))
+    return meta_file
+
+
+class TestFittingsPush:
+    """Drives ``fit_update.fit_update_command(subcommand="add", ...)`` — the
+    highest-level PUBLIC, non-interactive entry point onto
+    ``update_fit_workflow``. ``interactive_add_fit`` (``interactive=True``)
+    prompts via ``rich.prompt`` and cannot be driven headlessly without
+    extensively faking stdin, so per the brief's fallback instruction we use
+    the non-interactive ``add`` subcommand instead and record that choice
+    here.
+    """
+
+    def test_update_fit_workflow_pushes_fittings_db(
+        self, tmp_path, monkeypatch, fake_db_factory
+    ):
+        """update_fit_workflow writes the fittings replica and the market
+        replica; both must push exactly once for a single-market add."""
+        from mkts_backend.cli_tools import fit_update
+
+        dbs = {}
+        factory = _fittings_workflow_dbs_factory(tmp_path, fake_db_factory, dbs)
+        _patch_fittings_workflow_dbs(monkeypatch, factory)
+        monkeypatch.setattr(
+            "mkts_backend.utils.db_utils.get_type_info",
+            lambda type_ids, remote=False: _fake_multi_type_info(type_ids),
+        )
+
+        fit_file = _write_fittings_eft_fixture(tmp_path)
+        meta_file = _write_fittings_meta_fixture(tmp_path, fit_id=99001, doctrine_id=501)
+
+        assert fit_update.fit_update_command(
+            subcommand="add",
+            file_path=str(fit_file),
+            meta_file=str(meta_file),
+            market_flag="primary",
+            target_alias="wcmktnewkeeptest",
+            interactive=False,
+        )
+
+        assert dbs["fittings"].pushes == 1, "fittings replica never reached Turso"
+        assert dbs["wcmktnewkeeptest"].pushes == 1, "market replica never reached Turso"
+
+        with dbs["fittings"].engine.connect() as conn:
+            assert conn.execute(
+                text("SELECT count(*) FROM fittings_fitting WHERE id = 99001")
+            ).scalar() == 1
+        with dbs["wcmktnewkeeptest"].engine.connect() as conn:
+            assert conn.execute(
+                text("SELECT count(*) FROM doctrine_fits WHERE fit_id = 99001")
+            ).scalar() == 1
+
+    def test_multi_market_update_pushes_fittings_once(
+        self, tmp_path, monkeypatch, fake_db_factory
+    ):
+        """The workflow runs once per configured market, but fittings is
+        shared; the outer CLI invocation must push it only once, while each
+        market alias it touched pushes exactly once too."""
+        from mkts_backend.cli_tools import fit_update
+        from mkts_backend.config.market_context import MarketContext
+
+        expected_markets = {
+            MarketContext.from_settings(m).database_alias
+            for m in MarketContext.list_available()
+        }
+        assert len(expected_markets) > 1, "test requires more than one configured market"
+
+        dbs = {}
+        factory = _fittings_workflow_dbs_factory(tmp_path, fake_db_factory, dbs)
+        _patch_fittings_workflow_dbs(monkeypatch, factory)
+        monkeypatch.setattr(
+            "mkts_backend.utils.db_utils.get_type_info",
+            lambda type_ids, remote=False: _fake_multi_type_info(type_ids),
+        )
+
+        fit_file = _write_fittings_eft_fixture(tmp_path, suffix="_multi")
+        meta_file = _write_fittings_meta_fixture(
+            tmp_path, fit_id=99002, doctrine_id=502, suffix="_multi"
+        )
+
+        assert fit_update.fit_update_command(
+            subcommand="add",
+            file_path=str(fit_file),
+            meta_file=str(meta_file),
+            market_flag="all",
+            interactive=False,
+        )
+
+        assert expected_markets <= set(dbs)
+        assert dbs["fittings"].pushes == 1, "fittings must push exactly once per invocation"
+        for alias in expected_markets:
+            assert dbs[alias].pushes == 1, {a: d.pushes for a, d in dbs.items()}
+
+
+class TestCreateDoctrineCommandPush:
+    """``create_doctrine_command`` calls ``create_doctrine`` exactly once
+    (unlike ``update_fit_workflow``, which is invoked per-market) so it owns
+    its own push directly rather than needing an accumulator."""
+
+    def test_create_doctrine_command_pushes_fittings_once(
+        self, tmp_path, monkeypatch, fake_db_factory
+    ):
+        from mkts_backend.cli_tools import fit_update
+
+        dbs = {}
+        factory = _fittings_workflow_dbs_factory(tmp_path, fake_db_factory, dbs)
+        _patch_fittings_workflow_dbs(monkeypatch, factory)
+
+        assert fit_update.create_doctrine_command(
+            name="Test Doctrine",
+            description="desc",
+            doctrine_id=777,
+            remote=False,
+            interactive=False,
+        )
+
+        assert dbs["fittings"].pushes == 1
+        with dbs["fittings"].engine.connect() as conn:
+            assert conn.execute(
+                text("SELECT count(*) FROM fittings_doctrine WHERE id = 777")
+            ).scalar() == 1
+
+
+class TestUpdateFitWorkflowCallSiteCoverage:
+    """Guard against a new caller silently omitting the accumulator.
+
+    This is a source scan, not a runtime check: whether a call site passes
+    ``touched_aliases=`` is a static property of the call site, not something
+    a single execution path exercises.
+    """
+
+    def test_every_call_site_passes_touched_aliases(self):
+        import re
+        from pathlib import Path
+
+        src_root = Path(__file__).resolve().parent.parent / "src" / "mkts_backend"
+        call_sites: list[tuple[str, int, str]] = []
+        for path in src_root.rglob("*.py"):
+            source = path.read_text()
+            for match in re.finditer(r"\bupdate_fit_workflow\(", source):
+                line_start = source.rfind("\n", 0, match.start()) + 1
+                line_end = source.find("\n", match.start())
+                line = source[line_start: line_end if line_end != -1 else len(source)]
+                if line.lstrip().startswith("def "):
+                    continue  # the function definition itself, not a call
+                depth = 0
+                end = match.end() - 1
+                for idx in range(match.end() - 1, len(source)):
+                    if source[idx] == "(":
+                        depth += 1
+                    elif source[idx] == ")":
+                        depth -= 1
+                        if depth == 0:
+                            end = idx
+                            break
+                call_text = source[match.start(): end + 1]
+                line_no = source.count("\n", 0, match.start()) + 1
+                call_sites.append((str(path.relative_to(src_root.parent.parent)), line_no, call_text))
+
+        assert call_sites, "expected at least one update_fit_workflow(...) call site"
+        missing = [
+            f"{path}:{line_no}" for path, line_no, call_text in call_sites
+            if "touched_aliases" not in call_text
+        ]
+        assert not missing, f"update_fit_workflow call sites missing touched_aliases=: {missing}"

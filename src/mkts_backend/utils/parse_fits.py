@@ -711,6 +711,7 @@ def update_fit_workflow(
     target_alias: str = "wcmkt",
     update_targets: bool = False,
     metadata_override: Optional[Dict] = None,
+    touched_aliases: Optional[set] = None,
 ):
     """
     End-to-end update for a fit:
@@ -729,6 +730,14 @@ def update_fit_workflow(
         target_alias: Target database alias (wcmkt or wcmktnorth)
         update_targets: If True, update ship_targets table (default: False)
         metadata_override: Dict with metadata fields (overrides file if provided)
+        touched_aliases: Optional accumulator set. This workflow writes the
+            shared ``fittings`` replica and one market replica (``target_alias``)
+            per call. It is invoked once per market by its callers, so it must
+            NOT push here itself — the caller owns one set for the whole CLI
+            invocation, passes it into every workflow call, and pushes each
+            distinct alias once after all writes (across every market) are
+            done. On success (never on a dry run) this function adds
+            ``"fittings"`` and ``target_alias`` to the set.
     """
     # Get metadata from override dict or file
     if metadata_override:
@@ -836,42 +845,15 @@ def update_fit_workflow(
     type_ids.add(ship_type_id)
     add_missing_items_to_watchlist(
         list(type_ids), remote=remote, db_alias=target_alias)
+
+    if touched_aliases is not None:
+        touched_aliases.add("fittings")
+        touched_aliases.add(target_alias)
+
     logger.info(
         f"Completed fit update for fit_id={
             fit_id}, doctrine_ids={metadata.doctrine_ids} "
         f"(remote={remote}, update_targets={update_targets})"
-    )
-
-
-def update_existing_fit(
-    fit_id: int,
-    fit_file: str,
-    fit_metadata_file: str,
-    remote: bool = False,
-    clear_existing: bool = True,
-):
-    update_fit_workflow(
-        fit_id,
-        fit_file,
-        fit_metadata_file,
-        remote=remote,
-        clear_existing=clear_existing,
-    )
-
-
-def update_fit(
-    fit_id: int,
-    fit_file: str,
-    fit_metadata_file: str,
-    remote: bool = False,
-    clear_existing: bool = True,
-):
-    update_fit_workflow(
-        fit_id,
-        fit_file,
-        fit_metadata_file,
-        remote=remote,
-        clear_existing=clear_existing,
     )
 
 

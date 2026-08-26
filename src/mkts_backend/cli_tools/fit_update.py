@@ -542,6 +542,7 @@ def interactive_add_fit(
         eft_temp_path = eft_temp.name
         fit_file = eft_temp_path
 
+    touched_aliases: set = set()
     try:
         # Determine which databases to update
         if market_flag in ("both", "all"):
@@ -559,6 +560,7 @@ def interactive_add_fit(
                 clear_existing=True,
                 dry_run=False,
                 target_alias=alias,
+                touched_aliases=touched_aliases,
             )
 
             # Set market flag on this database
@@ -586,6 +588,15 @@ def interactive_add_fit(
                         f"[green]Set lead ship for doctrine {did}: "
                         f"{parse_result.ship_name}[/green]"
                     )
+
+        for touched_alias in touched_aliases:
+            try:
+                DatabaseConfig(touched_alias).push()
+            except Exception as e:
+                console.print(
+                    f"[red]Push failed for {touched_alias}: {e}[/red]"
+                )
+                return False
 
         return True
 
@@ -1713,6 +1724,11 @@ def create_doctrine_command(
             remote=remote,
         )
         if success:
+            try:
+                DatabaseConfig("fittings").push()
+            except Exception as e:
+                console.print(f"[red]Push failed for fittings: {e}[/red]")
+                return False
             console.print(
                 f"[green]Successfully created doctrine {
                     doctrine_id}: {name}[/green]"
@@ -3026,6 +3042,7 @@ def fit_update_command(
                 else:
                     aliases = [target_alias]
 
+                touched_aliases: set = set()
                 for alias in aliases:
                     result = update_fit_workflow(
                         fit_id=metadata.fit_id,
@@ -3035,6 +3052,7 @@ def fit_update_command(
                         clear_existing=True,
                         dry_run=dry_run,
                         target_alias=alias,
+                        touched_aliases=touched_aliases,
                     )
 
                 if dry_run:
@@ -3045,6 +3063,14 @@ def fit_update_command(
                     )
                     console.print(f"Items: {len(result['items'])}")
                 else:
+                    for touched_alias in touched_aliases:
+                        try:
+                            DatabaseConfig(touched_alias).push()
+                        except Exception as e:
+                            console.print(
+                                f"[red]Push failed for {touched_alias}: {e}[/red]"
+                            )
+                            return False
                     console.print(
                         f"[green]Successfully added fit {
                             metadata.fit_id}[/green]"
@@ -3127,6 +3153,7 @@ def fit_update_command(
                 aliases = [target_alias]
 
             result = None
+            touched_aliases: set = set()
             for alias in aliases:
                 result = update_fit_workflow(
                     fit_id=fit_id,
@@ -3137,6 +3164,7 @@ def fit_update_command(
                     dry_run=dry_run,
                     target_alias=alias,
                     metadata_override=meta_data_dict,
+                    touched_aliases=touched_aliases,
                 )
 
             if dry_run and result:
@@ -3145,6 +3173,14 @@ def fit_update_command(
                               result['ship_type_id']})")
                 console.print(f"Items: {len(result['items'])}")
             else:
+                for touched_alias in touched_aliases:
+                    try:
+                        DatabaseConfig(touched_alias).push()
+                    except Exception as e:
+                        console.print(
+                            f"[red]Push failed for {touched_alias}: {e}[/red]"
+                        )
+                        return False
                 display_names = []
                 for a in aliases:
                     resolved = DatabaseConfig(a).alias

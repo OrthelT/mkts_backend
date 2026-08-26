@@ -2,6 +2,7 @@ import os
 from sqlalchemy import create_engine, text
 import pandas as pd
 from typing import Optional, TYPE_CHECKING
+from urllib.parse import urlparse
 
 import turso
 import turso.sync as tursosync
@@ -10,6 +11,7 @@ from mkts_backend.config.logging_config import configure_logging
 from mkts_backend.config.replica_metadata import (
     METADATA_SUFFIX,
     classify_metadata,
+    metadata_remote_url,
 )
 from mkts_backend.config.settings_service import SettingsService
 from datetime import datetime
@@ -124,6 +126,7 @@ class DatabaseConfig:
     @property
     def engine(self):
         if self._engine is None:
+            self.assert_remote_compatible()
             if self.turso_url:
                 # Sync-managed DBs must only be accessed through sync-aware
                 # connections: a plain connection auto-checkpoints the WAL at
@@ -148,6 +151,7 @@ class DatabaseConfig:
 
     @property
     def turso_sync_connection(self) -> tursosync.ConnectionSync:
+        self.assert_remote_compatible()
         self._turso_sync_connection = tursosync.connect(
             self.path,
             remote_url=self.turso_url,
@@ -309,6 +313,11 @@ class DatabaseConfig:
         if db_exists and metadata_exists:
             # Both files are present, but "present" is not "usable": a
             # libsql-era -info parses as JSON and passes an existence check.
+            # Nor is present-and-valid enough — valid metadata naming a
+            # different remote is a separate fail-closed state (a test
+            # replica read under a production configuration, say), not
+            # something heal_metadata() should silently repair or nuke.
+            self.assert_remote_compatible()
             return self.heal_metadata()
 
         if db_exists and not metadata_exists:
@@ -417,6 +426,40 @@ class DatabaseConfig:
             )
             return False
         return True
+
+    def remote_matches_metadata(self) -> bool | None:
+        """Whether this replica was bootstrapped against the configured remote.
+
+        pyturso records the bootstrap remote in the ``-info`` sidecar. After a
+        production cutover the configuration changes but the files on disk do
+        not, so a test replica can be read — and pushed — under a production
+        configuration. Compare host and path only; scheme (``https`` vs
+        ``libsql``) and a trailing slash are not meaningful, and no token is
+        read or logged.
+
+        Returns:
+            True on match, False on mismatch, None when either side is unknown.
+        """
+        recorded = metadata_remote_url(self.path)
+        if not recorded or not self.turso_url:
+            return None
+
+        def key(url: str) -> str:
+            parsed = urlparse(url)
+            return f"{parsed.netloc}{parsed.path.rstrip('/')}"
+
+        return key(recorded) == key(self.turso_url)
+
+    def assert_remote_compatible(self) -> None:
+        """Fail before opening a replica against a different configured remote."""
+        if self.remote_matches_metadata() is False:
+            recorded = metadata_remote_url(self.path)
+            raise RuntimeError(
+                f"{self.alias} ({self.path}) was bootstrapped against a "
+                f"different Turso remote ({recorded}) than the one configured "
+                f"now. Refusing to connect. Preserve any needed local work, "
+                f"then run nuke_db() and cold sync explicitly."
+            )
 
     def nuke_db(self) -> bool:
         """Delete the database file and every pyturso sidecar beside it.

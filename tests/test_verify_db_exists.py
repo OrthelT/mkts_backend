@@ -73,7 +73,7 @@ class TestVerifyDbExists:
             db = DatabaseConfig()
             db.path = str(temp_db_path)
             db.alias = "test"
-            db.turso_url = "libsql://test.turso.io"
+            db.turso_url = "https://test-db.turso.io"
             db.token = "test-token"
             db._engine = None
             yield db
@@ -409,7 +409,7 @@ class TestIntegrationScenarios:
             db = DatabaseConfig()
             db.path = str(temp_db_path)
             db.alias = "test"
-            db.turso_url = "libsql://test.turso.io"
+            db.turso_url = "https://test-db.turso.io"
             db.token = "test-token"
             yield db
 

@@ -109,3 +109,68 @@ def test_remote_url_none_when_metadata_missing(db_path):
 def test_remote_url_none_when_metadata_libsql(db_path):
     write_info(db_path, LIBSQL_INFO)
     assert metadata_remote_url(db_path) is None
+
+
+class TestRemoteMatchesMetadata:
+    """A test-data replica left under a production configuration must be
+    caught before it is read or pushed."""
+
+    def _db(self, tmp_path, url):
+        from mkts_backend.config.db_config import DatabaseConfig
+
+        db = DatabaseConfig.__new__(DatabaseConfig)
+        db.alias = "primary"
+        db.path = str(tmp_path / "market.db")
+        db.turso_url = url
+        db.token = "t"
+        db._engine = None
+        return db
+
+    def test_matching_remote(self, tmp_path):
+        db = self._db(tmp_path, "https://wcmktnewkeeptest-orthelt.aws-us-east-1.turso.io")
+        write_info(tmp_path / "market.db", PYTURSO_INFO)
+        assert db.remote_matches_metadata() is True
+
+    def test_mismatched_remote(self, tmp_path):
+        db = self._db(tmp_path, "https://wcmktnewkeep-orthelt.aws-us-east-1.turso.io")
+        write_info(tmp_path / "market.db", PYTURSO_INFO)
+        assert db.remote_matches_metadata() is False
+
+    def test_scheme_and_trailing_slash_ignored(self, tmp_path):
+        db = self._db(tmp_path, "libsql://wcmktnewkeeptest-orthelt.aws-us-east-1.turso.io/")
+        write_info(tmp_path / "market.db", PYTURSO_INFO)
+        assert db.remote_matches_metadata() is True
+
+    def test_unknown_without_metadata(self, tmp_path):
+        db = self._db(tmp_path, "https://anything.turso.io")
+        assert db.remote_matches_metadata() is None
+
+    def test_unknown_without_configured_url(self, tmp_path):
+        db = self._db(tmp_path, None)
+        write_info(tmp_path / "market.db", PYTURSO_INFO)
+        assert db.remote_matches_metadata() is None
+
+    def test_engine_refuses_mismatched_remote_before_create_engine(
+        self, tmp_path, monkeypatch
+    ):
+        db = self._db(tmp_path, "https://wcmktnewkeep-orthelt.aws-us-east-1.turso.io")
+        write_info(tmp_path / "market.db", PYTURSO_INFO)
+        called = False
+
+        def forbidden(*args, **kwargs):
+            nonlocal called
+            called = True
+            raise AssertionError("create_engine must not run on a mismatched replica")
+
+        monkeypatch.setattr("mkts_backend.config.db_config.create_engine", forbidden)
+        with pytest.raises(RuntimeError, match="different Turso remote"):
+            _ = db.engine
+        assert called is False
+
+    def test_push_and_pull_refuse_mismatched_remote(self, tmp_path):
+        db = self._db(tmp_path, "https://wcmktnewkeep-orthelt.aws-us-east-1.turso.io")
+        write_info(tmp_path / "market.db", PYTURSO_INFO)
+        with pytest.raises(RuntimeError, match="different Turso remote"):
+            db.push()
+        with pytest.raises(RuntimeError, match="different Turso remote"):
+            db.pull()

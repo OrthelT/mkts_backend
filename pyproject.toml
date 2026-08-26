@@ -24,7 +24,7 @@ dependencies = [
     "rich>=13.0.0",
     "prompt-toolkit>=3.0.52",
     "sqlalchemy>=2.0.45",
-    "pyturso>=0.7.1",
+    "pyturso>=0.7.2",
 ]
 
 [build-system]

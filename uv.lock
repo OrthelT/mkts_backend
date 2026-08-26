@@ -813,7 +813,7 @@ requires-dist = [
     { name = "plotly", specifier = ">=6.2.0" },
     { name = "prompt-toolkit", specifier = ">=3.0.52" },
     { name = "python-dotenv", specifier = ">=1.1.1" },
-    { name = "pyturso", specifier = ">=0.7.1" },
+    { name = "pyturso", specifier = ">=0.7.2" },
     { name = "requests", specifier = ">=2.32.4" },
     { name = "requests-oauthlib", specifier = ">=2.0.0" },
     { name = "rich", specifier = ">=13.0.0" },

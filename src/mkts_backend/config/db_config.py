@@ -7,6 +7,10 @@ import turso
 import turso.sync as tursosync
 from dotenv import load_dotenv
 from mkts_backend.config.logging_config import configure_logging
+from mkts_backend.config.replica_metadata import (
+    METADATA_SUFFIX,
+    classify_metadata,
+)
 from mkts_backend.config.settings_service import SettingsService
 from datetime import datetime
 from time import perf_counter
@@ -303,9 +307,9 @@ class DatabaseConfig:
         )
 
         if db_exists and metadata_exists:
-            # Case 2: Valid state
-            logger.info(f"Database {self.path} is properly initialized")
-            return True
+            # Both files are present, but "present" is not "usable": a
+            # libsql-era -info parses as JSON and passes an existence check.
+            return self.heal_metadata()
 
         if db_exists and not metadata_exists:
             # Case 3: DB without metadata (improperly created, e.g., bare sqlite.connect)
@@ -327,12 +331,10 @@ class DatabaseConfig:
         self.sync()
 
         # Verify sync succeeded
-        if Path(self.path).exists() and self.confirm_metadata_exists():
-            logger.info(f"Database {self.path} successfully initialized")
-            return True
-        else:
-            logger.error(f"Sync failed to create valid db state: {self.path}")
+        if not Path(self.path).exists():
+            logger.error(f"{self.alias}: database missing after sync ({self.path})")
             return False
+        return self.heal_metadata()
 
     def get_db_credentials_dicts(self):
         return {
@@ -366,6 +368,53 @@ class DatabaseConfig:
         expected_metadata = f"{self.path}-info"
         expected_metadata = Path(expected_metadata)
         if not expected_metadata.exists():
+            return False
+        return True
+
+    def heal_metadata(self) -> bool:
+        """Ensure this replica has usable pyturso metadata, repairing it if not.
+
+        A libsql-era or corrupt ``-info`` is valid JSON, so the old existence
+        check accepted it and the first engine call raised
+        ``turso.lib.DatabaseError`` with nothing naming the cause. Detect the
+        bad shape here and re-pull instead.
+
+        Returns:
+            True if the replica now has pyturso metadata, False otherwise.
+        """
+        kind = classify_metadata(self.path)
+        if kind == "pyturso":
+            return True
+
+        logger.warning(
+            f"{self.alias} ({self.path}): replica metadata is '{kind}', not pyturso. "
+            f"Repairing by re-pulling from Turso."
+        )
+
+        # Remove only the metadata sidecar. The .db, -wal and -changes stay:
+        # pull() rebuilds -info against them. A full bundle nuke would
+        # re-download the whole database for a sidecar-sized problem.
+        Path(f"{self.path}{METADATA_SUFFIX}").unlink(missing_ok=True)
+
+        self._engine = None           # drop any engine bound to the old files
+        try:
+            self.pull()
+        except Exception as exc:
+            logger.error(
+                f"{self.alias} ({self.path}): pull failed while repairing "
+                f"'{kind}' metadata: {exc}. Remedy: delete the replica bundle "
+                f"({', '.join(s or '.db' for s in DB_FILE_SUFFIXES)}) and run "
+                f"`uv run mkts-backend sync`."
+            )
+            return False
+
+        healed = classify_metadata(self.path)
+        if healed != "pyturso":
+            logger.error(
+                f"{self.alias} ({self.path}): metadata is still '{healed}' after "
+                f"pull. Remedy: delete the replica bundle and run "
+                f"`uv run mkts-backend sync`."
+            )
             return False
         return True
 

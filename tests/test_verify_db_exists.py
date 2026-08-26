@@ -12,6 +12,49 @@ import json
 from pathlib import Path
 from unittest.mock import patch
 
+_PYTURSO_INFO = {
+    "version": "v1",
+    "client_unique_id": "turso-sync-py-test",
+    "saved_configuration": {"remote_url": "https://test-db.turso.io"},
+}
+_LIBSQL_INFO = {"hash": "0" * 64, "version": 0, "generation": 1}
+
+
+def _write_pyturso_info(path):
+    Path(f"{path}-info").write_text(json.dumps(_PYTURSO_INFO))
+
+
+def _write_libsql_info(path):
+    Path(f"{path}-info").write_text(json.dumps(_LIBSQL_INFO))
+
+
+def _make_db(tmp_path, monkeypatch):
+    """A DatabaseConfig pointed at tmp_path with no real remote."""
+    from mkts_backend.config.db_config import DatabaseConfig
+
+    db = DatabaseConfig.__new__(DatabaseConfig)
+    db.alias = "testing"
+    db.path = str(tmp_path / "sample.db")
+    db.turso_url = "https://test-db.turso.io"
+    db.token = "test-token"
+    db._engine = None
+    return db
+
+
+def _count_pulls(db, monkeypatch, heals=False):
+    """Replace pull() with a counter. With heals=True it also writes valid
+    pyturso metadata, standing in for a successful remote pull."""
+    calls = []
+
+    def fake_pull(self):
+        calls.append(1)
+        if heals:
+            _write_pyturso_info(self.path)
+            Path(self.path).write_bytes(b"x")
+
+    monkeypatch.setattr(type(db), "pull", fake_pull)
+    return lambda: len(calls)
+
 
 class TestVerifyDbExists:
     """Tests for verify_db_exists() handling all four database state scenarios."""
@@ -41,11 +84,15 @@ class TestVerifyDbExists:
         path.touch()
 
     def _create_metadata_file(self, path: Path):
-        """Helper to create a metadata -info file."""
+        """Helper to create a valid pyturso metadata -info file.
+
+        Must classify as "pyturso" (see replica_metadata.classify_metadata) —
+        verify_db_exists() now routes a present-and-present state through
+        heal_metadata(), which re-pulls anything that classifies otherwise.
+        """
         info_path = Path(f"{path}-info")
         info_path.parent.mkdir(parents=True, exist_ok=True)
-        info_data = {"generation": 1, "durable_frame_num": 100}
-        info_path.write_text(json.dumps(info_data))
+        info_path.write_text(json.dumps(_PYTURSO_INFO))
 
     def test_case1_neither_exists_syncs_and_creates_both(self, mock_db_config, temp_db_path):
         """
@@ -371,9 +418,10 @@ class TestIntegrationScenarios:
         path.touch()
 
     def _create_metadata_file(self, path: Path):
+        """Valid pyturso metadata — see the note on the same helper above."""
         info_path = Path(f"{path}-info")
         info_path.parent.mkdir(parents=True, exist_ok=True)
-        info_path.write_text(json.dumps({"generation": 1, "durable_frame_num": 100}))
+        info_path.write_text(json.dumps(_PYTURSO_INFO))
 
     def test_fresh_ci_environment_initialization(self, mock_db_config, temp_db_path):
         """
@@ -440,3 +488,61 @@ class TestIntegrationScenarios:
         assert result2 is True
         assert result3 is True
         assert len(sync_calls) == 0, "sync should never be called for valid db state"
+
+
+class TestHealMetadata:
+    """A replica whose -info is not pyturso metadata must be repaired, not used.
+
+    verify_db_exists() previously accepted any -info file, so a libsql-era
+    sidecar surviving a cutover passed the check and every later engine call
+    raised turso.lib.DatabaseError.
+    """
+
+    def test_pyturso_metadata_is_left_alone(self, tmp_path, monkeypatch):
+        db = _make_db(tmp_path, monkeypatch)
+        _write_pyturso_info(db.path)
+        Path(db.path).write_bytes(b"")
+        pulls = _count_pulls(db, monkeypatch)
+        assert db.heal_metadata() is True
+        assert pulls() == 0
+
+    def test_libsql_metadata_triggers_repull(self, tmp_path, monkeypatch):
+        db = _make_db(tmp_path, monkeypatch)
+        _write_libsql_info(db.path)
+        Path(db.path).write_bytes(b"")
+        pulls = _count_pulls(db, monkeypatch, heals=True)
+        assert db.heal_metadata() is True
+        assert pulls() == 1
+
+    def test_corrupt_metadata_triggers_repull(self, tmp_path, monkeypatch):
+        db = _make_db(tmp_path, monkeypatch)
+        Path(f"{db.path}-info").write_text("not json")
+        Path(db.path).write_bytes(b"")
+        pulls = _count_pulls(db, monkeypatch, heals=True)
+        assert db.heal_metadata() is True
+        assert pulls() == 1
+
+    def test_missing_metadata_triggers_repull(self, tmp_path, monkeypatch):
+        db = _make_db(tmp_path, monkeypatch)
+        Path(db.path).write_bytes(b"")
+        pulls = _count_pulls(db, monkeypatch, heals=True)
+        assert db.heal_metadata() is True
+        assert pulls() == 1
+
+    def test_pull_that_does_not_repair_returns_false(self, tmp_path, monkeypatch):
+        """A pull that leaves non-pyturso metadata must fail loudly."""
+        db = _make_db(tmp_path, monkeypatch)
+        _write_libsql_info(db.path)
+        Path(db.path).write_bytes(b"")
+        monkeypatch.setattr(type(db), "pull", lambda self: None)
+        assert db.heal_metadata() is False
+
+    def test_verify_db_exists_heals_libsql_metadata(self, tmp_path, monkeypatch):
+        """Case 2 (db + metadata both present) must no longer short-circuit
+        on a libsql -info."""
+        db = _make_db(tmp_path, monkeypatch)
+        _write_libsql_info(db.path)
+        Path(db.path).write_bytes(b"x")
+        pulls = _count_pulls(db, monkeypatch, heals=True)
+        assert db.verify_db_exists() is True
+        assert pulls() >= 1

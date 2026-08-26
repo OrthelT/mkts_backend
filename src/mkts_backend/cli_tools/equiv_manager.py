@@ -29,6 +29,26 @@ logger = configure_logging(__name__)
 console = Console()
 
 
+def _push_or_log(market_ctx) -> bool:
+    """Push a market's pending writes to Turso; log and report failure.
+
+    Used by every write loop in this module (``_equiv_add_all``,
+    ``_equiv_remove_all``, ``_equiv_find``'s ``--add`` branch) so the
+    push-then-report-failure behavior can't drift between them.
+
+    Returns:
+        True if the push succeeded, False if it raised (already logged
+        and printed to the console).
+    """
+    try:
+        DatabaseConfig(market_context=market_ctx).push()
+        return True
+    except Exception as exc:
+        logger.error(f"{market_ctx.database_alias}: push failed: {exc}")
+        console.print(f"  [red]{market_ctx.alias}[/red]: push failed: {exc}")
+        return False
+
+
 def _get_target_markets(args: list[str], market_alias: str) -> list[str]:
     """
     Determine which markets to operate on.
@@ -149,11 +169,7 @@ def _equiv_add_all(args: list[str], target_aliases: list[str]) -> bool:
         else:
             console.print(f"  [green]{alias}[/green]: created group {new_group_id}")
 
-        try:
-            DatabaseConfig(market_context=market_ctx).push()
-        except Exception as exc:
-            logger.error(f"{market_ctx.database_alias}: push failed: {exc}")
-            console.print(f"  [red]{alias}[/red]: push failed: {exc}")
+        if not _push_or_log(market_ctx):
             ok = False
             continue
 
@@ -184,11 +200,7 @@ def _equiv_remove_all(args: list[str], target_aliases: list[str]) -> bool:
         else:
             console.print(f"  [yellow]{alias}[/yellow]: no entries for group {group_id}")
 
-        try:
-            DatabaseConfig(market_context=market_ctx).push()
-        except Exception as exc:
-            logger.error(f"{market_ctx.database_alias}: push failed: {exc}")
-            console.print(f"  [red]{alias}[/red]: push failed: {exc}")
+        if not _push_or_log(market_ctx):
             ok = False
             continue
 
@@ -285,6 +297,7 @@ def _equiv_find(args: list[str], target_aliases: list[str]) -> bool:
     console.print(table)
 
     # Auto-add if --add flag
+    ok = True
     if do_add:
         equiv_type_ids = [r["typeID"] for r in results]
         console.print(f"\n[bold]Adding equivalence group to: {', '.join(target_aliases)}[/bold]")
@@ -297,13 +310,10 @@ def _equiv_find(args: list[str], target_aliases: list[str]) -> bool:
             else:
                 console.print(f"  [green]{alias}[/green]: created group {new_group_id}")
 
-            try:
-                DatabaseConfig(market_context=market_ctx).push()
-            except Exception as exc:
-                logger.error(f"{market_ctx.database_alias}: push failed: {exc}")
-                console.print(f"  [red]{alias}[/red]: push failed: {exc}")
+            if not _push_or_log(market_ctx):
+                ok = False
 
-    return True
+    return ok
 
 
 def _display_equiv_help():

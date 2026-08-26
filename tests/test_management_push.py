@@ -275,3 +275,44 @@ class TestEquivPush:
 
         assert set(dbs) == {primary_alias}
         assert dbs[primary_alias].pushes == 1
+
+    def test_equiv_find_add_returns_false_when_push_fails(
+        self, tmp_path, monkeypatch, fake_db_factory
+    ):
+        """Mirrors ``TestWatchlistPush::test_push_failure_fails_the_command``:
+        the Phase-4 rule is a push failure must fail the command, and
+        ``equiv find --add`` is a write path like the other two loops."""
+        from mkts_backend.cli_tools import equiv_manager
+        from mkts_backend.db import equiv_handlers
+        from mkts_backend.config.market_context import MarketContext
+
+        primary_alias = MarketContext.from_settings("primary").database_alias
+
+        dbs = {}
+        factory = _equiv_dbs_factory(tmp_path, fake_db_factory, dbs)
+
+        monkeypatch.setattr(equiv_handlers, "DatabaseConfig", factory)
+        monkeypatch.setattr(equiv_manager, "DatabaseConfig", factory)
+        monkeypatch.setattr(equiv_handlers, "resolve_type_name", lambda tid: f"Module {tid}")
+        monkeypatch.setattr(equiv_manager, "resolve_type_name", lambda tid: f"Module {tid}")
+        monkeypatch.setattr(
+            equiv_manager, "find_equiv_by_attributes",
+            lambda type_id: [
+                {"typeID": type_id, "typeName": "Module A", "groupName": "g", "metaGroupName": "m"},
+                {"typeID": type_id + 1, "typeName": "Module B", "groupName": "g", "metaGroupName": "m"},
+            ],
+        )
+
+        # Pre-seed the db with a push that always raises.
+        broken = factory(market_context=MarketContext.from_settings("primary"))
+
+        def boom():
+            raise RuntimeError("turso unreachable")
+        broken.push = boom
+
+        result = equiv_manager.equiv_command(
+            ["find", "11269", "--add", "--market=primary"], "primary"
+        )
+
+        assert result is False
+        assert set(dbs) == {primary_alias}

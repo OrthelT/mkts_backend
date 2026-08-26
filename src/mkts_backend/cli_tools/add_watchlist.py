@@ -1,5 +1,6 @@
 import csv
 
+from mkts_backend.config.db_config import DatabaseConfig
 from mkts_backend.config.logging_config import configure_logging
 from mkts_backend.utils.db_utils import add_missing_items_to_watchlist
 from mkts_backend.cli_tools.arg_utils import ParsedArgs
@@ -92,8 +93,14 @@ def add_watchlist(args: list[str], market_alias: str = "primary") -> bool:
     all_ok = True
     for db_alias in target_aliases:
         print(f"Adding to watchlist on {db_alias} (remote={remote})...")
-        success = process_add_watchlist(type_ids, remote=remote, db_alias=db_alias)
-        if not success:
+        if not process_add_watchlist(type_ids, remote=remote, db_alias=db_alias):
+            all_ok = False
+            continue
+        try:
+            DatabaseConfig(db_alias).push()
+        except Exception as exc:
+            logger.error(f"{db_alias}: push failed: {exc}")
+            print(f"Error: {db_alias}: push failed: {exc}")
             all_ok = False
 
     if all_ok:

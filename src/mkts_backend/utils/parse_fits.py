@@ -447,63 +447,118 @@ def insert_fit_items_to_db(
     fit_items: list, fit_id: int, clear_existing: bool = True, remote: bool = False
 ) -> None:
     """
-    Insert parsed fit items into the fittings_fittingitem table.
+    Upsert parsed fit items into the fittings_fittingitem table in place.
+
+    Rows are matched on the natural key ``(fit_id, flag, type_id)`` — ``flag``
+    alone is not unique within a fit (every Cargo/DroneBay item shares the
+    bare flag "Cargo"/"DroneBay" with no counter suffix, unlike the
+    Lo/Med/Hi/RigSlot flags), and ``type_id`` alone is not unique either (the
+    same module fitted into several slots, e.g. six "720mm Howitzer
+    Artillery II" turrets, repeats the same type_id across distinct rows).
+    ``(flag, type_id)`` together is unique for every fit observed in
+    production data and is exactly what changes when a module is swapped in
+    a slot (old key gone, new key appears) versus when only its quantity
+    changes (same key, same row).
+
+    This replaces a delete-then-reinsert that toggled
+    ``PRAGMA foreign_keys = OFF`` around the whole transaction. That pragma
+    is local connection state — it is not something pyturso's CDC log can
+    replay — so pushing the resulting delete+insert to Turso replayed the
+    INSERTs under the remote's own (enforced) foreign key checking and could
+    fail there even though the local write succeeded. Upserting in place
+    avoids the churn entirely: unchanged rows keep their AUTOINCREMENT id and
+    are never deleted/reinserted, so there is nothing that depends on FK
+    enforcement being relaxed.
 
     Args:
         fit_items: List of fit items where each item is [flag, quantity, type_id, fit_id, type_fk_id]
         fit_id: The fit ID these items belong to
-        clear_existing: If True, delete existing items for this fit_id before inserting
+        clear_existing: If True, delete rows for this fit_id whose
+            (flag, type_id) key is no longer present in ``fit_items`` (i.e.
+            items removed from the fit). If False, existing rows are only
+            ever updated or added to, never removed.
     """
     engine = _get_engine("fittings", remote)
 
+    normalized = []
+    for item in fit_items:
+        if isinstance(item, dict):
+            flag = item.get("flag")
+            quantity = item.get("quantity")
+            type_id = item.get("type_id")
+            type_fk_id = item.get("type_fk_id")
+        else:
+            flag, quantity, type_id, fit_id, type_fk_id = item
+
+        if type_id is None:
+            logger.warning(f"Skipping item with missing type_id: {item}")
+            continue
+        normalized.append((flag, quantity, type_id, type_fk_id))
+
+    update_stmt = text(
+        "UPDATE fittings_fittingitem SET quantity = :quantity, type_fk_id = :type_fk_id "
+        "WHERE id = :id"
+    )
+    insert_stmt = text(
+        "INSERT INTO fittings_fittingitem (flag, quantity, type_id, fit_id, type_fk_id) "
+        "VALUES (:flag, :quantity, :type_id, :fit_id, :type_fk_id)"
+    )
+
     with engine.connect() as conn:
-        # Disable foreign key constraints for this transaction
-        conn.execute(text("PRAGMA foreign_keys = OFF"))
+        existing_rows = conn.execute(
+            text(
+                "SELECT id, flag, type_id FROM fittings_fittingitem WHERE fit_id = :fit_id"
+            ),
+            {"fit_id": fit_id},
+        ).fetchall()
+        existing_by_key = {(row.flag, row.type_id): row.id for row in existing_rows}
 
-        # Optionally clear existing items for this fit
-        if clear_existing:
-            delete_stmt = text(
-                "DELETE FROM fittings_fittingitem WHERE fit_id = :fit_id"
-            )
-            conn.execute(delete_stmt, {"fit_id": fit_id})
-            logger.info(f"Cleared existing items for fit_id {fit_id}")
-
-        # Insert new items
-        insert_stmt = text("""
-            INSERT INTO fittings_fittingitem (flag, quantity, type_id, fit_id, type_fk_id)
-            VALUES (:flag, :quantity, :type_id, :fit_id, :type_fk_id)
-        """)
-
-        for item in fit_items:
-            if isinstance(item, dict):
-                flag = item.get("flag")
-                quantity = item.get("quantity")
-                type_id = item.get("type_id")
-                type_fk_id = item.get("type_fk_id")
+        seen_keys = set()
+        inserted = 0
+        updated = 0
+        for flag, quantity, type_id, type_fk_id in normalized:
+            key = (flag, type_id)
+            seen_keys.add(key)
+            existing_id = existing_by_key.get(key)
+            if existing_id is not None:
+                conn.execute(
+                    update_stmt,
+                    {"quantity": quantity, "type_fk_id": type_fk_id, "id": existing_id},
+                )
+                updated += 1
             else:
-                flag, quantity, type_id, fit_id, type_fk_id = item
+                conn.execute(
+                    insert_stmt,
+                    {
+                        "flag": flag,
+                        "quantity": quantity,
+                        "type_id": type_id,
+                        "fit_id": fit_id,
+                        "type_fk_id": type_fk_id,
+                    },
+                )
+                inserted += 1
 
-            if type_id is None:
-                logger.warning(f"Skipping item with missing type_id: {item}")
-                continue
-
-            conn.execute(
-                insert_stmt,
-                {
-                    "flag": flag,
-                    "quantity": quantity,
-                    "type_id": type_id,
-                    "fit_id": fit_id,
-                    "type_fk_id": type_fk_id,
-                },
-            )
+        removed = 0
+        if clear_existing:
+            stale_ids = [
+                row.id for row in existing_rows if (row.flag, row.type_id) not in seen_keys
+            ]
+            if stale_ids:
+                conn.execute(
+                    text(
+                        "DELETE FROM fittings_fittingitem WHERE id IN :ids"
+                    ).bindparams(bindparam("ids", expanding=True)),
+                    {"ids": stale_ids},
+                )
+                removed = len(stale_ids)
 
         conn.commit()
 
-        # Re-enable foreign key constraints
-        conn.execute(text("PRAGMA foreign_keys = ON"))
-
-        logger.info(f"Inserted {len(fit_items)} items for fit_id {fit_id}")
+        logger.info(
+            f"Upserted items for fit_id {fit_id}: {inserted} inserted, "
+            f"{updated} updated, {removed} removed"
+        )
 
     engine.dispose()
 

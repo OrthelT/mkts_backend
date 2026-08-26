@@ -161,6 +161,7 @@ class DatabaseConfig:
 
     @property
     def turso_local_connect(self):
+        self.assert_remote_compatible()
         self._turso_connect = turso.connect(self.path)
         return self._turso_connect
 

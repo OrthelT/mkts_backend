@@ -174,3 +174,9 @@ class TestRemoteMatchesMetadata:
             db.push()
         with pytest.raises(RuntimeError, match="different Turso remote"):
             db.pull()
+
+    def test_turso_local_connect_refuses_mismatched_remote(self, tmp_path):
+        db = self._db(tmp_path, "https://wcmktnewkeep-orthelt.aws-us-east-1.turso.io")
+        write_info(tmp_path / "market.db", PYTURSO_INFO)
+        with pytest.raises(RuntimeError, match="different Turso remote"):
+            _ = db.turso_local_connect

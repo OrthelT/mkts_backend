@@ -37,6 +37,8 @@ Global Options (accepted by most commands):
   --check_tables     Check the tables in the database (supports --market)
   --validate-env     Validate environment credentials and exit
   --list-markets     List available market configurations
+  --list-db-paths    Print all routed database paths (alias<TAB>file)
+  --db-path=<name>   Print path for one database (by alias or market name)
   --help             Show this help message
 
 Use 'mkts-backend <command> --help' for more information about a command.

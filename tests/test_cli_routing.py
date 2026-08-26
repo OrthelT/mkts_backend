@@ -247,3 +247,55 @@ class TestFitCheckMainRouting:
                 main()
             assert exc_info.value.code == 0
         mock_fc.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# Database path exposure for CI and shell automation (Task 5)
+# ---------------------------------------------------------------------------
+
+
+class TestDbPathFlags:
+    """CI derives cache paths from these, so the format is contractual:
+    --list-db-paths prints `alias\\tfile` per line; --db-path prints one
+    bare filename with no decoration."""
+
+    def test_list_db_paths_covers_every_routed_alias(self, capsys):
+        from mkts_backend.cli_tools.args_parser import parse_args
+        from mkts_backend.config.settings_service import SettingsService
+
+        with pytest.raises(SystemExit) as exc:
+            parse_args(["--list-db-paths"])
+        assert exc.value.code == 0
+        out = capsys.readouterr().out
+        routing = SettingsService().database_routing()
+        printed = dict(line.split("\t") for line in out.strip().splitlines())
+        assert printed == {a: c["file"] for a, c in routing.items()}
+
+    def test_db_path_by_database_alias(self, capsys):
+        from mkts_backend.cli_tools.args_parser import parse_args
+        from mkts_backend.config.settings_service import SettingsService
+
+        alias, cfg = next(iter(SettingsService().database_routing().items()))
+        with pytest.raises(SystemExit) as exc:
+            parse_args([f"--db-path={alias}"])
+        assert exc.value.code == 0
+        assert capsys.readouterr().out.strip() == cfg["file"]
+
+    def test_db_path_by_market_section_name(self, capsys):
+        """CI matrix legs are named primary/deployment/market3, which are
+        section names, not database aliases."""
+        from mkts_backend.cli_tools.args_parser import parse_args
+        from mkts_backend.config.market_context import MarketContext
+
+        expected = MarketContext.from_settings("deployment").database_file
+        with pytest.raises(SystemExit) as exc:
+            parse_args(["--db-path=deployment"])
+        assert exc.value.code == 0
+        assert capsys.readouterr().out.strip() == expected
+
+    def test_unknown_alias_exits_nonzero(self, capsys):
+        from mkts_backend.cli_tools.args_parser import parse_args
+
+        with pytest.raises(SystemExit) as exc:
+            parse_args(["--db-path=nosuchdb"])
+        assert exc.value.code != 0

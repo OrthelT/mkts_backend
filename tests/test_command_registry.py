@@ -123,11 +123,24 @@ class TestValidateRemoved:
 
         assert not hasattr(DatabaseConfig, "validate_sync")
 
-    def test_validate_env_still_works(self):
+    def test_validate_env_still_works(self, capsys):
         """The unrelated --validate-env flag must survive."""
-        from mkts_backend.utils.validation import validate_all
+        from unittest.mock import patch
+        from mkts_backend.cli_tools.args_parser import parse_args
 
-        # --validate-env is handled by args_parser calling validate_all()
-        # This just verifies that validate_all still exists and is callable
-        assert callable(validate_all)
+        # Mock validate_all to simulate successful credential validation
+        with patch("mkts_backend.cli_tools.args_parser.validate_all") as mock_val:
+            mock_val.return_value = {
+                "is_valid": True,
+                "message": "Validation successful",
+                "present_required": ["CLIENT_ID", "SECRET_KEY"],
+                "present_optional": [],
+            }
+            with pytest.raises(SystemExit) as exc_info:
+                parse_args(["--validate-env"])
+            # Exit code 0 indicates success
+            assert exc_info.value.code == 0
+            # Verify output was produced
+            captured = capsys.readouterr()
+            assert captured.out  # Should have printed validation results
 

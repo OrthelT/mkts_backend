@@ -121,8 +121,6 @@ Manages all database operations:
   - `sync()` / `pull()`: pull remote changes into the local replica
   - `push()`: send local writes to Turso. **Required** — a `commit()` alone leaves
     the write in the local CDC queue.
-  - `validate_sync()`: reports the CDC queue depth (`cdc_operations`), i.e. writes
-    not yet pushed
   - `verify_db_exists()`: Ensures database and metadata are in a consistent state
     - Handles 4 cases: neither exists, both exist, db without metadata, metadata without db
     - Automatically syncs from remote or nukes inconsistent states

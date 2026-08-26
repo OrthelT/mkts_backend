@@ -3,8 +3,6 @@
 It previously pulled the three markets plus buildcost and silently skipped
 the shared sde and fittings replicas, so a refresh left those two stale.
 """
-from unittest.mock import MagicMock, patch
-
 import pytest
 
 from mkts_backend.cli_tools.command_registry import get_registry
@@ -22,6 +20,11 @@ def routed_aliases():
 @pytest.fixture
 def market_aliases():
     return {ctx.database_alias for ctx in get_all_market_contexts().values()}
+
+
+@pytest.fixture
+def testing_alias():
+    return SettingsService().shared_testing["database_alias"]
 
 
 @pytest.fixture
@@ -54,16 +57,16 @@ def _run(args, market_alias="all"):
     return handler(args, market_alias)
 
 
-def test_sync_all_covers_every_routed_replica(synced, routed_aliases):
+def test_sync_all_covers_every_routed_replica(synced, routed_aliases, testing_alias):
     _run([])
-    assert set(synced) >= routed_aliases - {"wcmkttest"}
+    assert set(synced) >= routed_aliases - {testing_alias}
 
 
-def test_sync_excludes_testing_unless_explicit(synced):
+def test_sync_excludes_testing_unless_explicit(synced, testing_alias):
     _run([])
-    assert "wcmkttest" not in synced
+    assert testing_alias not in synced
     _run(["--include-testing"])
-    assert "wcmkttest" in synced
+    assert testing_alias in synced
 
 
 def test_sync_covers_sde_and_fittings(synced):
@@ -91,11 +94,17 @@ def test_markets_only_flag_skips_shared(synced, market_aliases):
 
 
 def test_heal_failure_aborts_that_replica(monkeypatch, capsys):
+    instances = []
+
     class Broken:
         def __init__(self, alias=None, market_context=None):
             self.alias = alias or market_context.database_alias
             self.path = f"{self.alias}.db"
             self.pulled = False
+            instances.append(self)
+
+        def assert_remote_compatible(self):
+            return None
 
         def heal_metadata(self):
             return False
@@ -106,6 +115,10 @@ def test_heal_failure_aborts_that_replica(monkeypatch, capsys):
 
     monkeypatch.setattr("mkts_backend.config.db_config.DatabaseConfig", Broken)
     assert _run([], market_alias="primary") is False
+    assert instances, "DatabaseConfig was never constructed for the primary market"
+    assert all(inst.pulled is False for inst in instances), (
+        "sync() ran after heal_metadata() returned False"
+    )
 
 
 @pytest.mark.parametrize("missing_var", ["turso_url_env", "turso_token_env"])

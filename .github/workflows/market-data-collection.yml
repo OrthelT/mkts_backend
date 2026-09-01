@@ -112,9 +112,24 @@ jobs:
     - name: Resolve database paths
       id: dbfile
       run: |
-        echo "db=$(uv run mkts-backend --db-path=${{ matrix.market }})" >> "$GITHUB_OUTPUT"
-        echo "sde=$(uv run mkts-backend --db-path=sde)" >> "$GITHUB_OUTPUT"
-        echo "fittings=$(uv run mkts-backend --db-path=fittings)" >> "$GITHUB_OUTPUT"
+        # Capture into a variable as its own statement (not inline in the
+        # echo) so a non-zero exit aborts the step under bash's -e; a
+        # command substitution embedded in a larger command does not. Also
+        # fail on an empty result: a 0-exit-with-no-output would otherwise
+        # collapse the corresponding cache `path:` to a bare `*`, which can
+        # sweep unrelated files (e.g. creds.json) into the cache.
+        resolve() {
+          local key="$1" out_name="$2" value
+          value="$(uv run mkts-backend --db-path="$key")"
+          if [ -z "$value" ]; then
+            echo "Failed to resolve db path for '$key' (empty result)" >&2
+            exit 1
+          fi
+          echo "$out_name=$value" >> "$GITHUB_OUTPUT"
+        }
+        resolve "${{ matrix.market }}" db
+        resolve sde sde
+        resolve fittings fittings
 
     # Shared DBs (rarely change): restored by every leg, written only by primary.
     - name: Restore shared databases (SDE + fittings)

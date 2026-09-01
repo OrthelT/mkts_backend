@@ -1,8 +1,8 @@
 """Single-run orchestration for the builder-costs refresh.
 
 Steps:
-    1. Init buildcost.db schema on the remote (idempotent).
-    2. Verify local mirrors of buildcost / sde / primary market exist.
+    1. Verify local replicas of buildcost / sde / primary market exist.
+    2. Init buildcost.db schema (idempotent; pushes only if it created a table).
     3. Read build_watchlist from the buildcost local mirror.
     4. Read jita_prices from the primary market local mirror.
     5. Fetch costs from EverRef for the buildable set.
@@ -51,12 +51,12 @@ def run() -> RunResult:
     sde_db = DatabaseConfig("sde")
     primary_db = DatabaseConfig("primary")
 
-    init_buildcost_tables(buildcost_db)
-
     for db in (buildcost_db, sde_db, primary_db):
         if not db.verify_db_exists():
             logger.error(f"Database {db.alias} could not be initialized")
             return RunResult(success=False)
+
+    init_buildcost_tables(buildcost_db)
 
     items = read_build_watchlist(buildcost_db)
     if not items:

@@ -61,8 +61,7 @@ Examples:
   mkts-backend fit-update list-fits           # List all doctrine fits
   mkts-backend add_watchlist --type_id=12345,67890,11111 # Add items to watchlist
   mkts-backend add_structure --dry-run        # Preview structures import from sheet
-  mkts-backend add_structure                  # Import structures (remote + local, with confirm)
-  mkts-backend add_structure --local --yes    # Local-only import, skip confirm
+  mkts-backend add_structure                  # Import structures (with confirm)
 """)
 
 def display_builder_cost_help():

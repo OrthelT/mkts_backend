@@ -1,8 +1,8 @@
 """Buildcost.db access for the builder-costs flow.
 
 Owns reads and writes against ``buildcost.db`` (and its Turso remote). Writes
-target the remote engine; the local mirror is refreshed via
-``DatabaseConfig.sync()`` separately.
+land on the local replica and reach Turso via ``DatabaseConfig.push()``,
+called at the end of every writer in this module.
 """
 
 from __future__ import annotations
@@ -27,24 +27,50 @@ _UPSERT_CHUNK_SIZE = 500
 
 
 def init_buildcost_tables(db: DatabaseConfig) -> None:
-    """Idempotently create build_watchlist, builder_costs and updatelog locally and push to remote.
+    """Idempotently create build_watchlist, builder_costs and updatelog.
 
-    ``checkfirst=True`` is per-table — the existing structures/rigs/industry_index
-    tables are untouched. Each create is logged on failure so a partial init
-    surfaces *which* table the libsql remote rejected, not just a raw stack.
+    Inspects which of the three tables are actually missing before creating
+    anything, and pushes once only if at least one table was created — a
+    no-op daily run (schema already present) must not push an unnecessary
+    DDL-only transaction. ``checkfirst=True`` is per-table — the existing
+    structures/rigs/industry_index tables are untouched. Each create is
+    logged on failure so a partial init surfaces *which* table the Turso
+    remote rejected, not just a raw stack.
     """
     engine = db.engine
-    for model in (BuildWatchlist, BuilderCosts, UpdateLog):
+    models = (BuildWatchlist, BuilderCosts, UpdateLog)
+    with engine.connect() as conn:
+        existing_tables = {
+            row[0]
+            for row in conn.execute(
+                text("SELECT name FROM sqlite_master WHERE type='table'")
+            ).fetchall()
+        }
+
+    created_any = False
+    for model in models:
+        if model.__tablename__ in existing_tables:
+            continue
         try:
             model.__table__.create(engine, checkfirst=True)
+            created_any = True
         except SQLAlchemyError:
             logger.error(
                 f"buildcost.db schema init failed for table {model.__tablename__!r}"
             )
             raise
-    logger.info(
-        "Confirmed buildcost.db schema for build_watchlist, builder_costs, updatelog"
-    )
+
+    if created_any:
+        db.push()
+        logger.info(
+            "Confirmed buildcost.db schema for build_watchlist, builder_costs, "
+            "updatelog (pushed newly created tables)"
+        )
+    else:
+        logger.info(
+            "Confirmed buildcost.db schema for build_watchlist, builder_costs, "
+            "updatelog (already present, no push needed)"
+        )
 
 
 def read_jita_prices(market_db: DatabaseConfig) -> dict[int, float]:

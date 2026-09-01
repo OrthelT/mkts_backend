@@ -19,7 +19,7 @@ rather than trusting them.
 | `equiv find <id> --add`          | `equiv_handlers.py add_equiv_group` via `equiv_manager._equiv_find`'s `do_add` branch (`equiv_manager.py:270-280`) | target markets from `--market=` or all (same `_get_target_markets` default as add/remove) | none (same fake sync as above, now deleted) | **Task 8 (this task)**: single-market/all-market audit finding — pushes now added at this loop too |
 | `fit-update add` / `update-fit` (shared `fittings` writes via `update_fit_workflow`) | `parse_fits.py`'s `update_fit_workflow` (writes `fittings` + one market replica per call); also calls `add_missing_items_to_watchlist` | shared `fittings` + the resolved target market alias, once per CLI invocation | none | **Task 9 (this task)**: `update_fit_workflow` never pushes itself — it takes an optional `touched_aliases: set` accumulator and adds `"fittings"` and its resolved `target_alias` on success (never on a dry run). Every outer caller (`interactive_add_fit`, `fit_update_command`'s `add` and `update` subcommands in `fit_update.py`, and `command_registry.py`'s `update-fit` handler) owns one set for its whole invocation, threads it through every workflow call, and pushes each distinct alias once at the end (skipped entirely on `--dry-run`; a push failure fails the command). Standalone `create_doctrine_command` pushes `"fittings"` once after `create_doctrine()` succeeds. A source-scan test (`TestUpdateFitWorkflowCallSiteCoverage`) asserts every `update_fit_workflow(` call site passes `touched_aliases=`. Two dead unreachable wrappers, `update_existing_fit`/`update_fit` in `parse_fits.py` (no callers anywhere in `src`/`tests`), were deleted rather than plumbed, per the "minimize codebase size" standing preference. |
 | `fit-update update-target` / `update-friendly-name` / `populate-friendly-names` / `remove` / `doctrine-remove-fit` | `fit_update.py` (many `engine.begin()` / session.commit() sites); also calls `add_missing_items_to_watchlist` at `fit_update.py:1086` (`_prepare_watchlist_for_fit`) | target market alias (`--market`/`--db-alias`) | none | Task 10 — not implemented here; `add_missing_items_to_watchlist`'s push stays at the *command* boundary, not inside the writer, so fit-update's own push (when added) must not double-push |
-| `add_structure`                  | `build_cost_utils.upsert_structures(local_db.remote_engine, ...)` (`add_structure.py:154`) | `buildcost` | none | Not yet assigned a task brief as of 2026-08-26; flagged gap, out of scope here |
+| `add_structure`                  | `build_cost_utils.upsert_structures(local_db.engine, ...)` | `buildcost` | **yes** — **Task 12 (this task)**: deleted the duplicate `remote_engine` call and the now-dead `--local`/`--remote-only` flags/branching; writes once via `local_db.engine`, then `local_db.push()` | Already compliant as of Task 12 |
 | `build-watchlist add/remove/mirror` | `build_watchlist_cli.py` → `builder_costs/repository.py` (`upsert_build_watchlist`, `upsert_builder_costs`, ...) | `buildcost` | **yes** — `repository.py` calls `db.push()` at the end of every writer (`:125`, `:161`, `:193`, `:226`, `:252`); `build_watchlist_cli.py:121` also pushes directly | Already compliant — no action needed |
 | `update-markets` (main pipeline) | `cli.py` (`db.push()` at `:379`, end of run) | all configured markets processed in the run | **yes** | Already compliant (earlier phase) |
 
@@ -1705,3 +1705,202 @@ class TestAssignMarketDispatcherPushGate:
         assert fit_update.fit_update_command(
             subcommand="assign-market", fit_id=1, market_flag="primary",
         ) is True
+
+
+# ---------------------------------------------------------------------------
+# TestStructureAndBuildcostSeams (Task 12) — the last three writers flagged
+# by the Task 7 audit table above: add_structure's remote_engine/engine
+# double-write (the audit row for `add_structure` said "Not yet assigned a
+# task brief... flagged gap, out of scope here" — this task closes it), the
+# watchlist mirror's wrong-direction sync() pull, and init_buildcost_tables's
+# missing push.
+# ---------------------------------------------------------------------------
+
+def _seed_buildcost_structures_schema(conn) -> None:
+    """Minimal buildcost.db schema for add_structure's enrichment + upsert."""
+    conn.execute(text("""
+        CREATE TABLE structures(
+            structure TEXT, rig_1 TEXT, rig_2 TEXT, rig_3 TEXT,
+            structure_type TEXT, system_id BIGINT, structure_id BIGINT,
+            structure_type_id BIGINT, region_id BIGINT, tax FLOAT,
+            region TEXT, system TEXT
+        )
+    """))
+    conn.execute(text(
+        "CREATE UNIQUE INDEX ix_structures_structure_id ON structures(structure_id)"
+    ))
+    conn.execute(text(
+        "CREATE TABLE rigs(type_id INTEGER PRIMARY KEY, type_name TEXT, icon_id INTEGER)"
+    ))
+    conn.execute(text(
+        "INSERT INTO rigs VALUES (37146, 'Standup M-Set Basic Medium Ship "
+        "Manufacturing Material Efficiency I', 21729)"
+    ))
+
+
+class TestStructureAndBuildcostSeams:
+    def test_add_structure_writes_once_and_pushes(
+        self, tmp_path, monkeypatch, fake_db_factory
+    ):
+        """upsert_structures used to run twice against the same replica —
+        once via db.remote_engine, once via db.engine — which are identical
+        under pyturso, so the row landed twice and push() never ran."""
+        from mkts_backend.cli_tools import add_structure as mod
+
+        db = fake_db_factory(tmp_path / "buildcost.db", alias="buildcost")
+        with db.engine.begin() as conn:
+            _seed_buildcost_structures_schema(conn)
+
+        monkeypatch.setattr(mod, "DatabaseConfig", lambda *a, **k: db)
+        monkeypatch.setattr(mod, "_ensure_buildcost_ready", lambda db: True)
+
+        calls: list[object] = []
+        real_upsert = mod.upsert_structures
+
+        def spy_upsert(engine, rows):
+            calls.append(engine)
+            return real_upsert(engine, rows)
+
+        monkeypatch.setattr(mod, "upsert_structures", spy_upsert)
+
+        csv_path = tmp_path / "structures.csv"
+        pd.DataFrame([{
+            "structure_id": 1040000000001,
+            "structure": "4-HWWF - Test Azbel",
+            "system": "4-HWWF",
+            "structure_type": "Azbel",
+            "tax": 0.005,
+            "rig_1": "Standup M-Set Basic Medium Ship Manufacturing Material Efficiency I",
+            "rig_2": "", "rig_3": "",
+            "system_id": 30000240,
+            "region": "Vale of the Silent",
+            "region_id": 10000003,
+        }]).to_csv(csv_path, index=False)
+
+        result = mod.add_structure([f"--file={csv_path}", "--yes"])
+
+        assert result is True
+        assert len(calls) == 1, "upsert_structures must run exactly once"
+        assert calls[0] is db.engine
+        assert db.pushes == 1, "the surviving write must reach Turso via push()"
+        with db.engine.connect() as conn:
+            assert conn.execute(
+                text("SELECT count(*) FROM structures WHERE structure_id = 1040000000001")
+            ).scalar() == 1
+
+    def test_mirror_does_not_pull_after_writing(
+        self, tmp_path, monkeypatch, fake_db_factory
+    ):
+        """add_watchlist.py:136 called sync() — a pull — where a push was
+        meant; the pull overwrote freshly pushed local state. Assert BOTH
+        pulls==0 and syncs==0: FakeDatabaseConfig.sync() increments `syncs`,
+        not `pulls`, so asserting pulls alone can't fail before the fix."""
+        add_watchlist = _import_add_watchlist_module()
+
+        buildcost_db = fake_db_factory(tmp_path / "buildcost.db", alias="buildcost")
+        with buildcost_db.engine.begin() as conn:
+            conn.execute(text(
+                "CREATE TABLE build_watchlist (type_id INTEGER PRIMARY KEY, "
+                "type_name TEXT, group_name TEXT, category_id INTEGER, "
+                "added_at TEXT, last_seen_at TEXT)"
+            ))
+
+        sde_db = fake_db_factory(tmp_path / "sde.db", alias="sde")
+        with sde_db.engine.begin() as conn:
+            conn.execute(text(
+                "CREATE TABLE sdetypes (typeID INTEGER PRIMARY KEY, typeName TEXT, "
+                "groupID INTEGER, groupName TEXT, categoryID INTEGER, categoryName TEXT)"
+            ))
+            conn.execute(text(
+                "INSERT INTO sdetypes VALUES (34, 'Tritanium', 18, 'Mineral', 4, 'Material')"
+            ))
+
+        dbs = {"buildcost": buildcost_db, "sde": sde_db}
+
+        def factory(alias=None, market_context=None):
+            return dbs[alias]
+
+        # _mirror_to_build_watchlist does a LOCAL `from
+        # mkts_backend.config.db_config import DatabaseConfig` inside its own
+        # try block, shadowing add_watchlist's module-level import — patching
+        # add_watchlist.DatabaseConfig would not reach it.
+        monkeypatch.setattr("mkts_backend.config.db_config.DatabaseConfig", factory)
+        monkeypatch.setattr(
+            "mkts_backend.builder_costs.watchlist_sync.filter_buildable",
+            lambda type_ids, engine: set(type_ids),
+        )
+
+        add_watchlist._mirror_to_build_watchlist([34])
+
+        assert buildcost_db.pulls == 0, "sync() pulls, undoing the push the writer just did"
+        assert buildcost_db.syncs == 0, "no pull-direction call belongs after a successful mirror write"
+        assert buildcost_db.pushes == 1, "upsert_build_watchlist's own push must still run"
+        with buildcost_db.engine.connect() as conn:
+            assert conn.execute(
+                text("SELECT count(*) FROM build_watchlist WHERE type_id = 34")
+            ).scalar() == 1
+
+    def test_mirror_failure_does_not_fail_the_market_write(
+        self, tmp_path, monkeypatch, fake_db_factory, capsys
+    ):
+        """buildcost is optional: a broken mirror must not fail the command
+        whose market-side write already succeeded."""
+        add_watchlist = _import_add_watchlist_module()
+
+        market_db = fake_db_factory(tmp_path / "market.db", alias="wcmktnewkeeptest")
+        with market_db.engine.begin() as conn:
+            conn.execute(text(
+                "CREATE TABLE watchlist (type_id INTEGER PRIMARY KEY, "
+                "type_name TEXT, group_id INTEGER, group_name TEXT, "
+                "category_id INTEGER, category_name TEXT)"
+            ))
+        monkeypatch.setattr("mkts_backend.utils.db_utils.DatabaseConfig", lambda *a, **k: market_db)
+        monkeypatch.setattr(add_watchlist, "DatabaseConfig", lambda *a, **k: market_db)
+        monkeypatch.setattr(
+            "mkts_backend.utils.db_utils.get_type_info",
+            lambda type_ids, remote=False: _fake_type_info(),
+        )
+
+        def boom(*a, **k):
+            raise RuntimeError("buildcost unreachable")
+
+        # Exercise the real _mirror_to_build_watchlist (not stubbed out, as
+        # in TestWatchlistPush above) so its own try/except is what's tested.
+        monkeypatch.setattr("mkts_backend.config.db_config.DatabaseConfig", boom)
+
+        result = add_watchlist.add_watchlist(["--type-id=34"], market_alias="primary")
+
+        assert result is True, "buildcost mirror failure must not fail the market write"
+        captured = capsys.readouterr()
+        assert "build_watchlist mirror failed" in captured.out
+        with market_db.engine.connect() as conn:
+            assert conn.execute(
+                text("SELECT count(*) FROM watchlist WHERE type_id = 34")
+            ).scalar() == 1
+
+    def test_init_buildcost_tables_pushes_schema(self, tmp_path, fake_db_factory):
+        from mkts_backend.builder_costs import repository
+
+        db = fake_db_factory(tmp_path / "buildcost.db", alias="buildcost")
+        repository.init_buildcost_tables(db)
+
+        assert db.pushes == 1
+        with db.engine.connect() as conn:
+            tables = {
+                row[0] for row in conn.execute(
+                    text("SELECT name FROM sqlite_master WHERE type='table'")
+                ).fetchall()
+            }
+        assert {"build_watchlist", "builder_costs", "updatelog"} <= tables
+
+    def test_existing_buildcost_schema_does_not_push(self, tmp_path, fake_db_factory):
+        from mkts_backend.builder_costs import repository
+
+        db = fake_db_factory(tmp_path / "buildcost.db", alias="buildcost")
+        repository.init_buildcost_tables(db)
+        assert db.pushes == 1
+        db.pushes = 0
+
+        repository.init_buildcost_tables(db)
+
+        assert db.pushes == 0, "a no-op schema init (nothing missing) must not push"

@@ -386,7 +386,8 @@ def cli_env(monkeypatch, buildcost_engine, tmp_path):
     """Wire the add_structure handler to use a test DB instead of Turso.
 
     Monkeypatches DatabaseConfig inside the handler module so both
-    `engine` and `remote_engine` point at the same in-test SQLite DB.
+    `engine` and `remote_engine` point at the same in-test SQLite DB — under
+    pyturso they always are the same engine (see db_config.DatabaseConfig).
     Skips the `_ensure_buildcost_ready` bootstrap path entirely.
     """
     from mkts_backend.cli_tools import add_structure as mod
@@ -398,9 +399,13 @@ def cli_env(monkeypatch, buildcost_engine, tmp_path):
             self.path = str(tmp_path / "buildcost.db")
             self.turso_url = "libsql://fake"
             self.token = "fake-token"
+            self.pushes = 0
 
         def sync(self):
             return None
+
+        def push(self):
+            self.pushes += 1
 
     monkeypatch.setattr(mod, "DatabaseConfig", _FakeDB)
     monkeypatch.setattr(mod, "_ensure_buildcost_ready", lambda db: True)
@@ -428,12 +433,6 @@ def _sample_row(**overrides) -> dict:
     return row
 
 
-def test_cli_rejects_local_plus_remote_only(cli_env, tmp_path):
-    csv = _csv_for(tmp_path, [_sample_row()])
-    result = cli_env.add_structure([f"--file={csv}", "--local", "--remote-only", "--yes"])
-    assert result is False
-
-
 def test_cli_dry_run_writes_nothing(cli_env, buildcost_engine, tmp_path):
     csv = _csv_for(tmp_path, [_sample_row()])
     before = _count_structures(buildcost_engine)
@@ -443,8 +442,9 @@ def test_cli_dry_run_writes_nothing(cli_env, buildcost_engine, tmp_path):
     assert after == before, "--dry-run must not write"
 
 
-def test_cli_local_only_skips_remote(cli_env, buildcost_engine, tmp_path, monkeypatch):
-    """--local must not call upsert against remote_engine."""
+def test_cli_writes_once_and_pushes(cli_env, buildcost_engine, tmp_path, monkeypatch):
+    """A normal run must call upsert_structures exactly once (engine and
+    remote_engine are the same replica under pyturso) and push the result."""
     from mkts_backend.cli_tools import add_structure as mod
 
     called_engines: list[object] = []
@@ -457,33 +457,50 @@ def test_cli_local_only_skips_remote(cli_env, buildcost_engine, tmp_path, monkey
     monkeypatch.setattr(mod, "upsert_structures", spy_upsert)
 
     csv = _csv_for(tmp_path, [_sample_row()])
-    result = cli_env.add_structure([f"--file={csv}", "--local", "--yes"])
+    result = cli_env.add_structure([f"--file={csv}", "--yes"])
     assert result is True
-    assert len(called_engines) == 1, "--local must produce exactly one upsert call"
+    assert len(called_engines) == 1, "add_structure must write once, not twice"
 
 
-def test_cli_partial_success_remote_ok_local_fails(cli_env, buildcost_engine, tmp_path, monkeypatch, capsys):
-    """When remote succeeds and local fails, handler returns False AND prints a WARNING."""
+def test_cli_write_failure_reports_error(cli_env, buildcost_engine, tmp_path, monkeypatch, capsys):
+    """A failing upsert must be reported and fail the command."""
     from mkts_backend.cli_tools import add_structure as mod
 
-    # The handler's write phase receives .remote_engine and .engine via the
-    # fake DB — enrichment needs a real engine on .engine, and we drive the
-    # pass/fail via a stubbed upsert_structures that counts calls.
-    def flaky_upsert(engine, rows):
-        flaky_upsert.calls += 1  # type: ignore[attr-defined]
-        if flaky_upsert.calls == 2:  # second call == local (remote goes first)
-            raise RuntimeError("simulated local failure")
-        return len(rows)
-    flaky_upsert.calls = 0  # type: ignore[attr-defined]
+    def failing_upsert(engine, rows):
+        raise RuntimeError("simulated write failure")
 
-    monkeypatch.setattr(mod, "upsert_structures", flaky_upsert)
+    monkeypatch.setattr(mod, "upsert_structures", failing_upsert)
 
     csv = _csv_for(tmp_path, [_sample_row()])
     result = cli_env.add_structure([f"--file={csv}", "--yes"])
     out = capsys.readouterr().out
     assert result is False
-    assert "WARNING" in out
-    assert "Turso remote was updated but local write failed" in out
+    assert "Error writing structures" in out
+
+
+def test_cli_push_failure_reports_error(cli_env, buildcost_engine, tmp_path, monkeypatch, capsys):
+    """A failing push must be reported and fail the command even though the
+    local write already succeeded."""
+    csv = _csv_for(tmp_path, [_sample_row()])
+
+    original_databaseconfig = cli_env.DatabaseConfig
+
+    def boom(self):
+        raise RuntimeError("turso unreachable")
+
+    monkeypatch.setattr(original_databaseconfig, "push", boom)
+
+    result = cli_env.add_structure([f"--file={csv}", "--yes"])
+    out = capsys.readouterr().out
+    assert result is False
+    assert "Error pushing to Turso" in out
+    # The local write is the writer's job and happens before the failed push.
+    with buildcost_engine.connect() as conn:
+        row = conn.execute(
+            text("SELECT structure_id FROM structures WHERE structure_id = :sid"),
+            {"sid": _sample_row()["structure_id"]},
+        ).fetchone()
+    assert row is not None
 
 
 def test_cli_missing_sheet_url_errors(cli_env, monkeypatch, capsys):

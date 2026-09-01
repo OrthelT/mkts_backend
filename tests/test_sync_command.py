@@ -28,7 +28,28 @@ def testing_alias():
 
 
 @pytest.fixture
-def synced(monkeypatch):
+def stub_credentials(monkeypatch):
+    """Stub in dummy Turso credentials for every routed alias.
+
+    The sync handler checks ``os.getenv(...)`` for each route's credentials
+    before ever touching ``DatabaseConfig`` — so a test that mocks
+    ``DatabaseConfig`` still silently depends on whatever the ambient
+    environment happens to provide (a developer's real ``.env``) unless it
+    also stubs the env vars itself. Without this, these tests only pass
+    because real credentials happen to be sitting in the environment; in a
+    clean CI runner with no secrets, every route looks credential-less and
+    the tests that expect full coverage fail for the wrong reason.
+    """
+    routing = SettingsService().database_routing()
+    for cfg in routing.values():
+        if cfg["turso_url_env"]:
+            monkeypatch.setenv(cfg["turso_url_env"], "dummy-url")
+        if cfg["turso_token_env"]:
+            monkeypatch.setenv(cfg["turso_token_env"], "dummy-token")
+
+
+@pytest.fixture
+def synced(monkeypatch, stub_credentials):
     """Record every alias a DatabaseConfig was built for and pulled."""
     seen = []
 
@@ -93,7 +114,7 @@ def test_markets_only_flag_skips_shared(synced, market_aliases):
     assert set(synced) == market_aliases
 
 
-def test_heal_failure_aborts_that_replica(monkeypatch, capsys):
+def test_heal_failure_aborts_that_replica(monkeypatch, stub_credentials, capsys):
     instances = []
 
     class Broken:

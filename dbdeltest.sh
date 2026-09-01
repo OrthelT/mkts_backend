@@ -19,6 +19,17 @@ usage() {
 # hardcoded copy — that property is the whole point of this migration.
 mapfile -t DB_FILES < <(uv run mkts-backend --list-db-paths | cut -f2)
 
+# mapfile reads a process substitution: set -e cannot see the producer's exit
+# status, and mapfile itself succeeds even after reading zero lines. Without
+# this guard a failing CLI (bad settings.toml, missing dependency, uv
+# failure) would silently degrade DB_FILES to empty, every loop below would
+# iterate zero elements, and the script would print "Operation complete."
+# having deleted and verified nothing.
+(( ${#DB_FILES[@]} > 0 )) || {
+    echo "no databases returned by --list-db-paths" >&2
+    exit 1
+}
+
 db_exists() {
     local db=$1
     local suffix

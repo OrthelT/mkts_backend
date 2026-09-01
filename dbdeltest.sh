@@ -1,67 +1,44 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Every database named in settings.toml, production and test variants.
-prod=(
-    "wcmktnewkeep"
-    "wcmktnorth2"
-    "wcmktbkg"
-    "buildcost"
-    "sdelite"
-    "wcfitting"
-)
+# Every pyturso sidecar suffix a replica can have, plus the bare .db itself
+# (the empty string). DB_FILES entries already include ".db", so every
+# check/delete concatenates the suffix directly: "${db}${suffix}".
+SUFFIXES=("" "-shm" "-wal" "-info" "-changes" "-wal-revert")
 
-test=(
-    "wcmktnewkeeptest"
-    "wcmktnorth2test"
-    "wcmktbkgtest"
-    "buildcosttest"
-    "sdelitetest"
-    "wcfittingtest"
-)
-
-parse_args() {
-    case "${1:-prod}" in
-        prod)
-            dbfiles=("${prod[@]}")
-            echo "Using production databases."
-            ;;
-        test)
-            dbfiles=("${test[@]}")
-            echo "Using test databases."
-            ;;
-        *)
-            echo "Usage: $0 [prod|test]" >&2
-            exit 2
-            ;;
-    esac
+usage() {
+    echo "Usage: $0" >&2
+    echo "Deletes every database file (and pyturso sidecars) named by" >&2
+    echo "'uv run mkts-backend --list-db-paths' for the active settings.toml." >&2
+    exit 2
 }
+
+[[ $# -eq 0 ]] || usage
+
+# The file list comes from whichever settings.toml is active, never a
+# hardcoded copy — that property is the whole point of this migration.
+mapfile -t DB_FILES < <(uv run mkts-backend --list-db-paths | cut -f2)
 
 db_exists() {
     local db=$1
+    local suffix
 
-    [[ -e "${db}.db" ||
-       -e "${db}.db-shm" ||
-       -e "${db}.db-wal" ||
-       -e "${db}.db-info" ||
-       -e "${db}.db-changes" ||
-       -e "${db}.db-wal-revert"
-    ]]
+    for suffix in "${SUFFIXES[@]}"; do
+        [[ -e "${db}${suffix}" ]] && return 0
+    done
+    return 1
 }
 
 preview_deletes() {
     local db
+    local suffix
 
     for db in "$@"; do
         if db_exists "$db"; then
             echo "Will delete:"
-            echo "  ${db}.db"
-            echo "  ${db}.db-shm"
-            echo "  ${db}.db-wal"
-            echo "  ${db}.db-info"
-            echo "  ${db}.db-changes"
-            echo "  ${db}.db-wal-revert"
-
+            for suffix in "${SUFFIXES[@]}"; do
+                echo "  ${db}${suffix}"
+            done
         else
             echo "Files not found for: ${db}"
         fi
@@ -92,17 +69,16 @@ confirm() {
 
 delete_files() {
     local db
+    local suffix
+    local paths
 
     for db in "$@"; do
         if db_exists "$db"; then
-            rm -f \
-                "${db}.db" \
-                "${db}.db-shm" \
-                "${db}.db-wal" \
-                "${db}.db-info" \
-                "${db}.db-changes" \
-                "${db}.db-wal-revert"
-
+            paths=()
+            for suffix in "${SUFFIXES[@]}"; do
+                paths+=("${db}${suffix}")
+            done
+            rm -f "${paths[@]}"
             echo "Deleted files for: ${db}"
         else
             echo "Files not found for: ${db}"
@@ -126,15 +102,13 @@ verify_files() {
     return "$failed"
 }
 
-parse_args "$@"
-
 echo "Refreshing databases..."
 echo "Removing current instances..."
 echo "--------------"
 
-preview_deletes "${dbfiles[@]}"
+preview_deletes "${DB_FILES[@]}"
 confirm
-delete_files "${dbfiles[@]}"
-verify_files "${dbfiles[@]}"
+delete_files "${DB_FILES[@]}"
+verify_files "${DB_FILES[@]}"
 
 echo "Operation complete."

@@ -20,16 +20,33 @@ jobs:
       - run: uv sync
       - run: uv pip install -e .
       - run: mkdir -p logs data databackup
+      # Bucketed by UTC date, not run_id: GitHub caches are immutable, so a
+      # per-run key can never hit on restore and would write a new entry every
+      # run. A daily key reuses the same entry within a day (restore-keys
+      # prefix still warm-starts from the most recent).
+      - name: Compute cache date
+        id: cachedate
+        run: echo "date=$(date -u +%Y-%m-%d)" >> "$GITHUB_OUTPUT"
+      # Resolve database filenames from settings.toml via `mkts-backend
+      # --db-path` — the single source for these names, not this YAML. Must
+      # run after `uv sync` (and the editable install), since it invokes
+      # `uv run mkts-backend`.
+      - name: Resolve database paths
+        id: dbfile
+        run: |
+          echo "sde=$(uv run mkts-backend --db-path=sde)" >> "$GITHUB_OUTPUT"
+          echo "primary=$(uv run mkts-backend --db-path=primary)" >> "$GITHUB_OUTPUT"
+          echo "buildcost=$(uv run mkts-backend --db-path=buildcost)" >> "$GITHUB_OUTPUT"
       # Each DB is cached as `<file>.db*` so the pyturso sync engine's sidecar
       # files (-info, -changes, -wal, -wal-revert) travel with the db file.
       - name: Restore cached databases
         uses: actions/cache/restore@v5
         with:
           path: |
-            sdelitetest.db*
-            wcmktnewkeeptest.db*
-            buildcosttest.db*
-          key: builder-cost-dbs-v4-${{ github.run_id }}
+            ${{ steps.dbfile.outputs.sde }}*
+            ${{ steps.dbfile.outputs.primary }}*
+            ${{ steps.dbfile.outputs.buildcost }}*
+          key: builder-cost-dbs-v4-${{ steps.cachedate.outputs.date }}
           restore-keys: |
             builder-cost-dbs-v4-
       - name: Run builder costs collection
@@ -46,10 +63,10 @@ jobs:
         if: success()
         with:
           path: |
-            sdelitetest.db*
-            wcmktnewkeeptest.db*
-            buildcosttest.db*
-          key: builder-cost-dbs-v4-${{ github.run_id }}
+            ${{ steps.dbfile.outputs.sde }}*
+            ${{ steps.dbfile.outputs.primary }}*
+            ${{ steps.dbfile.outputs.buildcost }}*
+          key: builder-cost-dbs-v4-${{ steps.cachedate.outputs.date }}
       - name: Upload logs
         if: always()
         uses: actions/upload-artifact@v7

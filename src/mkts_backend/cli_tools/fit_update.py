@@ -100,6 +100,21 @@ def _configured_market_db_aliases(market_flag: Optional[str] = None) -> List[str
     return aliases
 
 
+def _market_name_for_db_alias(db_alias: str) -> str:
+    """Map a resolved DB alias back to its market name (primary, market3, …).
+
+    Config-driven so a new ``[markets.*]`` block is labelled correctly with no
+    code change. Falls back to the DB alias when it belongs to no market.
+    """
+    for market in MarketContext.list_available():
+        try:
+            if MarketContext.from_settings(market).database_alias == db_alias:
+                return market
+        except Exception:
+            continue
+    return db_alias
+
+
 def _discover_fits_across_markets(
     doctrine_id: int, remote: bool
 ) -> tuple[List[int], List[str], List[tuple[str, str]]]:
@@ -3292,7 +3307,7 @@ def fit_update_command(
                 display_names = []
                 for a in aliases:
                     resolved = DatabaseConfig(a).alias
-                    label = "primary" if a == "wcmkt" else "deployment"
+                    label = _market_name_for_db_alias(resolved)
                     display_names.append(f"{resolved} ({label})")
                 console.print(f"[green]Successfully updated fit {
                               fit_id} on {', '.join(display_names)}[/green]")

@@ -1,5 +1,10 @@
 # pyturso Migration Review — Confirmed Outstanding Work
 
+> **Superseded.** This is the input document for the pyturso migration, which is
+> now complete. Its verdict, outstanding-work lists and section numbering describe
+> the pre-migration tree and no longer match the code. Retained for history only —
+> do not treat any statement here as the current state.
+
 
 **Date:** 2026-08-23
 **Original reviewer:** Claude (Opus 5)

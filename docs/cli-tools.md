@@ -412,7 +412,7 @@ uv run python scripts/seed_new_market.py --dest wcmktbkg --only watchlist --only
 - **CSV backup**: any existing destination rows are dumped to `data/migration_backups/<dest>_<table>_<timestamp>.csv` before being wiped
 - **Resets market-derived columns**: `doctrines` stock/price/timestamp fields are zeroed on insert (see `MARKET_DERIVED_RESET` in the script) so the new market starts at zero availability instead of showing the source market's numbers
 - **Refuses empty-source wipes**: if a source table is empty while the destination has rows (usually a wrong `--source` or a stale local db), the table is skipped and reported as failed; override with `--allow-empty-source`
-- **Known gap:** `remote_engine` is now an alias for the local `sqlite+turso_sync` engine (see "Turso sync model" in `AGENTS.md`), and this script never calls `push()`. `--apply` only updates the destination's local replica; it does not by itself reach Turso. Push manually afterward (e.g. `DatabaseConfig(<dest-alias>).push()`) until the script is updated. Once pushed, market-data tables fill on the first collection run for that market (e.g. `uv run mkts-backend update-markets --market=market3 --history`)
+- **Pushes to Turso**: after every requested table has been seeded, `--apply` calls `push()` once for the destination, so the writes reach Turso in a single run. Market-data tables then fill on the first collection run for that market (e.g. `uv run mkts-backend update-markets --market=market3 --history`)
 - To add another reference table to the set, append its model to `REFERENCE_MODELS` in the script — table name and columns are derived from the model
 
 **Location:** `scripts/seed_new_market.py`

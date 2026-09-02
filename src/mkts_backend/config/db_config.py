@@ -284,6 +284,13 @@ class DatabaseConfig:
 
         Returns:
             True if database is in valid state, False otherwise.
+
+        Raises:
+            RuntimeError: when the replica on disk was bootstrapped against a
+                different Turso remote than the one configured now (via
+                assert_remote_compatible()). Deliberately not caught anywhere:
+                a remote mismatch must fail loudly rather than degrade to a
+                False return that reads like an ordinary bootstrap failure.
         """
         db_exists = Path(self.path).exists()
         metadata_exists = self.confirm_metadata_exists()

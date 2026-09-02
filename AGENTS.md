@@ -294,8 +294,17 @@ pyturso is **local-first and bidirectional**, which inverts the old libsql rule:
   baseline `pull()` needs and panicking turso core (`wal.rs` `frame_watermark`).
 
 **Consequence for writers:** any code path that writes must end with a `push()`.
-Several management CLIs still write via `remote_engine` without pushing — the
-writes never leave the machine. See `docs/migration-review.md` §I1.
+Every CLI-reachable writer and operator script does so as of this branch. Many
+call sites still name `remote_engine` (and still take a `remote=` parameter);
+both are inert aliases of the local engine, so a new writer must add its own
+`push()` rather than assume `remote_engine` reaches Turso.
+
+**Convergence when a push is skipped or fails:** a stranded write sits in the
+local CDC queue until some later command pushes that alias. Market databases
+converge on the 4-hourly market-data workflow and `buildcost` on the daily
+builder-costs workflow, but **`fittings` has no scheduled push** — a stranded
+fittings write converges only on the next manual fit command that pushes that
+alias.
 
 **Known pyturso constraints:**
 - `delete`+`insert` on a table with a secondary `UNIQUE` constraint churns primary

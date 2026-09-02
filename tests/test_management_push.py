@@ -1919,7 +1919,7 @@ class TestStructureAndBuildcostSeams:
 
 def _load_seed_new_market_module():
     """Load scripts/seed_new_market.py as a module without scripts being a
-    package, matching tests/test_repair_prod_schema.py's pattern."""
+    package."""
     src = Path(__file__).resolve().parent.parent / "scripts" / "seed_new_market.py"
     spec = importlib.util.spec_from_file_location("seed_new_market", src)
     module = importlib.util.module_from_spec(spec)
@@ -1972,23 +1972,39 @@ class TestSeedNewMarketPush:
         src = fake_db_factory(tmp_path / "src.db", alias="src")
         dest = fake_db_factory(tmp_path / "dest.db", alias="dest")
         _seed_watchlist_schema(src.engine)
+        _seed_ship_targets_schema(src.engine)
         with src.engine.begin() as conn:
             conn.execute(_INSERT_WATCHLIST_ROW, {
                 "type_id": 34, "group_id": 18, "type_name": "Tritanium",
                 "group_name": "Mineral", "category_id": 4, "category_name": "Material",
             })
+            conn.execute(_INSERT_SHIP_TARGETS_ROW, {
+                "fit_id": 1, "fit_name": "Test Fit", "ship_id": 24698,
+                "ship_name": "Drake", "ship_target": 20,
+                "created_at": "2026-01-01T00:00:00",
+            })
 
+        # TWO tables, deliberately: with one table `pushes == 1` holds whether
+        # the push is once-per-run or once-per-table, so the test could not
+        # detect the push being moved back inside the per-table loop.
         rc = self._run(
             module, monkeypatch, tmp_path,
-            ["--source=src", "--dest=dest", "--only=watchlist", "--apply"],
+            ["--source=src", "--dest=dest", "--only=watchlist",
+             "--only=ship_targets", "--apply"],
             {"src": src, "dest": dest},
         )
 
         assert rc == 0
-        assert dest.pushes == 1, "the destination write must reach Turso via push()"
+        assert dest.pushes == 1, (
+            "the destination write must reach Turso via exactly one push() for "
+            "the whole run, not one per seeded table"
+        )
         with dest.engine.connect() as conn:
             assert conn.execute(
                 text("SELECT count(*) FROM watchlist WHERE type_id = 34")
+            ).scalar() == 1
+            assert conn.execute(
+                text("SELECT count(*) FROM ship_targets WHERE fit_id = 1")
             ).scalar() == 1
 
     def test_dry_run_does_not_push(self, tmp_path, monkeypatch, fake_db_factory):

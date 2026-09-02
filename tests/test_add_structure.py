@@ -393,7 +393,11 @@ def cli_env(monkeypatch, buildcost_engine, tmp_path):
     from mkts_backend.cli_tools import add_structure as mod
 
     class _FakeDB:
+        # Every instance the handler builds, so a test can assert on pushes.
+        created: list["_FakeDB"] = []
+
         def __init__(self, *_a, **_kw):
+            type(self).created.append(self)
             self.engine = buildcost_engine
             self.remote_engine = buildcost_engine
             self.path = str(tmp_path / "buildcost.db")
@@ -460,6 +464,11 @@ def test_cli_writes_once_and_pushes(cli_env, buildcost_engine, tmp_path, monkeyp
     result = cli_env.add_structure([f"--file={csv}", "--yes"])
     assert result is True
     assert len(called_engines) == 1, "add_structure must write once, not twice"
+    dbs = cli_env.DatabaseConfig.created
+    assert len(dbs) == 1, "add_structure must open one DatabaseConfig"
+    assert dbs[0].pushes == 1, (
+        "add_structure must push the write to Turso exactly once"
+    )
 
 
 def test_cli_write_failure_reports_error(cli_env, buildcost_engine, tmp_path, monkeypatch, capsys):

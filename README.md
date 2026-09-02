@@ -75,14 +75,14 @@ Please update these settings for your application here. Settings for the ESI, ma
 ### Running the Application
 
 ```bash
-# Run with market orders only (primary market)
-uv run mkts-backend
+# Run with market orders only (all configured markets)
+uv run mkts-backend update-markets
 
 # Run with historical data processing
-uv run mkts-backend --history
+uv run mkts-backend update-markets --history
 
 # Process a specific market
-uv run mkts-backend --market=deployment --history
+uv run mkts-backend update-markets --market=deployment --history
 ```
 
 ## CLI Entry Points
@@ -290,15 +290,24 @@ uv run mkts-backend equiv remove --id=1
 
 ### sync - Database Sync
 
+`sync` is a **pull** (Turso → local); local writes reach Turso only via `push()`.
+
 ```bash
-# Sync primary market database with Turso
+# Pull every routed replica: all markets + shared sde/fittings/buildcost
+# (excludes the dev/test database, [shared.testing])
 uv run mkts-backend sync
 
-# Sync deployment market database
+# Pull the deployment market only
 uv run mkts-backend sync --market=deployment
 
-# Sync both markets
-uv run mkts-backend sync --market=both
+# Markets only, skip shared databases
+uv run mkts-backend sync --markets-only
+
+# Skip the optional buildcost replica
+uv run mkts-backend sync --no-buildcost
+
+# Also pull the dev/test database
+uv run mkts-backend sync --include-testing
 ```
 
 ### assets - Character Asset Lookup
@@ -369,16 +378,23 @@ uv run mkts-backend add-watchlist <type_id1> <type_id2> ...
 
 Configuration is managed through `settings.toml` with support for multiple markets:
 
-**Primary Market (Default)**:
-- **Structure ID**: `1035466617946` (4-HWWF Keepstar)
-- **Region ID**: `10000003` (The Vale of Silent)
+**Primary Market (`markets.primary`)**:
+- **Structure ID**: `1053970513596` (4-HWWF - WinterCo. Central Station)
+- **Region ID**: `10000003` (Vale of the Silent)
 - **System ID**: `30000240`
-- **Database**: Local SQLite (`wcmktprod.db`) with Turso sync
+- **Database**: pyturso replica (alias `wcmktnewkeeptest`) with Turso sync
 
-**Deployment Market (Optional)**:
+**Deployment Market (`markets.deployment`)**:
+- **Structure ID**: `1041669946862` (X47L-Q - Rogue Threshold)
 - **Region ID**: `10000023` (Pure Blind)
-- **System ID**: `30002029` (B-9C24)
-- **Database**: Local SQLite (`wcmktnorth2.db`) with Turso sync
+- **System ID**: `30001967`
+- **Database**: pyturso replica (alias `wcmktnorthtest`) with Turso sync
+
+**Third Market (`markets.market3`)**:
+- **Structure ID**: `1032721770598` (BKG-Q2 - Insidious Prime)
+- **Region ID**: `10000055` (Branch)
+- **System ID**: `30004333`
+- **Database**: pyturso replica (alias `wcmktbkgtest`) with Turso sync
 
 **Watchlist**: DB table with ~850 common items and all WinterCo Doctrine ships and fittings.
 
@@ -437,7 +453,7 @@ The project uses modern Python dependencies managed with uv:
 - **SQLAlchemy**: ORM and database operations
 - **Pandas**: Data manipulation and analysis
 - **Requests**: HTTP client for API calls
-- **libsql**: SQLite with sync capabilities
+- **pyturso**: Local-first SQLite replica with bidirectional Turso sync
 - **gspread**: Google Sheets API integration
 - **prompt-toolkit**: Multiline input prompts for paste mode
 

@@ -54,13 +54,23 @@ uv run mkts-backend --check_tables --deployment  # Check deployment market table
 
 **Sync databases:**
 ```bash
-uv run mkts-backend sync              # Pull every market mirror + buildcost from Turso
+uv run mkts-backend sync              # Pull every routed replica: all markets +
+                                       # shared sde/fittings/buildcost (excludes
+                                       # the dev/test DB, [shared.testing])
 uv run mkts-backend sync --deployment # Pull the deployment market only
-uv run mkts-backend sync --no-buildcost   # Skip the buildcost mirror
+uv run mkts-backend sync --no-buildcost    # Skip the optional buildcost replica
+uv run mkts-backend sync --markets-only    # Markets only, skip shared databases
+uv run mkts-backend sync --include-testing # Also pull [shared.testing]
 # NOTE: `sync` is a PULL (Turso → local). Local writes reach Turso only via push();
 # see "Turso sync model" below.
 # NOTE: --both is a legacy market-alias synonym for --all. It now spans all three
 # markets, not just primary+deployment. Use --all.
+```
+
+**Look up routed database paths** (global flags, not specific to `sync`):
+```bash
+uv run mkts-backend --list-db-paths     # Print every routed alias and file (alias<TAB>file)
+uv run mkts-backend --db-path=primary   # Print the file path for one database (by alias or market name)
 ```
 
 **Check market availability for a ship fit:**
@@ -123,15 +133,27 @@ Manages all database operations:
     the write in the local CDC queue.
   - `verify_db_exists()`: Ensures database and metadata are in a consistent state
     - Handles 4 cases: neither exists, both exist, db without metadata, metadata without db
-    - Automatically syncs from remote or nukes inconsistent states
-    - **Gap:** it only checks that `<file>-info` *exists*, not that it is pyturso
-      metadata. A libsql-era `-info` (`{"hash":…,"version":0,…}`) passes and every
-      subsequent engine call then raises `turso.lib.DatabaseError`. Remedy:
-      `nuke_db()` + `sync()`.
-  - `nuke_db()`: removes the database and all five pyturso sidecars
-    (`-shm`, `-wal`, `-info`, `-changes`, `-wal-revert`). They must be deleted
-    together — a stale change queue beside a freshly pulled database replays local
-    state that is no longer there.
+    - When both exist, calls `assert_remote_compatible()` then `heal_metadata()`
+      instead of assuming the pair is valid; otherwise nukes the inconsistent
+      state and syncs from remote
+  - `heal_metadata()`: confirms the replica's `-info` sidecar is genuine pyturso
+    metadata (not libsql-era or corrupt). If not, deletes just the `-info`
+    sidecar and re-pulls to rebuild it against the existing `.db`/`-wal`/
+    `-changes`. Returns `True` once the replica has pyturso metadata, `False` if
+    the repair pull fails.
+  - `remote_matches_metadata()`: compares the Turso remote recorded in `-info` at
+    bootstrap time against the currently configured remote (host + path only,
+    ignoring scheme and trailing slash). Returns `True`/`False`, or `None` if
+    either side is unknown. `assert_remote_compatible()` raises when it returns
+    `False` — the guard against reading or pushing a replica bootstrapped
+    against a different environment (e.g. a test replica opened under a
+    production config after cutover).
+  - `nuke_db()`: removes the database and each of its pyturso sidecars found on
+    disk — up to five (`-shm`, `-wal`, `-info`, `-changes`, `-wal-revert`). Not
+    every replica has all five: `-shm` is the WAL shared-memory index and is
+    usually absent once a connection closes cleanly. They must be deleted
+    together — a stale change queue beside a freshly pulled database replays
+    local state that is no longer there.
 - **db_handlers.py**: CRUD operations on market data tables
 - ORM-based data insertion with chunking for large datasets
 
@@ -373,7 +395,7 @@ The `region_id` column doubles as `structure_id` for sentinel rows. Queries filt
 ```
 process_market_orders (cli.py)
   │
-  ├─ load_orders_cache(structure_id)     ← reads sentinels from remote DB
+  ├─ load_orders_cache(structure_id)     ← reads sentinels from local replica
   │    returns {"expires": "...", "pages": {1: "etag1", 2: "etag2", ...}}
   │
   ├─ Layer 1: check expires → skip fetch if within cache window
@@ -389,7 +411,7 @@ process_market_orders (cli.py)
   │
   ├─ status 200 → upsert orders into marketorders table
   │
-  └─ save_orders_cache(structure_id, expires, page_etags)  ← writes sentinels to remote DB
+  └─ save_orders_cache(structure_id, expires, page_etags)  ← writes sentinels to local replica
 ```
 
 ### Key Implementation Details
@@ -619,8 +641,9 @@ This creates local copies of (names from `settings.toml`):
 - `sdelitetest.db` (Eve static data export)
 - `buildcosttest.db` (manufacturing costs; optional credentials)
 
-Each arrives with five pyturso sidecars (`-shm`, `-wal`, `-info`, `-changes`,
-`-wal-revert`). Never move or delete one without the others; use `nuke_db()` or
+Each arrives with up to five pyturso sidecars (`-shm`, `-wal`, `-info`,
+`-changes`, `-wal-revert`) — `-shm` is usually absent once a connection closes
+cleanly. Never move or delete one without the others; use `nuke_db()` or
 `./dbdeltest.sh` instead.
 
 **Database Schema**:
@@ -661,10 +684,10 @@ class GoogleSheetConfig:
 
 ```bash
 # Run basic market data collection
-uv run mkts-backend
+uv run mkts-backend update-markets
 
 # Run with historical data processing (recommended)
-uv run mkts-backend --history
+uv run mkts-backend update-markets --history
 
 # Check database contents
 uv run mkts-backend --check_tables
@@ -683,7 +706,7 @@ Option B - Cron job (for local server):
 crontab -e
 
 # Add entry (runs every 4 hours)
-0 */4 * * * cd /path/to/mkts_backend && /path/to/uv run mkts-backend --history >> /path/to/logs/cron.log 2>&1
+0 */4 * * * cd /path/to/mkts_backend && /path/to/uv run mkts-backend update-markets --history >> /path/to/logs/cron.log 2>&1
 ```
 
 ### Step 10: Setup Streamlit Frontend
@@ -707,9 +730,9 @@ from the same Turso remotes the backend pushes to. Turso is the meeting point; t
 two repos never share a file.
 
 **Do not copy or symlink a `.db` between the backend and frontend directories.** A
-pyturso replica is the database plus its five sidecars, including per-client sync
-watermarks in `-info`. Two processes pointed at one file will corrupt each other's
-sync state.
+pyturso replica is the database plus its sidecars (up to five), including
+per-client sync watermarks in `-info`. Two processes pointed at one file will
+corrupt each other's sync state.
 
 Frontend configuration lives in two files:
 - `settings.toml` — `[markets.<alias>]` (name, IDs, `database_alias`,
@@ -816,8 +839,8 @@ To track multiple markets simultaneously:
 
 2. **Set Environment Variables**: Add Turso credentials for each market
    ```env
-   TURSO_WCMKTPROD_URL=...
-   TURSO_WCMKTPROD_TOKEN=...
+   TURSO_WCMKTNEWKEEP_URL=...
+   TURSO_WCMKTNEWKEEP_TOKEN=...
    TURSO_WCMKTNORTH_URL=...
    TURSO_WCMKTNORTH_TOKEN=...
    ```
@@ -825,10 +848,10 @@ To track multiple markets simultaneously:
 3. **Run Individual Markets**:
    ```bash
    # Process primary market (default)
-   uv run mkts-backend --history
+   uv run mkts-backend update-markets --history
 
    # Process deployment market
-   uv run mkts-backend --market=deployment --history
+   uv run mkts-backend update-markets --market=deployment --history
    ```
 
 4. **GitHub Actions Parallel Processing**:
@@ -858,7 +881,7 @@ To track multiple markets simultaneously:
 ### Database Issues
 
 **Problem**: "Database file does not exist"
-**Solution**: Run `uv run mkts-backend` to create initial database
+**Solution**: Run `uv run mkts-backend update-markets` to create initial database
 
 **Problem**: "Table not found"
 **Solution**: Database schema may be outdated, check migrations or recreate
@@ -899,21 +922,21 @@ To track multiple markets simultaneously:
 **Problem**: Scheduled `Market Data Collection` runs fail because a cached DB (e.g., `wcmktnorth2test.db`) has drifted out of sync with Turso cloud, or carries libsql-era `-info` metadata that pyturso rejects.
 **Solution**: Wipe the cached DB bundle for the affected leg. Caches are immutable bundles keyed per leg per UTC date, so individual files cannot be removed — the whole entry must go, after which the next run cold-starts and re-pulls from Turso. (The date bucket means at most one new cache per leg per day; restore-keys prefix-matches the most recent.)
 
-Two key families, both defined in `.github/workflows/market-data-collection.yml`:
+Three key families, across `.github/workflows/market-data-collection.yml` and `.github/workflows/builder-costs-collection.yml`:
 - `turso-dbs-v4-mkt-<primary|deployment|market3>-<YYYY-MM-DD>` — one market DB, written only by its own matrix leg
 - `turso-dbs-v4-shared-<YYYY-MM-DD>` — the SDE + fitting DBs, written only by the primary leg
+- `builder-cost-dbs-v4-<YYYY-MM-DD>` — the buildcost DB, from `builder-costs-collection.yml`
 
 ```bash
 # Requires `gh` authenticated against the repo
 scripts/wipe_gha_db_cache.sh deployment   # wipe the wcmktnorth2test leg only
 scripts/wipe_gha_db_cache.sh primary      # wipe the wcmktnewkeeptest leg only
 scripts/wipe_gha_db_cache.sh shared       # wipe the SDE + fitting bundle
-scripts/wipe_gha_db_cache.sh all          # wipe all four
+scripts/wipe_gha_db_cache.sh buildercost  # wipe the buildcost bundle
+scripts/wipe_gha_db_cache.sh all          # wipe all five
 ```
 
-The cache-save steps are gated on `if: success()`, so a failed run cannot poison the cache for the next run. Env overrides for the script: `GHA_CACHE_REF` (default `refs/heads/main` — **set this to `refs/heads/mkts-turso-main` on the staging repo**) and `GHA_CACHE_PREFIX` (default `turso-dbs-v4`).
-
-The script does not cover `builder-cost-dbs-v4-*` from `builder-costs-collection.yml`; wipe those with `gh cache delete` directly.
+The cache-save steps are gated on `if: success()`, so a failed run cannot poison the cache for the next run. Env overrides for the script: `GHA_CACHE_REF` (required, no default — the git ref whose caches to target; use `refs/heads/main` for production or `refs/heads/mkts-turso-main` on the staging repo) and `GHA_CACHE_PREFIX` (default `turso-dbs-v4`).
 
 ## Agent Workflow for User Support
 
@@ -1025,7 +1048,7 @@ Side Channel:
 
 - Python: 3.12+
 - SQLAlchemy: >=2.0.42 (floor imposed by the pyturso dialect)
-- pyturso: >=0.7.1 (0.7.2 in use; provides the `sqlite+turso*` dialects)
+- pyturso: >=0.7.2 (0.7.2 in use; provides the `sqlite+turso*` dialects)
 - gspread: 5.x+
 - pandas: 2.x
 - prompt_toolkit: Latest

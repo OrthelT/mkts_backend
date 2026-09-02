@@ -133,7 +133,7 @@ uv run mkts-backend fit-update update --fit-id=313 --paste
 - `--deployment`: Shorthand for --market=deployment
 - `--all`: Update all configured markets
 - `--update-targets`: Update ship_targets table (default: skip)
-- `--remote`: Use remote database (default: local)
+- `--remote`: legacy flag, kept for compatibility; `remote_engine` is now an alias for the local `sqlite+turso_sync` engine (see "Turso sync model" in `AGENTS.md`), so this no longer selects a different database — writes always land locally and are pushed to Turso automatically
 - `--no-clear`: Keep existing items (default: clear and replace)
 - `--dry-run`: Preview changes without saving
 
@@ -150,25 +150,19 @@ uv run mkts-backend fit-update update --fit-id=313 --paste
 
 **update-friendly-name Subcommand:**
 ```bash
-# Set a friendly display name for all fits in a doctrine
+# Set a friendly display name for all fits in a doctrine (every configured market)
 uv run mkts-backend fit-update update-friendly-name --doctrine-id=21 --name="Hurricane"
-
-# Target deployment market
-uv run mkts-backend fit-update update-friendly-name --doctrine-id=21 --name="Hurricane" --north
 ```
 
-Pushes the `friendly_name` value to both local and remote databases automatically.
+Writes the `friendly_name` value to every configured market's local replica, pushing each one to Turso.
 
 **populate-friendly-names Subcommand:**
 ```bash
-# Bulk populate from doctrine_names.json in working directory
+# Bulk populate from doctrine_names.json in working directory (every configured market)
 uv run mkts-backend fit-update populate-friendly-names
-
-# Target deployment database
-uv run mkts-backend fit-update populate-friendly-names --north
 ```
 
-Reads a `doctrine_names.json` file and updates `friendly_name` for all matching doctrines, then syncs to remote.
+Reads a `doctrine_names.json` file and updates `friendly_name` for all matching doctrines on every configured market, pushing each replica to Turso.
 
 **Database Tables Updated:**
 - **wcfitting.db:**
@@ -178,7 +172,7 @@ Reads a `doctrine_names.json` file and updates `friendly_name` for all matching 
   - `fittings_doctrine_fittings` - doctrine-fit links
   - `watch_doctrines` - watched doctrines (auto-added for new doctrines)
 
-- **wcmktprod.db / wcmktnorth2.db (based on --market flag):**
+- **The target market's database** (`database_file` in `settings.toml`, per `--market`):
   - `doctrine_fits` - fit metadata with market_flag and friendly_name
   - `doctrine_map` - doctrine-fit links
   - `watchlist` - items to track
@@ -313,7 +307,7 @@ uv run mkts-backend update-fit doctrine-remove-fit --doctrine-id=42 --fit-id=313
 # Remove multiple fits at once (comma-separated)
 uv run mkts-backend update-fit doctrine-remove-fit --doctrine-id=42 --fit-ids=313,314,315
 
-# Use remote database
+# --remote is a legacy no-op flag (see Command Options above)
 uv run mkts-backend update-fit doctrine-remove-fit --doctrine-id=42 --fit-id=313 --remote
 ```
 
@@ -327,7 +321,7 @@ uv run mkts-backend update-fit doctrine-remove-fit --doctrine-id=42 --fit-id=313
 
 **Databases Affected:**
 - `wcfitting.db`: Removes link in `fittings_doctrine_fittings`
-- `wcmktprod.db` or `wcmktnorth2.db` (based on market): Removes entries from `doctrine_fits`, `doctrine_map`, and `doctrines`
+- The target market's database (per `--market`): removes entries from `doctrine_fits`, `doctrine_map`, and `doctrines`
 
 ### update-target Subcommand
 
@@ -375,7 +369,7 @@ uv run mkts-backend equiv add --type-ids=13984,17838 --market=primary
 - `add` and `remove` operate on **all markets by default** (equivalents are universal game data)
 - `find` uses SDE attribute fingerprinting (`dgmTypeAttributes`) to discover identical modules
 - Multiple name matches show a selection table; use `--type-id=<id>` to disambiguate
-- After changes, run `uv run mkts-backend sync` to push updates to Turso
+- `add`, `remove`, and `find --add` push each affected market's replica to Turso automatically — no follow-up `sync` needed (`sync` is a pull, not a push)
 
 **Subcommands:**
 - `list` - Display all equivalence groups with member modules
@@ -385,13 +379,13 @@ uv run mkts-backend equiv add --type-ids=13984,17838 --market=primary
 
 ## seed_new_market.py Script
 
-A standalone script (not a `mkts-backend` subcommand) that bootstraps a newly-created market by copying the reference/config tables from an existing market into the new market's **remote** Turso database. Run it after creating the new Turso database, configuring its keys, and adding its `[markets.<alias>]` section to `settings.toml`.
+A standalone script (not a `mkts-backend` subcommand) that bootstraps a newly-created market by copying the reference/config tables from an existing market's replica into the new market's replica, via `DatabaseConfig.remote_engine`. Run it after creating the new Turso database, configuring its keys, and adding its `[markets.<alias>]` section to `settings.toml`.
 
 ```bash
 # Dry-run / preview (default): shows source vs. destination row counts and the plan
 uv run python scripts/seed_new_market.py
 
-# Apply: writes to the destination remote (Turso cloud)
+# Apply: writes to the destination's replica
 uv run python scripts/seed_new_market.py --apply
 
 # Different source/destination markets (by database alias)
@@ -402,8 +396,8 @@ uv run python scripts/seed_new_market.py --dest wcmktbkg --only watchlist --only
 ```
 
 **Options:**
-- `--source=<alias>`: Source market DB alias to copy from (read from its **local** `.db`). Default: `wcmktnewkeep`
-- `--dest=<alias>`: Destination market DB alias to seed (written to its **remote** Turso db). Default: `wcmktbkg`
+- `--source=<alias>`: Source market DB alias to copy from (its local `.db`). Default: `wcmktnewkeep`
+- `--dest=<alias>`: Destination market DB alias to seed. Default: `wcmktbkg`
 - `--only=<table>`: Restrict to specific reference tables. Repeatable
 - `--apply`: Actually perform the migration. Omit for a dry-run
 - `--allow-empty-source`: Permit wiping a populated destination table when the source table is empty (refused by default)
@@ -412,13 +406,13 @@ uv run python scripts/seed_new_market.py --dest wcmktbkg --only watchlist --only
 - `watchlist`, `doctrines`, `doctrine_fits`, `doctrine_map`, `lead_ships`, `ship_targets`, `module_equivalents`
 
 **Behavior:**
-- **Ensures schema first**: creates any missing target tables from `Base` (`create_all`, idempotent — existing tables are left alone), so a brand-new remote works
+- **Ensures schema first**: creates any missing target tables from `Base` (`create_all`, idempotent — existing tables are left alone), so a brand-new replica works
 - **Wipe-and-replace per table**: each table runs in its own transaction (`DELETE` then bulk `INSERT`); a row-count mismatch rolls the table back, so it is safe to re-run
 - **Preserves `id` values** exactly, keeping cross-table references (`doctrine_map`, `doctrines`, `lead_ships`, …) consistent
 - **CSV backup**: any existing destination rows are dumped to `data/migration_backups/<dest>_<table>_<timestamp>.csv` before being wiped
 - **Resets market-derived columns**: `doctrines` stock/price/timestamp fields are zeroed on insert (see `MARKET_DERIVED_RESET` in the script) so the new market starts at zero availability instead of showing the source market's numbers
 - **Refuses empty-source wipes**: if a source table is empty while the destination has rows (usually a wrong `--source` or a stale local db), the table is skipped and reported as failed; override with `--allow-empty-source`
-- Writes to the destination **cloud only** — the destination's local `.db` mirror stays stale until a subsequent sync. Note these follow-up commands take the **market** alias (e.g. `market3`), not the database alias used by `--source`/`--dest`: `uv run mkts-backend sync --market=market3`, then market-data tables fill on the first collection run (`uv run mkts-backend --market=market3 --history`)
+- **Known gap:** `remote_engine` is now an alias for the local `sqlite+turso_sync` engine (see "Turso sync model" in `AGENTS.md`), and this script never calls `push()`. `--apply` only updates the destination's local replica; it does not by itself reach Turso. Push manually afterward (e.g. `DatabaseConfig(<dest-alias>).push()`) until the script is updated. Once pushed, market-data tables fill on the first collection run for that market (e.g. `uv run mkts-backend update-markets --market=market3 --history`)
 - To add another reference table to the set, append its model to `REFERENCE_MODELS` in the script — table name and columns are derived from the model
 
 **Location:** `scripts/seed_new_market.py`

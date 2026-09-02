@@ -47,7 +47,7 @@ wipe_leg() {
   local ids
   echo "Wiping caches matching ${pattern}* on ${REF}..."
   # gh paginates internally up to --limit; 5000 is well above any realistic cap
-  # (daily key bucketing × 7-day GHA retention × 4 legs ≈ 28 entries max).
+  # (daily key bucketing × 7-day GHA retention × 5 legs ≈ 35 entries max).
   # Loop guards against races where new caches arrive mid-deletion.
   while ids=$(gh cache list --limit 5000 --ref "$REF" --key "$pattern" \
                 --json id --jq '.[].id') && [[ -n "$ids" ]]; do

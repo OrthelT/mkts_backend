@@ -27,7 +27,6 @@ Create simple functionality to parse an Eve Online doctrine fit from a text file
 There is a great deal of existing code from my past incomplete attempts to implement this feature -- some may not work. This code is contained in:
 - "src/mkts_backend/utils/parse_fits.py" (most recent attempt is the update_fits() function, which includes to dos)
 - "src/mkts_backend/utils/doctrine_update.py"
-- "src/mkts_backend/utils/add2doctrines_table.py"
 
 ## Sample Files
 - "new_zealot993.txt" - EFT fit file

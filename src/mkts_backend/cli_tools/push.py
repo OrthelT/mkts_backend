@@ -30,6 +30,6 @@ def push_or_log(alias: str) -> bool:
         DatabaseConfig(alias).push()
         return True
     except Exception as exc:
-        logger.error(f"{alias}: push failed: {exc}")
+        logger.exception(f"{alias}: push failed: {exc}")
         console.print(f"[red]Push failed for {alias}: {exc}[/red]")
         return False

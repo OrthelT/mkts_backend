@@ -324,6 +324,38 @@ class TestEquivPush:
         assert result is False
         assert set(dbs) == {primary_alias}
 
+    def test_write_and_push_resolve_the_same_replica_in_development(self, monkeypatch):
+        """equiv's write and its push must land on ONE file in every environment.
+
+        The write goes through ``equiv_handlers._get_db(market_ctx)``; the push
+        goes through ``push_or_log(ctx.database_alias)``. ``DatabaseConfig``'s
+        alias branch redirects EVERY alias to ``[shared.testing]`` when
+        ``environment == "development"``, while ``MarketContext.from_settings``
+        redirects only the default market — so resolving the two through
+        different constructors would make an ``equiv add/remove/find --add`` run
+        in development write a market replica and push the testing one, with
+        nothing reporting a failure.
+        """
+        from mkts_backend.config.db_config import DatabaseConfig
+        from mkts_backend.config.market_context import MarketContext
+        from mkts_backend.config.settings_service import SettingsService, clear_cache
+        from mkts_backend.db import equiv_handlers
+
+        default_market = SettingsService().default_market_alias
+        non_default = [m for m in MarketContext.list_available() if m != default_market]
+        assert non_default, "test requires a configured market other than the default"
+
+        monkeypatch.setenv("MKTS_ENVIRONMENT", "development")
+        clear_cache()  # env is read at load time; restored by _settings_cache_isolation
+
+        for market in non_default:
+            ctx = MarketContext.from_settings(market)
+            write_db = equiv_handlers._get_db(ctx)
+            push_db = DatabaseConfig(ctx.database_alias)  # what push_or_log builds
+            assert write_db.path == push_db.path, (
+                f"{market}: equiv writes {write_db.path} but pushes {push_db.path}"
+            )
+
 
 # ---------------------------------------------------------------------------
 # TestFittingsPush (Task 9) — update_fit_workflow's touched_aliases design

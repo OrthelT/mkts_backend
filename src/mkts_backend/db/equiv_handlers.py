@@ -18,9 +18,18 @@ logger = configure_logging(__name__)
 
 
 def _get_db(market_ctx: Optional["MarketContext"] = None) -> DatabaseConfig:
-    """Get database config, optionally using market context."""
+    """Get database config, optionally using market context.
+
+    Resolved by *alias*, not by market context: the push that follows every
+    equiv write goes through ``push_or_log(ctx.database_alias)``, and the two
+    constructors disagree under ``environment = "development"`` — the alias
+    branch redirects every alias to ``[shared.testing]`` while
+    ``MarketContext`` redirects only the default market. Resolving both the
+    same way keeps the write and its push on one replica in every environment
+    (``TestEquivPush::test_write_and_push_resolve_the_same_replica_in_development``).
+    """
     if market_ctx is not None:
-        return DatabaseConfig(market_context=market_ctx)
+        return DatabaseConfig(market_ctx.database_alias)
     return DatabaseConfig("wcmkt")
 
 

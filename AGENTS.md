@@ -1,27 +1,3 @@
-# IMPORTANT — pyturso migration worktree
-
-This worktree exercises the pyturso migration before it is applied in production.
-It is **not** production: every database is the `…test` variant, both file and
-remote, so a run here cannot touch live data.
-
-| Market alias | Local file | Turso remote |
-|---|---|---|
-| `primary` | `wcmktnewkeeptest.db` | `wcmktnewkeeptest` |
-| `deployment` | `wcmktnorth2test.db` | `wcmktnorth2test` |
-| `market3` | `wcmktbkgtest.db` | `wcmktbkgtest` |
-| shared `sde` | `sdelitetest.db` | `sdelitetest` |
-| shared `fittings` | `wcfittingtest.db` | `wcfittingtest` |
-| shared `buildcost` | `buildcosttest.db` | `buildcosttest` |
-
-Filenames come from `settings.toml`; remote URLs come from the `TURSO_*` env vars
-named there. **The env var names are identical for production and test**, so
-isolation depends on `.env` as well as `settings.toml` — see
-`docs/migration-review.md` for the outstanding work to make the revert a
-settings-only edit.
-
-The companion frontend worktree is `/home/orthel/workspace/github/wcmkts-pyturso-migration`.
-
-
 # LLM Agent Guide: Eve Online Market Data System
 
 This guide provides comprehensive documentation for LLM agents working with this Eve Online Market Data Collection and Analysis System. It covers both assisting users in implementing their own system and working with the existing codebase.

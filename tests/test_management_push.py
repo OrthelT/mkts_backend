@@ -22,12 +22,16 @@ rather than trusting them.
 | `add_structure`                  | `build_cost_utils.upsert_structures(local_db.engine, ...)` | `buildcost` | **yes** — **Task 12 (this task)**: deleted the duplicate `remote_engine` call and the now-dead `--local`/`--remote-only` flags/branching; writes once via `local_db.engine`, then `local_db.push()` | Already compliant as of Task 12 |
 | `build-watchlist add/remove/mirror` | `build_watchlist_cli.py` → `builder_costs/repository.py` (`upsert_build_watchlist`, `upsert_builder_costs`, ...) | `buildcost` | **yes** — `repository.py` calls `db.push()` at the end of every writer (`:125`, `:161`, `:193`, `:226`, `:252`); `build_watchlist_cli.py:121` also pushes directly | Already compliant — no action needed |
 | `update-markets` (main pipeline) | `cli.py` (`db.push()` at `:379`, end of run) | all configured markets processed in the run | **yes** | Already compliant (earlier phase) |
+| `scripts/seed_new_market.py --apply` | `seed_table()` (`dest.remote_engine.begin()`, once per reference table) | one destination market alias per invocation (`--dest`) | none | **Task 12b (this task)**: outside every Phase-4 task's file list; `main()` now calls `dest.push()` once after the seeding loop, gated on `--apply` and at least one table having actually written, not once per table; a push failure is reported and added to `failed` so the exit code stays non-zero even though the local writes already committed |
 
-This table covers the writers visible in the Task 7 audit; Tasks 8-12 extend
+This table covers the writers visible in the Task 7 audit; Tasks 8-12b extend
 this file and should re-audit before assuming a row above is still accurate.
 """
 import importlib
+import importlib.util
 import json
+import sys
+from pathlib import Path
 
 import pandas as pd
 from sqlalchemy import text
@@ -1904,3 +1908,247 @@ class TestStructureAndBuildcostSeams:
         repository.init_buildcost_tables(db)
 
         assert db.pushes == 0, "a no-op schema init (nothing missing) must not push"
+
+
+# ---------------------------------------------------------------------------
+# TestSeedNewMarketPush (Task 12b) — scripts/seed_new_market.py was outside
+# every Phase-4 task's file list. Under pyturso `dest.remote_engine` IS
+# `dest.engine` (the local replica), so every write `seed_table()` made
+# stayed in the local CDC queue and never reached Turso.
+# ---------------------------------------------------------------------------
+
+def _load_seed_new_market_module():
+    """Load scripts/seed_new_market.py as a module without scripts being a
+    package, matching tests/test_repair_prod_schema.py's pattern."""
+    src = Path(__file__).resolve().parent.parent / "scripts" / "seed_new_market.py"
+    spec = importlib.util.spec_from_file_location("seed_new_market", src)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules["seed_new_market"] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def _seed_watchlist_schema(engine) -> None:
+    from mkts_backend.db.models import Base, Watchlist
+    Base.metadata.create_all(engine, tables=[Watchlist.__table__])
+
+
+def _seed_ship_targets_schema(engine) -> None:
+    from mkts_backend.db.models import Base, ShipTargets
+    Base.metadata.create_all(engine, tables=[ShipTargets.__table__])
+
+
+_INSERT_WATCHLIST_ROW = text(
+    "INSERT INTO watchlist (type_id, group_id, type_name, group_name, "
+    "category_id, category_name) VALUES (:type_id, :group_id, :type_name, "
+    ":group_name, :category_id, :category_name)"
+)
+
+_INSERT_SHIP_TARGETS_ROW = text(
+    "INSERT INTO ship_targets (fit_id, fit_name, ship_id, ship_name, "
+    "ship_target, created_at) VALUES (:fit_id, :fit_name, :ship_id, "
+    ":ship_name, :ship_target, :created_at)"
+)
+
+
+class TestSeedNewMarketPush:
+    """Drives the real ``main()`` against real SQLite files standing in for
+    the source and destination markets, with ``DatabaseConfig`` swapped for
+    the ``fake_db_factory`` fixture's push-counting stand-in — the same
+    pattern ``TestStructureAndBuildcostSeams`` above uses for add_structure.
+    """
+
+    def _run(self, module, monkeypatch, tmp_path, argv, dbs):
+        monkeypatch.setattr(module, "DatabaseConfig", lambda alias=None, market_context=None: dbs[alias])
+        # Redirect the CSV backup dir so a test that happens to hit a
+        # non-empty destination table doesn't write into the real repo tree.
+        monkeypatch.setattr(module, "BACKUP_DIR", tmp_path / "migration_backups")
+        monkeypatch.setattr(sys, "argv", ["seed_new_market.py", *argv])
+        return module.main()
+
+    def test_apply_run_pushes_destination_once(self, tmp_path, monkeypatch, fake_db_factory):
+        module = _load_seed_new_market_module()
+
+        src = fake_db_factory(tmp_path / "src.db", alias="src")
+        dest = fake_db_factory(tmp_path / "dest.db", alias="dest")
+        _seed_watchlist_schema(src.engine)
+        with src.engine.begin() as conn:
+            conn.execute(_INSERT_WATCHLIST_ROW, {
+                "type_id": 34, "group_id": 18, "type_name": "Tritanium",
+                "group_name": "Mineral", "category_id": 4, "category_name": "Material",
+            })
+
+        rc = self._run(
+            module, monkeypatch, tmp_path,
+            ["--source=src", "--dest=dest", "--only=watchlist", "--apply"],
+            {"src": src, "dest": dest},
+        )
+
+        assert rc == 0
+        assert dest.pushes == 1, "the destination write must reach Turso via push()"
+        with dest.engine.connect() as conn:
+            assert conn.execute(
+                text("SELECT count(*) FROM watchlist WHERE type_id = 34")
+            ).scalar() == 1
+
+    def test_dry_run_does_not_push(self, tmp_path, monkeypatch, fake_db_factory):
+        module = _load_seed_new_market_module()
+
+        src = fake_db_factory(tmp_path / "src.db", alias="src")
+        dest = fake_db_factory(tmp_path / "dest.db", alias="dest")
+        _seed_watchlist_schema(src.engine)
+        with src.engine.begin() as conn:
+            conn.execute(_INSERT_WATCHLIST_ROW, {
+                "type_id": 34, "group_id": 18, "type_name": "Tritanium",
+                "group_name": "Mineral", "category_id": 4, "category_name": "Material",
+            })
+
+        rc = self._run(
+            module, monkeypatch, tmp_path,
+            ["--source=src", "--dest=dest", "--only=watchlist"],  # no --apply
+            {"src": src, "dest": dest},
+        )
+
+        assert rc == 0
+        assert dest.pushes == 0, "a dry run must never push"
+
+    def test_partial_failure_still_pushes_and_exits_nonzero(
+        self, tmp_path, monkeypatch, fake_db_factory
+    ):
+        """watchlist commits a real row; ship_targets fails with a genuine
+        SQL error (the destination's pre-existing ship_targets table is
+        missing the `created_at` column). Task 11's step-failure ruling:
+        committed partial work is local truth and the queue converges, so
+        the command still pushes what committed — but it must still fail."""
+        module = _load_seed_new_market_module()
+
+        src = fake_db_factory(tmp_path / "src.db", alias="src")
+        dest = fake_db_factory(tmp_path / "dest.db", alias="dest")
+
+        _seed_watchlist_schema(src.engine)
+        with src.engine.begin() as conn:
+            conn.execute(_INSERT_WATCHLIST_ROW, {
+                "type_id": 34, "group_id": 18, "type_name": "Tritanium",
+                "group_name": "Mineral", "category_id": 4, "category_name": "Material",
+            })
+
+        _seed_ship_targets_schema(src.engine)
+        with src.engine.begin() as conn:
+            conn.execute(_INSERT_SHIP_TARGETS_ROW, {
+                "fit_id": 1, "fit_name": "Test Fit", "ship_id": 1,
+                "ship_name": "Test Ship", "ship_target": 5,
+                "created_at": "2026-01-01T00:00:00",
+            })
+
+        # Pre-create a real destination ship_targets table with a schema
+        # that's missing `created_at`. create_all's checkfirst leaves an
+        # existing table alone, so this survives into the run, and the
+        # INSERT genuinely fails against real SQL rather than a mock.
+        with dest.engine.begin() as conn:
+            conn.execute(text(
+                "CREATE TABLE ship_targets (fit_id INTEGER PRIMARY KEY, "
+                "fit_name TEXT, ship_id INTEGER, ship_name TEXT, "
+                "ship_target INTEGER)"
+            ))
+
+        rc = self._run(
+            module, monkeypatch, tmp_path,
+            ["--source=src", "--dest=dest", "--only=watchlist",
+             "--only=ship_targets", "--apply"],
+            {"src": src, "dest": dest},
+        )
+
+        assert rc == 1, "a run with a failed table must return non-zero"
+        assert dest.pushes == 1, "watchlist's committed write must still reach Turso"
+        with dest.engine.connect() as conn:
+            assert conn.execute(
+                text("SELECT count(*) FROM watchlist WHERE type_id = 34")
+            ).scalar() == 1
+            assert conn.execute(
+                text("SELECT count(*) FROM ship_targets")
+            ).scalar() == 0, "the failed table's transaction must have rolled back"
+
+    def test_every_table_refused_does_not_push(self, tmp_path, monkeypatch, fake_db_factory):
+        """Source empty, destination already populated, for every requested
+        table: the wrong-source safety guard refuses each one, nothing is
+        written, so push must not run even though --apply was set."""
+        module = _load_seed_new_market_module()
+
+        src = fake_db_factory(tmp_path / "src.db", alias="src")
+        dest = fake_db_factory(tmp_path / "dest.db", alias="dest")
+
+        _seed_watchlist_schema(src.engine)      # empty
+        _seed_ship_targets_schema(src.engine)   # empty
+
+        _seed_watchlist_schema(dest.engine)
+        _seed_ship_targets_schema(dest.engine)
+        with dest.engine.begin() as conn:
+            conn.execute(_INSERT_WATCHLIST_ROW, {
+                "type_id": 99, "group_id": 18, "type_name": "Existing",
+                "group_name": "Mineral", "category_id": 4, "category_name": "Material",
+            })
+            conn.execute(_INSERT_SHIP_TARGETS_ROW, {
+                "fit_id": 1, "fit_name": "Existing Fit", "ship_id": 1,
+                "ship_name": "Existing Ship", "ship_target": 3,
+                "created_at": "2026-01-01T00:00:00",
+            })
+
+        rc = self._run(
+            module, monkeypatch, tmp_path,
+            ["--source=src", "--dest=dest", "--only=watchlist",
+             "--only=ship_targets", "--apply"],
+            {"src": src, "dest": dest},
+        )
+
+        assert rc == 1, "every table refused must still fail the command"
+        assert dest.pushes == 0, "nothing was written, so nothing may push"
+        with dest.engine.connect() as conn:
+            assert conn.execute(text("SELECT count(*) FROM watchlist")).scalar() == 1
+            assert conn.execute(text("SELECT count(*) FROM ship_targets")).scalar() == 1
+
+    def test_unknown_only_table_returns_error_and_never_touches_a_db(self, monkeypatch):
+        """--only naming no real table is rejected before DatabaseConfig is
+        even constructed, so leaving DatabaseConfig unpatched here is itself
+        the assertion that nothing was written or pushed."""
+        module = _load_seed_new_market_module()
+        monkeypatch.setattr(sys, "argv", [
+            "seed_new_market.py", "--source=src", "--dest=dest",
+            "--only=not_a_real_table", "--apply",
+        ])
+
+        rc = module.main()
+
+        assert rc == 2
+
+    def test_push_failure_fails_the_command(self, tmp_path, monkeypatch, fake_db_factory, capsys):
+        module = _load_seed_new_market_module()
+
+        src = fake_db_factory(tmp_path / "src.db", alias="src")
+        dest = fake_db_factory(tmp_path / "dest.db", alias="dest")
+        _seed_watchlist_schema(src.engine)
+        with src.engine.begin() as conn:
+            conn.execute(_INSERT_WATCHLIST_ROW, {
+                "type_id": 34, "group_id": 18, "type_name": "Tritanium",
+                "group_name": "Mineral", "category_id": 4, "category_name": "Material",
+            })
+
+        def boom():
+            raise RuntimeError("turso unreachable")
+        dest.push = boom
+
+        rc = self._run(
+            module, monkeypatch, tmp_path,
+            ["--source=src", "--dest=dest", "--only=watchlist", "--apply"],
+            {"src": src, "dest": dest},
+        )
+
+        assert rc == 1, "a push failure must fail the command"
+        captured = capsys.readouterr()
+        assert "PUSH FAILED" in captured.out, (
+            "push() must actually have been called and raised for this test to be meaningful"
+        )
+        # The local write already committed before the push that reports failure.
+        with dest.engine.connect() as conn:
+            assert conn.execute(
+                text("SELECT count(*) FROM watchlist WHERE type_id = 34")
+            ).scalar() == 1

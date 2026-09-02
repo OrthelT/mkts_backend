@@ -391,13 +391,10 @@ def _register_all(reg: CommandRegistry) -> None:
                         print("  ship_targets updated")
 
             if not dry_run:
-                from mkts_backend.config.db_config import DatabaseConfig
+                from mkts_backend.cli_tools.push import push_or_log
 
                 for touched_alias in sorted(touched_aliases):
-                    try:
-                        DatabaseConfig(touched_alias).push()
-                    except Exception as exc:
-                        print(f"Error: push failed for {touched_alias}: {exc}")
+                    if not push_or_log(touched_alias):
                         return False
 
             return True

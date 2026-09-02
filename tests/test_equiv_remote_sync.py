@@ -5,7 +5,7 @@ Regression coverage for the removal of ``sync_equiv_to_remote``.
 deleted and reinserted that same local table through ``remote_engine`` (an
 alias of ``engine`` under pyturso) and never pushed. It was a fake stand-in
 for a push that now exists — see ``equiv_manager.py``'s market loops, which
-call ``DatabaseConfig(market_context=...).push()`` after each write
+call ``push_or_log(alias)`` after each write
 (``tests/test_management_push.py::TestEquivPush``).
 """
 

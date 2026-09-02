@@ -67,6 +67,7 @@ from mkts_backend.utils.parse_fits import (
     get_doctrine_ids_for_fit,
 )
 from mkts_backend.cli_tools.prompter import get_multiline_input
+from mkts_backend.cli_tools.push import push_or_log
 from mkts_backend.utils.db_utils import add_missing_items_to_watchlist
 
 logger = configure_logging(__name__)
@@ -604,12 +605,7 @@ def interactive_add_fit(
                     )
 
         for touched_alias in sorted(touched_aliases):
-            try:
-                DatabaseConfig(touched_alias).push()
-            except Exception as e:
-                console.print(
-                    f"[red]Push failed for {touched_alias}: {e}[/red]"
-                )
+            if not push_or_log(touched_alias):
                 return False
 
         return True
@@ -1482,11 +1478,7 @@ def _execute_market_plan(
     # same alias) stay queued locally for a later command to push.
     pushed_ok = True
     for alias in sorted(touched - failed):
-        try:
-            DatabaseConfig(alias).push()
-        except Exception as exc:
-            logger.error(f"{alias}: push failed: {exc}")
-            console.print(f"[red]Push failed for {alias}: {exc}[/red]")
+        if not push_or_log(alias):
             pushed_ok = False
 
     counters["push_failed"] = not pushed_ok
@@ -1775,10 +1767,7 @@ def create_doctrine_command(
             remote=remote,
         )
         if success:
-            try:
-                DatabaseConfig("fittings").push()
-            except Exception as e:
-                console.print(f"[red]Push failed for fittings: {e}[/red]")
+            if not push_or_log("fittings"):
                 return False
             console.print(
                 f"[green]Successfully created doctrine {
@@ -2243,11 +2232,7 @@ def doctrine_add_fit_command(
     # alias whose bucket raised (see _execute_market_plan for the same shape).
     pushed_ok = True
     for alias in sorted(touched - failed):
-        try:
-            DatabaseConfig(alias).push()
-        except Exception as exc:
-            logger.error(f"{alias}: push failed: {exc}")
-            console.print(f"[red]Push failed for {alias}: {exc}[/red]")
+        if not push_or_log(alias):
             pushed_ok = False
 
     # Per-fit success reporting
@@ -2399,18 +2384,11 @@ def remove_fit_command(
 
         # Push the market-side writes (steps 1, 2, 3, 5); push the shared
         # fittings db too, but only when a link actually changed (step 4).
-        try:
-            DatabaseConfig(db_alias).push()
-        except Exception as e:
-            console.print(f"[red]Push failed for {db_alias}: {e}[/red]")
+        if not push_or_log(db_alias):
             return False
 
-        if links_removed > 0:
-            try:
-                DatabaseConfig("fittings").push()
-            except Exception as e:
-                console.print(f"[red]Push failed for fittings: {e}[/red]")
-                return False
+        if links_removed > 0 and not push_or_log("fittings"):
+            return False
 
         console.print()
         console.print(
@@ -2524,11 +2502,7 @@ def update_lead_ship_command(
     # alias whose bucket raised (see _execute_market_plan for the same shape).
     pushed_ok = True
     for alias in sorted(touched - failed):
-        try:
-            DatabaseConfig(alias).push()
-        except Exception as exc:
-            logger.error(f"{alias}: push failed: {exc}")
-            console.print(f"[red]Push failed for {alias}: {exc}[/red]")
+        if not push_or_log(alias):
             pushed_ok = False
 
     return successes > 0 and failures == 0 and pushed_ok
@@ -2827,10 +2801,7 @@ def doctrine_remove_fit_command(
         console.print(f"[red]Failed to remove {fail_count} fit(s)[/red]")
 
     for alias in sorted(touched_aliases):
-        try:
-            DatabaseConfig(alias).push()
-        except Exception as e:
-            console.print(f"[red]Push failed for {alias}: {e}[/red]")
+        if not push_or_log(alias):
             return False
 
     return success_count > 0
@@ -2922,7 +2893,8 @@ def _update_target_single(
             remote=remote, db_alias=db_alias,
         )
 
-        db.push()
+        if not push_or_log(db_alias):
+            return False
 
         console.print(
             f"[green]Updated target for fit {fit_id} from [yellow]{existing_target}[/yellow] "
@@ -2959,10 +2931,7 @@ def update_friendly_name_command(
             continue
 
         console.print(f"[green]Updated friendly_name for doctrine_id {doctrine_id} to '{friendly_name}' ({alias})[/green]")
-        try:
-            DatabaseConfig(alias).push()
-        except Exception as e:
-            console.print(f"[red]Push failed for {alias}: {e}[/red]")
+        if not push_or_log(alias):
             return False
         any_success = True
 
@@ -3001,10 +2970,7 @@ def populate_friendly_names_command(
         console.print(f"[green]Updated {count} rows ({alias})[/green]")
         if count <= 0:
             continue
-        try:
-            DatabaseConfig(alias).push()
-        except Exception as e:
-            console.print(f"[red]Push failed for {alias}: {e}[/red]")
+        if not push_or_log(alias):
             return False
         any_success = True
 
@@ -3187,12 +3153,7 @@ def fit_update_command(
                     console.print(f"Items: {len(result['items'])}")
                 else:
                     for touched_alias in sorted(touched_aliases):
-                        try:
-                            DatabaseConfig(touched_alias).push()
-                        except Exception as e:
-                            console.print(
-                                f"[red]Push failed for {touched_alias}: {e}[/red]"
-                            )
+                        if not push_or_log(touched_alias):
                             return False
                     console.print(
                         f"[green]Successfully added fit {
@@ -3297,12 +3258,7 @@ def fit_update_command(
                 console.print(f"Items: {len(result['items'])}")
             else:
                 for touched_alias in sorted(touched_aliases):
-                    try:
-                        DatabaseConfig(touched_alias).push()
-                    except Exception as e:
-                        console.print(
-                            f"[red]Push failed for {touched_alias}: {e}[/red]"
-                        )
+                    if not push_or_log(touched_alias):
                         return False
                 display_names = []
                 for a in aliases:

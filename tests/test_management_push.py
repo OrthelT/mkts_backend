@@ -8,14 +8,17 @@ leave the machine.
 
 Audit mapping table (Phase 4 — "one push() per logical write transaction")
 ============================================================================
-Built from `rg -n "commit\\(|\\.begin\\(|\\.push\\(|remote_engine" src/mkts_backend`
-on 2026-08-26 (final-migration worktree). Line numbers drift; re-run the audit
-rather than trusting them.
+Built from
+`rg -n "commit\\(|\\.begin\\(|\\.push\\(|push_or_log|remote_engine" src/mkts_backend`
+on 2026-08-26 (final-migration worktree), re-run on 2026-09-02 after the CLI
+push blocks collapsed onto ``cli_tools/push.py``'s ``push_or_log(alias)`` —
+a writer with neither a ``push_or_log`` call nor a direct ``.push()`` is still
+a finding. Line numbers drift; re-run the audit rather than trusting them.
 
 | Public CLI (registry name)      | Final write location(s)                          | Touched aliases                     | Existing internal push()?              | Intended push boundary / status                  |
 |----------------------------------|---------------------------------------------------|--------------------------------------|------------------------------------------|----------------------------------------------------|
 | `add_watchlist`                  | `db_utils.add_missing_items_to_watchlist` (via `db.engine`, conn.commit()) | one market alias per invocation, e.g. `wcmktnewkeeptest` | none | **Task 7 (this task)**: push once per touched alias in `add_watchlist.py`'s market loop, after `process_add_watchlist()` succeeds |
-| `equiv add` / `equiv remove`     | `equiv_handlers.py` (`db.engine.begin()`), then `sync_equiv_to_remote()` deletes+reinserts via `remote_engine` (no push) | every configured market (`_equiv_add_all` / `_equiv_remove_all`) | none (fake local-only "sync") | **Task 8 (this task)**: deleted `sync_equiv_to_remote` and its 3 call sites (`add_equiv_group` x2, `remove_equiv_group` x1); added `DatabaseConfig(market_context=...).push()` after each market's write in all three loops that call `add_equiv_group`/`remove_equiv_group` — `_equiv_add_all` (`--all`/default), `_equiv_remove_all` (`--all`/default), and `_equiv_find`'s `--add` branch (single-market via `--market=` or default-all) — the third loop was not named in the brief but writes through the same handlers and was found by the `rg` audit below |
+| `equiv add` / `equiv remove`     | `equiv_handlers.py` (`db.engine.begin()`), then `sync_equiv_to_remote()` deletes+reinserts via `remote_engine` (no push) | every configured market (`_equiv_add_all` / `_equiv_remove_all`) | none (fake local-only "sync") | **Task 8 (this task)**: deleted `sync_equiv_to_remote` and its 3 call sites (`add_equiv_group` x2, `remove_equiv_group` x1); added a push after each market's write (`push_or_log(alias)` since Task 24) in all three loops that call `add_equiv_group`/`remove_equiv_group` — `_equiv_add_all` (`--all`/default), `_equiv_remove_all` (`--all`/default), and `_equiv_find`'s `--add` branch (single-market via `--market=` or default-all) — the third loop was not named in the brief but writes through the same handlers and was found by the `rg` audit below |
 | `equiv find <id> --add`          | `equiv_handlers.py add_equiv_group` via `equiv_manager._equiv_find`'s `do_add` branch (`equiv_manager.py:270-280`) | target markets from `--market=` or all (same `_get_target_markets` default as add/remove) | none (same fake sync as above, now deleted) | **Task 8 (this task)**: single-market/all-market audit finding — pushes now added at this loop too |
 | `fit-update add` / `update-fit` (shared `fittings` writes via `update_fit_workflow`) | `parse_fits.py`'s `update_fit_workflow` (writes `fittings` + one market replica per call); also calls `add_missing_items_to_watchlist` | shared `fittings` + the resolved target market alias, once per CLI invocation | none | **Task 9 (this task)**: `update_fit_workflow` never pushes itself — it takes an optional `touched_aliases: set` accumulator and adds `"fittings"` and its resolved `target_alias` on success (never on a dry run). Every outer caller (`interactive_add_fit`, `fit_update_command`'s `add` and `update` subcommands in `fit_update.py`, and `command_registry.py`'s `update-fit` handler) owns one set for its whole invocation, threads it through every workflow call, and pushes each distinct alias once at the end (skipped entirely on `--dry-run`; a push failure fails the command). Standalone `create_doctrine_command` pushes `"fittings"` once after `create_doctrine()` succeeds. A source-scan test (`TestUpdateFitWorkflowCallSiteCoverage`) asserts every `update_fit_workflow(` call site passes `touched_aliases=`. Two dead unreachable wrappers, `update_existing_fit`/`update_fit` in `parse_fits.py` (no callers anywhere in `src`/`tests`), were deleted rather than plumbed, per the "minimize codebase size" standing preference. |
 | `fit-update update-target` / `update-friendly-name` / `populate-friendly-names` / `remove` / `doctrine-remove-fit` | `fit_update.py` (many `engine.begin()` / session.commit() sites); also calls `add_missing_items_to_watchlist` at `fit_update.py:1086` (`_prepare_watchlist_for_fit`) | target market alias (`--market`/`--db-alias`) | none | Task 10 — not implemented here; `add_missing_items_to_watchlist`'s push stays at the *command* boundary, not inside the writer, so fit-update's own push (when added) must not double-push |
@@ -162,11 +165,10 @@ _EQUIV_TABLE_SQL = (
 def _equiv_dbs_factory(tmp_path, fake_db_factory, dbs):
     """Build a ``DatabaseConfig``-shaped factory keyed by database_alias.
 
-    Both ``equiv_handlers._get_db`` (called with ``market_context=``) and the
-    push call in ``equiv_manager``'s market loops (also called with
-    ``market_context=``) resolve to the SAME cached fake db per alias, so a
-    write made through the handler and the push made through the command
-    loop land on one in-memory sqlite file.
+    Both ``equiv_handlers._get_db`` (called with ``market_context=``) and
+    ``push_or_log`` (called with the database alias) resolve to the SAME
+    cached fake db per alias, so a write made through the handler and the
+    push made through the command loop land on one in-memory sqlite file.
     """
     def factory(alias=None, market_context=None):
         key = alias or market_context.database_alias
@@ -194,7 +196,7 @@ class TestEquivPush:
         factory = _equiv_dbs_factory(tmp_path, fake_db_factory, dbs)
 
         monkeypatch.setattr(equiv_handlers, "DatabaseConfig", factory)
-        monkeypatch.setattr(equiv_manager, "DatabaseConfig", factory)
+        monkeypatch.setattr("mkts_backend.cli_tools.push.DatabaseConfig", factory)
         monkeypatch.setattr(equiv_handlers, "resolve_type_name", lambda tid: f"Module {tid}")
         monkeypatch.setattr(equiv_manager, "resolve_type_name", lambda tid: f"Module {tid}")
 
@@ -231,7 +233,7 @@ class TestEquivPush:
         broken.push = boom
 
         monkeypatch.setattr(equiv_handlers, "DatabaseConfig", factory)
-        monkeypatch.setattr(equiv_manager, "DatabaseConfig", factory)
+        monkeypatch.setattr("mkts_backend.cli_tools.push.DatabaseConfig", factory)
         monkeypatch.setattr(equiv_handlers, "resolve_type_name", lambda tid: f"Module {tid}")
         monkeypatch.setattr(equiv_manager, "resolve_type_name", lambda tid: f"Module {tid}")
 
@@ -263,7 +265,7 @@ class TestEquivPush:
         factory = _equiv_dbs_factory(tmp_path, fake_db_factory, dbs)
 
         monkeypatch.setattr(equiv_handlers, "DatabaseConfig", factory)
-        monkeypatch.setattr(equiv_manager, "DatabaseConfig", factory)
+        monkeypatch.setattr("mkts_backend.cli_tools.push.DatabaseConfig", factory)
         monkeypatch.setattr(equiv_handlers, "resolve_type_name", lambda tid: f"Module {tid}")
         monkeypatch.setattr(equiv_manager, "resolve_type_name", lambda tid: f"Module {tid}")
         monkeypatch.setattr(
@@ -297,7 +299,7 @@ class TestEquivPush:
         factory = _equiv_dbs_factory(tmp_path, fake_db_factory, dbs)
 
         monkeypatch.setattr(equiv_handlers, "DatabaseConfig", factory)
-        monkeypatch.setattr(equiv_manager, "DatabaseConfig", factory)
+        monkeypatch.setattr("mkts_backend.cli_tools.push.DatabaseConfig", factory)
         monkeypatch.setattr(equiv_handlers, "resolve_type_name", lambda tid: f"Module {tid}")
         monkeypatch.setattr(equiv_manager, "resolve_type_name", lambda tid: f"Module {tid}")
         monkeypatch.setattr(
@@ -468,13 +470,16 @@ def _patch_fittings_workflow_dbs(monkeypatch, factory) -> None:
     module top, so a class patch anywhere else does not reach an
     already-bound name in another module's namespace — each must be patched
     individually, same reasoning as ``TestEquivPush``'s
-    equiv_handlers/equiv_manager double-patch.
+    equiv_handlers/push double-patch. ``cli_tools.push`` is where every CLI
+    push now resolves its DatabaseConfig, so a fake patched only onto a
+    writer module would leave the push unintercepted.
     """
     monkeypatch.setattr("mkts_backend.utils.parse_fits.DatabaseConfig", factory)
     monkeypatch.setattr("mkts_backend.utils.doctrine_update.DatabaseConfig", factory)
     monkeypatch.setattr("mkts_backend.utils.get_type_info.DatabaseConfig", factory)
     monkeypatch.setattr("mkts_backend.utils.db_utils.DatabaseConfig", factory)
     monkeypatch.setattr("mkts_backend.cli_tools.fit_update.DatabaseConfig", factory)
+    monkeypatch.setattr("mkts_backend.cli_tools.push.DatabaseConfig", factory)
     monkeypatch.setattr("mkts_backend.config.db_config.DatabaseConfig", factory)
 
 
@@ -670,6 +675,7 @@ class TestDoctrinePush:
         dbs = {}
         factory = self._target_dbs_factory(tmp_path, fake_db_factory, dbs)
         monkeypatch.setattr(fit_update, "DatabaseConfig", factory)
+        monkeypatch.setattr("mkts_backend.cli_tools.push.DatabaseConfig", factory)
         monkeypatch.setattr("mkts_backend.utils.doctrine_update.DatabaseConfig", factory)
 
         db = factory(alias="wcmktnewkeeptest")
@@ -704,6 +710,7 @@ class TestDoctrinePush:
         dbs = {}
         factory = self._target_dbs_factory(tmp_path, fake_db_factory, dbs)
         monkeypatch.setattr(fit_update, "DatabaseConfig", factory)
+        monkeypatch.setattr("mkts_backend.cli_tools.push.DatabaseConfig", factory)
         monkeypatch.setattr("mkts_backend.utils.doctrine_update.DatabaseConfig", factory)
 
         db = factory(alias="wcmktnewkeeptest")
@@ -770,6 +777,7 @@ class TestDoctrinePush:
             return dbs[key]
 
         monkeypatch.setattr(fit_update, "DatabaseConfig", factory)
+        monkeypatch.setattr("mkts_backend.cli_tools.push.DatabaseConfig", factory)
         monkeypatch.setattr("mkts_backend.utils.doctrine_update.DatabaseConfig", factory)
 
         update_calls: list[str] = []
@@ -834,6 +842,7 @@ class TestDoctrinePush:
             return dbs[key]
 
         monkeypatch.setattr(fit_update, "DatabaseConfig", factory)
+        monkeypatch.setattr("mkts_backend.cli_tools.push.DatabaseConfig", factory)
         monkeypatch.setattr("mkts_backend.utils.doctrine_update.DatabaseConfig", factory)
 
         json_path = tmp_path / "doctrine_names.json"
@@ -906,6 +915,7 @@ class TestDoctrinePush:
         dbs = {}
         factory = self._doctrine_remove_dbs_factory(tmp_path, fake_db_factory, dbs)
         monkeypatch.setattr(fit_update, "DatabaseConfig", factory)
+        monkeypatch.setattr("mkts_backend.cli_tools.push.DatabaseConfig", factory)
         monkeypatch.setattr("mkts_backend.utils.doctrine_update.DatabaseConfig", factory)
         monkeypatch.setattr("mkts_backend.utils.parse_fits.DatabaseConfig", factory)
         monkeypatch.setattr("mkts_backend.cli_tools.fit_update.Confirm.ask", lambda *a, **k: True)
@@ -963,6 +973,7 @@ class TestDoctrinePush:
         dbs = {}
         factory = self._doctrine_remove_dbs_factory(tmp_path, fake_db_factory, dbs)
         monkeypatch.setattr(fit_update, "DatabaseConfig", factory)
+        monkeypatch.setattr("mkts_backend.cli_tools.push.DatabaseConfig", factory)
         monkeypatch.setattr("mkts_backend.utils.doctrine_update.DatabaseConfig", factory)
         monkeypatch.setattr("mkts_backend.utils.parse_fits.DatabaseConfig", factory)
         monkeypatch.setattr("mkts_backend.cli_tools.fit_update.Confirm.ask", lambda *a, **k: True)
@@ -1024,6 +1035,7 @@ class TestDoctrinePush:
         dbs = {}
         factory = self._doctrine_remove_dbs_factory(tmp_path, fake_db_factory, dbs)
         monkeypatch.setattr(fit_update, "DatabaseConfig", factory)
+        monkeypatch.setattr("mkts_backend.cli_tools.push.DatabaseConfig", factory)
         monkeypatch.setattr("mkts_backend.utils.doctrine_update.DatabaseConfig", factory)
         monkeypatch.setattr("mkts_backend.utils.parse_fits.DatabaseConfig", factory)
 
@@ -1173,6 +1185,7 @@ class TestMultiAliasPush:
         dbs = {}
         factory = self._plan_dbs_factory(tmp_path, fake_db_factory, dbs)
         monkeypatch.setattr(fit_update, "DatabaseConfig", factory)
+        monkeypatch.setattr("mkts_backend.cli_tools.push.DatabaseConfig", factory)
         self._patch_flag_and_aliases(
             monkeypatch, fit_update,
             flag_map={"flagA": {"aliasA"}, "flagB": {"aliasB"}},
@@ -1217,6 +1230,7 @@ class TestMultiAliasPush:
         dbs = {}
         factory = self._plan_dbs_factory(tmp_path, fake_db_factory, dbs)
         monkeypatch.setattr(fit_update, "DatabaseConfig", factory)
+        monkeypatch.setattr("mkts_backend.cli_tools.push.DatabaseConfig", factory)
         self._patch_flag_and_aliases(
             monkeypatch, fit_update,
             flag_map={"flagA": {"aliasA"}, "flagB": {"aliasB"}},
@@ -1267,6 +1281,7 @@ class TestMultiAliasPush:
         dbs = {}
         factory = self._plan_dbs_factory(tmp_path, fake_db_factory, dbs)
         monkeypatch.setattr(fit_update, "DatabaseConfig", factory)
+        monkeypatch.setattr("mkts_backend.cli_tools.push.DatabaseConfig", factory)
         self._patch_flag_and_aliases(
             monkeypatch, fit_update,
             flag_map={},
@@ -1334,6 +1349,7 @@ class TestMultiAliasPush:
         dbs = {}
         factory = self._plan_dbs_factory(tmp_path, fake_db_factory, dbs)
         monkeypatch.setattr(fit_update, "DatabaseConfig", factory)
+        monkeypatch.setattr("mkts_backend.cli_tools.push.DatabaseConfig", factory)
         self._patch_flag_and_aliases(
             monkeypatch, fit_update,
             flag_map={"flagA": {"aliasA"}, "flagB": {"aliasB"}},
@@ -1391,6 +1407,7 @@ class TestMultiAliasPush:
         dbs = {}
         factory = self._plan_dbs_factory(tmp_path, fake_db_factory, dbs)
         monkeypatch.setattr(fit_update, "DatabaseConfig", factory)
+        monkeypatch.setattr("mkts_backend.cli_tools.push.DatabaseConfig", factory)
         self._patch_flag_and_aliases(
             monkeypatch, fit_update,
             flag_map={"flagA": {"aliasA"}},
@@ -1440,6 +1457,7 @@ class TestDoctrineAddFitPush:
     def _patch_common(self, monkeypatch, fit_update, dbs, tmp_path, fake_db_factory):
         factory = self._bare_dbs_factory(tmp_path, fake_db_factory, dbs)
         monkeypatch.setattr(fit_update, "DatabaseConfig", factory)
+        monkeypatch.setattr("mkts_backend.cli_tools.push.DatabaseConfig", factory)
         monkeypatch.setattr(
             fit_update, "_configured_market_db_aliases",
             lambda *a, **k: ["aliasA", "aliasB"],
@@ -1545,6 +1563,7 @@ class TestUpdateLeadShipPush:
     def _patch_common(self, monkeypatch, fit_update, dbs, tmp_path, fake_db_factory):
         factory = self._bare_dbs_factory(tmp_path, fake_db_factory, dbs)
         monkeypatch.setattr(fit_update, "DatabaseConfig", factory)
+        monkeypatch.setattr("mkts_backend.cli_tools.push.DatabaseConfig", factory)
         monkeypatch.setattr(
             fit_update, "_configured_market_db_aliases",
             lambda *a, **k: ["aliasA", "aliasB"],

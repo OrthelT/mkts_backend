@@ -286,7 +286,7 @@ uv run mkts-backend equiv remove --id=1
 **Notes:**
 - `add` and `remove` operate on **all markets by default**; use `--market=<alias>` for one market
 - `find` uses SDE attribute fingerprinting (`dgmTypeAttributes` table) to identify identical modules
-- After changes, sync to remote: `uv run mkts-backend sync`
+- `add`, `remove`, and `find --add` push each affected market's replica to Turso automatically — no follow-up `sync` needed (`sync` is a pull, not a push)
 
 ### sync - Database Sync
 

@@ -38,8 +38,8 @@ class TestDatabaseWriteIsolation:
             "min_price": [95.0]
         })
 
-        primary_db_path = temp_db_dir / "wcmktprod.db"
-        deployment_db_path = temp_db_dir / "wcmktnorth2.db"
+        primary_db_path = temp_db_dir / "primary_market.db"
+        deployment_db_path = temp_db_dir / "deployment_market.db"
 
         primary_engine = create_engine(f"sqlite:///{primary_db_path}")
         Base.metadata.create_all(primary_engine)
@@ -99,7 +99,6 @@ class TestFunctionSignatures:
             "get_market_history",
             "get_market_orders",
             "get_market_stats",
-            "get_remote_status",
             "get_doctrine_stats",
             "get_table_length",
             "get_watchlist_ids",

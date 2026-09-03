@@ -3,18 +3,14 @@
 Reads rows from a Google Sheet (or a local CSV for testing), derives a few
 columns (structure_type_id, and when absent from the sheet, system_id /
 region / region_id), prints a diff against the current ``structures``
-table, and upserts new + changed rows to the Turso remote and the local
-mirror.
+table, and upserts new + changed rows to the local replica, then pushes
+to Turso.
 
 Flags
 -----
 ``--sheet-url=URL``    Override the sheet URL from ``settings.toml [buildcost]``.
 ``--worksheet=NAME``   Worksheet title (defaults to the first sheet).
 ``--file=PATH``        Read from a local CSV instead of Google Sheets (testing).
-``--local``            Only update the local buildcost.db (skip Turso remote).
-                       Mutually exclusive with ``--remote-only``.
-``--remote-only``      Only update the Turso remote (skip local mirror).
-                       Mutually exclusive with ``--local``.
 ``--dry-run``          Print the diff only, make no writes.
 ``--yes``              Skip the confirm prompt (for scripted use).
 """
@@ -63,12 +59,6 @@ def add_structure(args: list[str], market_alias: str = "primary") -> bool:
     csv_file = p.get_string("file")
     skip_confirm = p.has_flag("yes")
     dry_run = p.has_flag("dry-run")
-    local_only = p.has_flag("local")
-    remote_only = p.has_flag("remote-only")
-
-    if local_only and remote_only:
-        print("Error: --local and --remote-only are mutually exclusive")
-        return False
 
     buildcost_cfg = SettingsService().settings_dict.get("buildcost", {})
     if sheet_url is None:
@@ -141,50 +131,26 @@ def add_structure(args: list[str], market_alias: str = "primary") -> bool:
     rows_to_write = _concat_new_and_changed(diff)
 
     # ── 5. Write ───────────────────────────────────────────────
-    # Track remote/local separately so we can tell the user exactly which
-    # side committed — otherwise a one-sided success (e.g. Turso wrote but
-    # local failed) looks like total failure from the exit code alone.
-    remote_attempted = not local_only
-    local_attempted = not remote_only
-    remote_ok: bool | None = None
-    local_ok: bool | None = None
+    # Under pyturso, engine and remote_engine are the same local replica —
+    # there is no separate direct-to-cloud connection. Write once, then push
+    # to reach Turso.
+    try:
+        count = upsert_structures(local_db.engine, rows_to_write)
+        print(f"Wrote {count} rows to {local_db.path}.")
+        logger.info(f"Upsert complete: {count} rows; ids={list(rows_to_write['structure_id'])}")
+    except Exception as e:
+        logger.exception("Upsert failed")
+        print(f"Error writing structures: {e}")
+        return False
 
-    if remote_attempted:
-        try:
-            count = upsert_structures(local_db.remote_engine, rows_to_write)
-            print(f"Remote (Turso): wrote {count} rows.")
-            logger.info(f"Remote upsert complete: {count} rows; ids={list(rows_to_write['structure_id'])}")
-            remote_ok = True
-        except Exception as e:
-            logger.exception("Remote upsert failed")
-            print(f"Error writing to Turso remote: {e}")
-            remote_ok = False
+    try:
+        local_db.push()
+    except Exception as e:
+        logger.exception("Push to Turso failed")
+        print(f"Error pushing to Turso: {e}")
+        return False
 
-    if local_attempted:
-        try:
-            count = upsert_structures(local_db.engine, rows_to_write)
-            print(f"Local ({local_db.path}): wrote {count} rows.")
-            logger.info(f"Local upsert complete: {count} rows; ids={list(rows_to_write['structure_id'])}")
-            local_ok = True
-        except Exception as e:
-            logger.exception("Local upsert failed")
-            print(f"Error writing to local DB: {e}")
-            local_ok = False
-
-    # Surface partial-success explicitly — the scariest outcome is a silent
-    # divergence between Turso and local.
-    if remote_ok is True and local_ok is False:
-        print(
-            "WARNING: Turso remote was updated but local write failed. "
-            "Re-run with --local after fixing the local issue to re-sync."
-        )
-    elif remote_ok is False and local_ok is True:
-        print(
-            "WARNING: local was updated but Turso remote write failed. "
-            "Re-run with --remote-only after fixing credentials/connectivity."
-        )
-
-    return (remote_ok is not False) and (local_ok is not False)
+    return True
 
 
 def _concat_new_and_changed(diff):
@@ -241,14 +207,14 @@ def _ensure_buildcost_ready(db: DatabaseConfig) -> bool:
         return False
 
     print(f"buildcost.db needs initializing; syncing from {db.turso_url} ...")
-    # Remove empty stub file so libsql's sync_url flow initializes cleanly.
-    from pathlib import Path as _P
-    stub = _P(db.path)
+    # Remove empty stub file so a leftover 0-byte create doesn't mask "no
+    # such table" errors as something more mysterious.
+    stub = Path(db.path)
     if stub.exists() and stub.stat().st_size == 0:
         stub.unlink()
-    info_stub = _P(f"{db.path}-info")
-    if info_stub.exists() and info_stub.stat().st_size == 0:
-        info_stub.unlink()
+    if not db.heal_metadata():
+        print("Error: buildcost.db metadata could not be healed.")
+        return False
 
     try:
         db.sync()

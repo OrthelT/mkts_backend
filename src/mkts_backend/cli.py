@@ -66,15 +66,21 @@ def process_market_orders(
         try:
             expires_dt = parsedate_to_datetime(expires_str)
             if datetime.now(timezone.utc) < expires_dt:
-                logger.info(f"Market orders cache valid until {expires_str}, skipping fetch")
+                logger.info(
+                    f"Market orders cache valid until {expires_str}, skipping fetch"
+                )
                 return True
         except (ValueError, TypeError) as e:
-            logger.warning(f"Invalid Expires value in orders cache: {expires_str!r} ({e}), proceeding with fetch")
+            logger.warning(
+                f"Invalid Expires value in orders cache: {expires_str!r} ({e}), proceeding with fetch"
+            )
 
     # Layer 2: Per-page etag check
     page_etags = cache.get("pages", {})
     result = fetch_market_orders(
-        esi, order_type=order_type, page_etags=page_etags if page_etags else None,
+        esi,
+        order_type=order_type,
+        page_etags=page_etags if page_etags else None,
         test_mode=test_mode,
     )
 
@@ -96,7 +102,7 @@ def process_market_orders(
         logger.info(f"ESI returned {len(data)} market orders. Saved to {save_path}")
         status = update_market_orders(data, market_ctx=market_ctx)
         if status:
-            log_update("marketorders", remote=True, market_ctx=market_ctx)
+            log_update("marketorders", market_ctx=market_ctx)
             logger.info(
                 f"Orders updated:{get_table_length('marketorders', market_ctx=market_ctx)} items"
             )
@@ -130,7 +136,7 @@ def process_history(market_ctx: Optional[MarketContext] = None) -> bool:
                 json.dump(data_with_content, f)
         status = update_history(data, market_ctx=market_ctx)
         if status:
-            log_update("market_history", remote=True, market_ctx=market_ctx)
+            log_update("market_history", market_ctx=market_ctx)
             logger.info(
                 f"History updated:{get_table_length('market_history', market_ctx=market_ctx)} items"
             )
@@ -142,22 +148,6 @@ def process_history(market_ctx: Optional[MarketContext] = None) -> bool:
 
 def process_market_stats(market_ctx: Optional[MarketContext] = None) -> bool:
     logger.info("Calculating market stats")
-    logger.info("syncing database")
-    db = (
-        DatabaseConfig(market_context=market_ctx)
-        if market_ctx
-        else DatabaseConfig("wcmkt")
-    )
-    db.sync()
-    logger.info("database synced")
-    logger.info("validating database")
-    validation_test = db.validate_sync()
-    if validation_test:
-        logger.info("database validated")
-    else:
-        logger.error("database validation failed")
-        raise Exception("database validation failed in market stats")
-
     try:
         market_stats_df = calculate_market_stats(market_ctx=market_ctx)
         if len(market_stats_df) > 0:
@@ -188,7 +178,7 @@ def process_market_stats(market_ctx: Optional[MarketContext] = None) -> bool:
         logger.info("Updating market stats in database")
         status = upsert_database(MarketStats, market_stats_df, market_ctx=market_ctx)
         if status:
-            log_update("marketstats", remote=True, market_ctx=market_ctx)
+            log_update("marketstats", market_ctx=market_ctx)
             logger.info(
                 f"Market stats updated:{get_table_length('marketstats', market_ctx=market_ctx)} items"
             )
@@ -202,27 +192,11 @@ def process_market_stats(market_ctx: Optional[MarketContext] = None) -> bool:
 
 def process_doctrine_stats(market_ctx: Optional[MarketContext] = None) -> bool:
     logger.info("Calculating doctrines stats")
-    logger.info("syncing database")
-    db = (
-        DatabaseConfig(market_context=market_ctx)
-        if market_ctx
-        else DatabaseConfig("wcmkt")
-    )
-    db.sync()
-    logger.info("database synced")
-    logger.info("validating database")
-    validation_test = db.validate_sync()
-    if validation_test:
-        logger.info("database validated")
-    else:
-        logger.error("database validation failed")
-        raise Exception("database validation failed in doctrines stats")
-
     doctrine_stats_df = calculate_doctrine_stats(market_ctx=market_ctx)
     doctrine_stats_df = convert_datetime_columns(doctrine_stats_df, ["timestamp"])
     status = upsert_database(Doctrines, doctrine_stats_df, market_ctx=market_ctx)
     if status:
-        log_update("doctrines", remote=True, market_ctx=market_ctx)
+        log_update("doctrines", market_ctx=market_ctx)
         logger.info(
             f"Doctrines updated:{get_table_length('doctrines', market_ctx=market_ctx)} items"
         )
@@ -275,13 +249,9 @@ def update_google_sheet(
 
 
 def _ensure_jita_prices_table(market_ctx: MarketContext) -> None:
-    """Create the jita_prices table on the remote DB if it doesn't exist."""
+    """Create the jita_prices table on the local DB if it doesn't exist."""
     db = DatabaseConfig(market_context=market_ctx)
-    engine = db.remote_engine
-    try:
-        JitaPrices.__table__.create(engine, checkfirst=True) # pyright: ignore[reportAttributeAccessIssue]
-    finally:
-        engine.dispose()
+    JitaPrices.__table__.create(db.engine, checkfirst=True) # pyright: ignore[reportAttributeAccessIssue]
 
 
 def process_jita_prices(market_contexts: list[MarketContext]) -> bool:
@@ -316,11 +286,11 @@ def process_jita_prices(market_contexts: list[MarketContext]) -> bool:
     any_success = False
     for ctx in market_contexts:
         try:
-            # Ensure table exists on remote (first run won't have it)
+            # Ensure table exists locally (first run won't have it)
             _ensure_jita_prices_table(ctx)
             status = upsert_database(JitaPrices, df, market_ctx=ctx)
             if status:
-                log_update("jita_prices", remote=True, market_ctx=ctx)
+                log_update("jita_prices", market_ctx=ctx)
                 logger.info(f"Jita prices updated for {ctx.alias}: {len(df)} items")
                 any_success = True
             else:
@@ -352,19 +322,6 @@ def _run_market_pipeline(
     esi = ESIConfig(market_context=market_ctx)
     db = DatabaseConfig(market_context=market_ctx)
     logger.info(f"Database: {db.alias} ({db.path})")
-
-    # Validate and sync database
-    validation_test = db.validate_sync()
-    if not validation_test:
-        logger.warning(f"{db.alias} database is not up to date. Syncing...")
-        db.sync()
-        logger.debug("database synced")
-        validation_test = db.validate_sync()
-        if validation_test:
-            logger.debug("database validated")
-        else:
-            logger.error("database validation failed")
-            raise Exception(f"database validation failed for {db.alias}")
 
     if not QUIET:
         print("=" * 80)
@@ -417,6 +374,9 @@ def _run_market_pipeline(
     else:
         logger.error("Failed to update doctrines")
         exit()
+
+    logger.info(f"Market update complete for {market_ctx.alias}; pushing local changes")
+    db.push()
 
     env = SettingsService().environment
 
@@ -473,7 +433,9 @@ def run_market_update(history: bool = False, market_alias: str = "all") -> bool:
             all_contexts.append(market_ctx)
         except ValueError as e:
             logger.error(f"Invalid market: {e}")
-            logger.error(f"Available markets: {', '.join(MarketContext.list_available())}")
+            logger.error(
+                f"Available markets: {', '.join(MarketContext.list_available())}"
+            )
             sys.exit(1)
 
     for market_ctx in all_contexts:
@@ -484,7 +446,9 @@ def run_market_update(history: bool = False, market_alias: str = "all") -> bool:
 
     jita_ok = process_jita_prices(all_contexts)
     if not jita_ok:
-        logger.warning("Jita price update failed; downstream stats will lack Jita comparisons")
+        logger.warning(
+            "Jita price update failed; downstream stats will lack Jita comparisons"
+        )
 
     for market_ctx in all_contexts:
         _run_market_pipeline(market_ctx, history=history)

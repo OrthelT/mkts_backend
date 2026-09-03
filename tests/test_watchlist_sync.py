@@ -6,86 +6,39 @@ and reuses the existing in_memory_sde_db fixture for SDE metadata + buildable fi
 
 from __future__ import annotations
 
-from unittest.mock import patch
 
 import pytest
-from sqlalchemy import create_engine, text
+from sqlalchemy import text
 
 
 @pytest.fixture
-def buildcost_db(tmp_path):
-    """Create a buildcost SQLite DB with build_watchlist + builder_costs tables.
-
-    Returns a DatabaseConfig-like stub whose .engine and .remote_engine both
-    point at the same file-backed SQLite — the codepaths we exercise treat
-    them as separate engines (writes to remote, reads from local).
-    """
+def buildcost_db(fake_db_factory, tmp_path):
+    """Buildcost SQLite DB with build_watchlist + builder_costs tables."""
     from mkts_backend.db.build_cost_models import BuildCostBase
 
-    db_path = tmp_path / "buildcost.db"
-    engine = create_engine(f"sqlite:///{db_path}")
-    BuildCostBase.metadata.create_all(engine)
-
-    class _Stub:
-        alias = "buildcost"
-
-        def __init__(self, path):
-            self._url = f"sqlite:///{path}"
-
-        @property
-        def engine(self):
-            return create_engine(self._url)
-
-        @property
-        def remote_engine(self):
-            return create_engine(self._url)
-
-    yield _Stub(db_path)
-    engine.dispose()
+    db = fake_db_factory(tmp_path / "buildcost.db", alias="buildcost")
+    BuildCostBase.metadata.create_all(db.engine)
+    return db
 
 
 @pytest.fixture
-def sde_db(in_memory_sde_db):
-    """Wrap the in_memory_sde_db path in the same DatabaseConfig-like stub."""
-
-    class _Stub:
-        alias = "sde"
-
-        def __init__(self, path):
-            self._url = f"sqlite:///{path}"
-
-        @property
-        def engine(self):
-            return create_engine(self._url)
-
-    return _Stub(in_memory_sde_db)
+def sde_db(fake_db_factory, in_memory_sde_db):
+    """Wrap the in_memory_sde_db path in the shared fake DatabaseConfig."""
+    return fake_db_factory(in_memory_sde_db, alias="sde")
 
 
 @pytest.fixture
-def primary_market_db(tmp_path):
-    """Stub primary market DB with a 'watchlist' table containing a few type_ids."""
-    db_path = tmp_path / "wcmktprod.db"
-    engine = create_engine(f"sqlite:///{db_path}")
-    with engine.connect() as conn:
+def primary_market_db(fake_db_factory, tmp_path):
+    """Primary market DB with a 'watchlist' table containing a few type_ids."""
+    db = fake_db_factory(tmp_path / "wcmktprod.db", alias="primary")
+    with db.engine.connect() as conn:
         conn.execute(text("CREATE TABLE watchlist (type_id INTEGER PRIMARY KEY)"))
         for tid in (34, 35, 36):  # 34/35 buildable, 36 not buildable
             conn.execute(
                 text("INSERT INTO watchlist (type_id) VALUES (:t)"), {"t": tid}
             )
         conn.commit()
-    engine.dispose()
-
-    class _Stub:
-        alias = "primary"
-
-        def __init__(self, path):
-            self._url = f"sqlite:///{path}"
-
-        @property
-        def engine(self):
-            return create_engine(self._url)
-
-    return _Stub(db_path)
+    return db
 
 
 def _read_all(db) -> list[dict]:

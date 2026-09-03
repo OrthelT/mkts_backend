@@ -12,7 +12,6 @@ dependencies = [
     "pandas>=2.3.0",
     "requests>=2.32.4",
     "requests-oauthlib>=2.0.0",
-    "sqlalchemy-libsql>=0.2.0",
     "sqlalchemy-orm>=1.2.10",
     "colorlog>=6.8.0",
     "matplotlib>=3.10.5",
@@ -21,11 +20,11 @@ dependencies = [
     "httpx[http2]>=0.28.1",
     "aiolimiter>=1.2.1",
     "backoff>=2.2.1",
-    "sqlalchemy>=2.0.43",
-    "libsql>=0.1.11",
     "python-dotenv>=1.1.1",
     "rich>=13.0.0",
     "prompt-toolkit>=3.0.52",
+    "sqlalchemy>=2.0.45",
+    "pyturso>=0.7.2",
 ]
 
 [build-system]

@@ -3,7 +3,6 @@ Pytest configuration and shared fixtures for market context tests.
 """
 import pytest
 import os
-import tempfile
 import sqlite3
 from pathlib import Path
 from unittest.mock import patch, MagicMock
@@ -11,6 +10,60 @@ from unittest.mock import patch, MagicMock
 # Add the src directory to the path
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
+
+
+class FakeDatabaseConfig:
+    """Explicit stand-in for DatabaseConfig, backed by a real SQLite file.
+
+    ``engine`` and ``remote_engine`` are the SAME engine, as they are in
+    DatabaseConfig since the pyturso migration. This is deliberately not a
+    MagicMock: a mock invents whatever attribute the code asks for, so when
+    the writers switched from ``remote_engine`` to ``engine`` their tests kept
+    passing while every write went to an auto-created attribute instead of a
+    database. ``MagicMock(spec=DatabaseConfig)`` would not have caught it
+    either — ``remote_engine`` is a real property on the class.
+
+    push/pull/sync are counted rather than performed, so tests can assert that
+    local writes were flushed to Turso without needing a remote.
+    """
+
+    def __init__(self, path, alias: str = "test"):
+        from sqlalchemy import create_engine
+
+        self.alias = alias
+        self.path = str(path)
+        self.engine = create_engine(f"sqlite:///{path}")
+        self.pushes = 0
+        self.pulls = 0
+        self.syncs = 0
+
+    @property
+    def remote_engine(self):
+        return self.engine
+
+    def push(self) -> None:
+        self.pushes += 1
+
+    def pull(self) -> None:
+        self.pulls += 1
+
+    def sync(self) -> None:
+        self.syncs += 1
+
+
+@pytest.fixture
+def fake_db_factory():
+    """Factory for :class:`FakeDatabaseConfig`; disposes each engine on teardown."""
+    created = []
+
+    def _make(path, alias: str = "test") -> FakeDatabaseConfig:
+        db = FakeDatabaseConfig(path, alias)
+        created.append(db)
+        return db
+
+    yield _make
+    for db in created:
+        db.engine.dispose()
 
 
 @pytest.fixture(autouse=True)
@@ -47,30 +100,25 @@ def deployment_market_context():
 
 @pytest.fixture
 def mock_env_vars():
-    """Mock environment variables for Turso database connections."""
-    env_vars = {
-        # Shared test DB
-        "TURSO_WCMKTTEST_URL": "libsql://test-wcmkttest.turso.io",
-        "TURSO_WCMKTTEST_TOKEN": "test-wcmkttest-token",
-        # Primary market (4-HWWF WinterCo. Central Station)
-        "TURSO_WCMKTNEWKEEP_URL": "libsql://test-primary.turso.io",
-        "TURSO_WCMKTNEWKEEP_TOKEN": "test-primary-token",
-        # Deployment market (X47L-Q Rogue Threshold)
-        "TURSO_WCMKTNORTH_URL": "libsql://test-north.turso.io",
-        "TURSO_WCMKTNORTH_TOKEN": "test-north-token",
-        # market3 (BKG-Q2 Insidious Prime)
-        "TURSO_WCMKTBKG_URL": "libsql://test-bkg.turso.io",
-        "TURSO_WCMKTBKG_TOKEN": "test-bkg-token",
-        # SDE and fittings
-        "TURSO_SDE_URL": "libsql://test-sde.turso.io",
-        "TURSO_SDE_TOKEN": "test-sde-token",
-        "TURSO_FITTING_URL": "libsql://test-fitting.turso.io",
-        "TURSO_FITTING_TOKEN": "test-fitting-token",
-        # ESI credentials
+    """Mock Turso credentials for every database in settings.toml, plus ESI.
+
+    Env-var names are derived from ``database_routing()`` rather than frozen
+    here, so adding a market or shared database to settings.toml does not
+    require editing this fixture.
+    """
+    from mkts_backend.config.settings_service import SettingsService
+
+    env_vars = {}
+    for alias, cfg in SettingsService().database_routing().items():
+        if cfg["turso_url_env"]:
+            env_vars[cfg["turso_url_env"]] = f"libsql://test-{alias}.turso.io"
+        if cfg["turso_token_env"]:
+            env_vars[cfg["turso_token_env"]] = f"test-{alias}-token"
+    env_vars.update({
         "CLIENT_ID": "test-client-id",
         "SECRET_KEY": "test-secret-key",
         "REFRESH_TOKEN": "test-refresh-token",
-    }
+    })
     with patch.dict(os.environ, env_vars):
         yield env_vars
 

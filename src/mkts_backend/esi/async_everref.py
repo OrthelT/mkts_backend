@@ -31,9 +31,33 @@ EVEREF_REQUESTS_PER_MINUTE = 120
 MANUFACTURABLE_META_GROUPS = frozenset({1, 2, 14})
 ALLOWED_CATEGORIES = frozenset({7, 18, 8, 6, 87, 22, 32})
 EXCLUDED_GROUPS = frozenset(
-    {"Interdiction Nullifier", "Exotic Plasma Charge", "Condenser Pack", "Jump Drive Economizer", "Warp Accelerator", "Vorton Projector", "Advanced Condenser Pack", "SCARAB Breacher Pods"}
+    {
+        "Interdiction Nullifier",
+        "Exotic Plasma Charge",
+        "Condenser Pack",
+        "Jump Drive Economizer",
+        "Warp Accelerator",
+        "Vorton Projector",
+        "Advanced Condenser Pack",
+        "SCARAB Breacher Pods",
+    }
 )
-EXCLUDED_NAMES = frozenset({"Vedmak", "Leshak", "Damavik", "Zirnitra", "Metamorphosis", "Stormbringer", "Pacifier", "Enforcer", "'Magpie' Mobile Tractor Unit", "'Packrat' Mobile Tractor Unit", "'Yurt' Mobile Depot", "'Wetu' Mobile Depot"})
+EXCLUDED_NAMES = frozenset(
+    {
+        "Vedmak",
+        "Leshak",
+        "Damavik",
+        "Zirnitra",
+        "Metamorphosis",
+        "Stormbringer",
+        "Pacifier",
+        "Enforcer",
+        "'Magpie' Mobile Tractor Unit",
+        "'Packrat' Mobile Tractor Unit",
+        "'Yurt' Mobile Depot",
+        "'Wetu' Mobile Depot",
+    }
+)
 HIGH_VALUE_THRESHOLD = 40_000_000
 T2_MODULE_CATEGORIES = frozenset({7, 18, 8})
 
@@ -167,7 +191,9 @@ def _resolve_api_params(
     return (0, 1)
 
 
-_META_GROUP_CHUNK_SIZE = 500  # keep well under libsql/sqlite var limits (matches db_handlers)
+_META_GROUP_CHUNK_SIZE = (
+    500  # keep well under libsql/sqlite var limits (matches db_handlers)
+)
 
 
 def _get_meta_groups(type_ids: list[int], sde_engine: Engine) -> dict[int, int]:
@@ -205,8 +231,12 @@ def _query_buildable(
     with sde_engine.connect() as conn:
         for start in range(0, len(type_ids), _META_GROUP_CHUNK_SIZE):
             chunk = type_ids[start : start + _META_GROUP_CHUNK_SIZE]
-            placeholders = ", ".join(f":type_id_{index}" for index, _ in enumerate(chunk))
-            params = {f"type_id_{index}": type_id for index, type_id in enumerate(chunk)}
+            placeholders = ", ".join(
+                f":type_id_{index}" for index, _ in enumerate(chunk)
+            )
+            params = {
+                f"type_id_{index}": type_id for index, type_id in enumerate(chunk)
+            }
             query = text(
                 f"""
                 SELECT s.typeID, s.metaGroupID
@@ -289,7 +319,9 @@ async def _fetch_one_inner(
         if not isinstance(result, dict):
             raise TypeError("manufacturing result is not a dictionary")
     except (KeyError, TypeError, ValueError) as exc:
-        logger.warning(f"EverRef response missing manufacturing data for {type_id}: {exc}")
+        logger.warning(
+            f"EverRef response missing manufacturing data for {type_id}: {exc}"
+        )
         return None
 
     total_cost = result.get("total_cost_per_unit")
@@ -345,7 +377,9 @@ async def async_fetch_builder_costs(
     out_of_scope = len(type_ids) - unbuildable - len(fetch_jobs)
 
     if not fetch_jobs:
-        logger.info("No manufacturable watchlist items matched the builder cost filters")
+        logger.info(
+            "No manufacturable watchlist items matched the builder cost filters"
+        )
         return FetchSummary(
             attempted=0,
             filtered_unbuildable=unbuildable,
@@ -395,3 +429,4 @@ def run_async_fetch_builder_costs(
             watchlist_metadata=watchlist_metadata,
         )
     )
+

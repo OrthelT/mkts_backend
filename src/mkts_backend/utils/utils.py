@@ -3,7 +3,6 @@ from typing import Iterable
 import requests
 
 import pandas as pd
-import json
 import sqlalchemy as sa
 from sqlalchemy import text, create_engine
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
@@ -11,8 +10,6 @@ from mkts_backend.config.db_config import DatabaseConfig
 from mkts_backend.config.esi_config import ESIConfig
 from mkts_backend.config.logging_config import configure_logging
 from mkts_backend.db.models import Watchlist
-from sqlalchemy.orm import Session
-from datetime import datetime, timezone
 logger = configure_logging(__name__)
 
 sde_db = DatabaseConfig("sde")
@@ -190,64 +187,6 @@ def init_databases(aliases: str | list[str] | None = None) -> None:
         except Exception as e:
             logger.warning(f"Error initializing database {alias}: {e}")
 
-def insert_type_data(data: list[dict]):
-    db = DatabaseConfig("sde")
-    engine = db.engine
-    unprocessed_data = []
-
-    with engine.connect() as conn:
-        for row in data:
-            try:
-                type_id = row["type_id"]
-                if type_id is None:
-                    logger.warning("Type ID is None, skipping...")
-                    continue
-                logger.info(f"Inserting type data for {row['type_id']}")
-
-                params = (type_id,)
-
-                query = "SELECT typeName FROM Joined_InvTypes WHERE typeID = ?"
-                result = conn.execute(query, params)
-                try:
-                    type_name = result.fetchone()[0]
-                except Exception as e:
-                    logger.error(f"Error fetching type name: {e}")
-                    unprocessed_data.append(row)
-                    continue
-
-                row["type_name"] = str(type_name)
-            except Exception as e:
-                logger.error(f"Error inserting type data: {e}")
-                data.remove(row)
-                logger.info(f"Removed row: {row}")
-    if unprocessed_data:
-        logger.info(f"Unprocessed data: {unprocessed_data}")
-        with open("unprocessed_data.json", "w") as f:
-            json.dump(unprocessed_data, f)
-    return data
-
-def update_ship_target(fit_id: int, ship_target: int):
-    old_ship_target = check_ship_target(fit_id)
-    db = DatabaseConfig("wcmkt")
-    engine = db.remote_engine
-    with engine.connect() as conn:
-
-        print(f"Current ship target for fit_id {fit_id} is {old_ship_target}, updating to {ship_target}")
-        stmt = text("UPDATE ship_targets SET ship_target = :ship_target WHERE fit_id = :fit_id")
-        conn.execute(stmt, {"ship_target": ship_target, "fit_id": fit_id})
-        conn.commit()
-        conn.close()
-        engine.dispose()
-
-    new_ship_target = check_ship_target(fit_id)
-    print(f"New ship target for fit_id {fit_id} is {new_ship_target}")
-    if new_ship_target != old_ship_target:
-        logger.info(f"Ship target for fit_id {fit_id} was updated from {old_ship_target} to {new_ship_target}")
-        print(f"Ship target for fit_id {fit_id} was updated from {old_ship_target} to {new_ship_target}")
-    else:
-        logger.info(f"Ship target for fit_id {fit_id} was {old_ship_target}={new_ship_target}, no update needed")
-        print(f"Ship target for fit_id {fit_id} was {old_ship_target}={new_ship_target}, no update needed")
-
 def check_ship_target(fit_id: int):
     db = DatabaseConfig("wcmkt")
     engine = db.remote_engine
@@ -259,21 +198,6 @@ def check_ship_target(fit_id: int):
     conn.close()
     engine.dispose()
     return target
-
-def add_new_ship_target(fit_id: int, fit_name: str, ship_id: int, ship_name: str, ship_target: int):
-    created_at = datetime.now(timezone.utc)
-    from mkts_backend.db.models import ShipTargets
-    ship_target = ShipTargets(fit_id=fit_id, fit_name=fit_name, ship_id=ship_id, ship_name=ship_name, ship_target=ship_target, created_at=created_at)
-    db = DatabaseConfig("wcmkt")
-    engine = db.remote_engine
-    session = Session(bind=engine)
-    with session.begin():
-        session.add(ship_target)
-        session.commit()
-        print(f"Ship target {fit_name} added")
-    session.close()
-    engine.dispose()
-    return True
 
 if __name__ == "__main__":
     pass

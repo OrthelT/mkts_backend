@@ -164,13 +164,21 @@ def test_get_all_characters_requires_char_id(monkeypatch):
         get_all_characters()
 
 
-def test_database_routing_derives_every_market_plus_test_db():
-    """Routing keys == each market's db alias + the shared test alias, nothing
+def test_database_routing_derives_every_market_and_shared_db():
+    """Routing keys == each market's db alias + every [shared.*] alias, nothing
     else (the 'default' pointer and scalar keys are excluded). All derived."""
     s = SettingsService()
-    expected = {s.market_db_alias(a) for a in s.market_aliases}
-    expected.add(s.shared_testing["database_alias"])
+    expected = {s.market_db_alias(a) for a in s.market_aliases} | s.shared_db_aliases()
     assert set(s.database_routing()) == expected
+
+
+def test_database_routing_marks_optional_databases():
+    """``optional`` reaches routing, defaulting to False for markets."""
+    s = SettingsService()
+    routing = s.database_routing()
+    assert routing[s.shared_testing["database_alias"]]["optional"] is True
+    for alias in s.market_aliases:
+        assert routing[s.market_db_alias(alias)]["optional"] is False
 
 
 def test_database_routing_rejects_duplicate_alias(monkeypatch):

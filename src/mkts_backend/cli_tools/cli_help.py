@@ -37,6 +37,8 @@ Global Options (accepted by most commands):
   --check_tables     Check the tables in the database (supports --market)
   --validate-env     Validate environment credentials and exit
   --list-markets     List available market configurations
+  --list-db-paths    Print all routed database paths (alias<TAB>file)
+  --db-path=<name>   Print path for one database (by alias or market name)
   --help             Show this help message
 
 Use 'mkts-backend <command> --help' for more information about a command.
@@ -45,9 +47,13 @@ Examples:
   mkts-backend update-markets                 # Run full pipeline for all markets
   mkts-backend update-markets --history       # With history processing
   mkts-backend update-markets --primary       # Primary market only
-  mkts-backend sync                           # Sync all databases
-  mkts-backend sync --deployment              # Sync deployment only
-  mkts-backend validate --market=all          # Validate all databases
+  mkts-backend sync                           # Pull every routed replica: all
+                                               #   markets + shared sde/fittings/buildcost
+                                               #   (excludes the dev/test DB)
+  mkts-backend sync --deployment              # Sync deployment market only
+  mkts-backend sync --markets-only            # Markets only, skip shared databases
+  mkts-backend sync --no-buildcost            # Skip the optional buildcost replica
+  mkts-backend sync --include-testing         # Also pull the dev/test database
   mkts-backend fit-check --file=fits/hfi.txt  # Check fit availability
   mkts-backend assets --name='Damage Control'   # Look up assets by partial name
   mkts-backend assets --id=11379                # Look up assets by type ID
@@ -55,8 +61,7 @@ Examples:
   mkts-backend fit-update list-fits           # List all doctrine fits
   mkts-backend add_watchlist --type_id=12345,67890,11111 # Add items to watchlist
   mkts-backend add_structure --dry-run        # Preview structures import from sheet
-  mkts-backend add_structure                  # Import structures (remote + local, with confirm)
-  mkts-backend add_structure --local --yes    # Local-only import, skip confirm
+  mkts-backend add_structure                  # Import structures (with confirm)
 """)
 
 def display_builder_cost_help():
@@ -302,8 +307,9 @@ OPTIONS:
     --dry-run            Preview changes without saving
     --remote             Use remote database
     --local-only         Use local database only
-    --db-alias=<alias>   Target database: wcmkt, wcmktnorth
-    --north              Shorthand for --db-alias=wcmktnorth
+    --db-alias=<alias>   Target database alias (a database_alias from
+                         settings.toml [markets.*]; default: primary market)
+    --north              Shorthand for the deployment market's database
     --name=<name>        Friendly display name (for update-friendly-name)
     --doctrine-id=<id>   Doctrine ID (for unassign-market, update-friendly-name, etc.)
     --target=<qty>       Default target quantity for new fits (default: 100)
@@ -451,8 +457,8 @@ def display_update_target_help():
     --market=<flag>      Market flag: primary, deployment, all (default: primary)
     --remote             Use remote database (default: local)
     --local-only         Use local database only (default: no)
-    --db-alias=<alias>   Target database alias (default: wcmkt)
-    --north              Shorthand for --db-alias=wcmktnorth
+    --db-alias=<alias>   Target database alias (default: primary market)
+    --north              Shorthand for the deployment market's database
     --primary            Shorthand for --market=primary
     """)
     console.print("""
@@ -464,7 +470,7 @@ def display_update_target_help():
     DEFAULT:
     If no market flag is provided, the default is primary.
     If no remote flag is provided, the default is local.
-    If no db-alias flag is provided, the default is wcmkt.
+    If no db-alias flag is provided, the default is the primary market's database.
 
     """)
 

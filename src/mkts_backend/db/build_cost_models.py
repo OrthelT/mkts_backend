@@ -110,6 +110,6 @@ class UpdateLog(UpdateLogMixin, BuildCostBase):
 
     def __repr__(self) -> str:
         return (
-            f"updatelog(id={self.id!r}, table_name={self.table_name!r}, "
+            f"updatelog(table_name={self.table_name!r}, "
             f"timestamp={self.timestamp!r})"
         )

@@ -84,31 +84,52 @@ jobs:
     # so a per-run key writes a brand-new entry every hour. A daily key reuses the
     # same entry within a day (restore-keys prefix still warm-starts from the most
     # recent), so each entry is recreated at most once per day. The DBs stay fresh
-    # because libsql sync() pulls incrementally on every run regardless.
+    # because the pyturso sync engine pulls incrementally on every run regardless.
+    #
+    # Each DB is cached as `<file>.db*`: the pyturso sync engine keeps its state in
+    # sidecar files (-info, -changes, -wal, -wal-revert) that must travel with the
+    # db file — a db restored without them loses unpushed sync state and gets nuked
+    # and re-pulled by verify_db_exists().
     #
     # Single-writer cache layout (no concurrency guard needed): every cache key has
     # exactly ONE matrix leg that writes it, so two legs can never race to reserve
     # the same key.
-    #   * Each market DB is cached only by its own leg -> turso-dbs-v3-mkt-<market>-<date>
+    #   * Each market DB is cached only by its own leg -> turso-dbs-v4-mkt-<market>-<date>
     #   * The shared SDE + fitting DBs are cached only by the primary leg and
-    #     restored read-only by the others             -> turso-dbs-v3-shared-<date>
+    #     restored read-only by the others             -> turso-dbs-v4-shared-<date>
     - name: Compute cache date
       id: cachedate
       run: echo "date=$(date -u +%Y-%m-%d)" >> "$GITHUB_OUTPUT"
 
-    # Map the matrix market alias to its market-specific DB file. Done as a step
-    # (not a matrix `include`) so single-market dispatch can't spawn phantom legs:
-    # an `include` whose `market:` value isn't in the base matrix would be added as
-    # a new combination, forcing every market to run on a single-market dispatch.
-    - name: Resolve market DB file
+    # Map the matrix market alias to its market-specific DB file, and resolve
+    # the shared DB filenames, via `mkts-backend --db-path` — the single source
+    # for these names is settings.toml, not this YAML. Done as a step (not a
+    # matrix `include`) so single-market dispatch can't spawn phantom legs: an
+    # `include` whose `market:` value isn't in the base matrix would be added
+    # as a new combination, forcing every market to run on a single-market
+    # dispatch. Must run after `uv sync` (and the editable install), since it
+    # invokes `uv run mkts-backend`.
+    - name: Resolve database paths
       id: dbfile
       run: |
-        case "${{ matrix.market }}" in
-          primary)    echo "db=wcmktnewkeep.db" >> "$GITHUB_OUTPUT" ;;
-          deployment) echo "db=wcmktnorth2.db"  >> "$GITHUB_OUTPUT" ;;
-          market3)    echo "db=wcmktbkg.db"     >> "$GITHUB_OUTPUT" ;;
-          *) echo "Unknown market: ${{ matrix.market }}" >&2; exit 1 ;;
-        esac
+        # Capture into a variable as its own statement (not inline in the
+        # echo) so a non-zero exit aborts the step under bash's -e; a
+        # command substitution embedded in a larger command does not. Also
+        # fail on an empty result: a 0-exit-with-no-output would otherwise
+        # collapse the corresponding cache `path:` to a bare `*`, which can
+        # sweep unrelated files (e.g. creds.json) into the cache.
+        resolve() {
+          local key="$1" out_name="$2" value
+          value="$(uv run mkts-backend --db-path="$key")"
+          if [ -z "$value" ]; then
+            echo "Failed to resolve db path for '$key' (empty result)" >&2
+            exit 1
+          fi
+          echo "$out_name=$value" >> "$GITHUB_OUTPUT"
+        }
+        resolve "${{ matrix.market }}" db
+        resolve sde sde
+        resolve fittings fittings
 
     # Shared DBs (rarely change): restored by every leg, written only by primary.
     - name: Restore shared databases (SDE + fittings)
@@ -116,25 +137,21 @@ jobs:
       id: shared-cache
       with:
         path: |
-          sdelite.db
-          sdelite.db-info
-          wcfitting.db
-          wcfitting.db-info
-        key: turso-dbs-v3-shared-${{ steps.cachedate.outputs.date }}
+          ${{ steps.dbfile.outputs.sde }}*
+          ${{ steps.dbfile.outputs.fittings }}*
+        key: turso-dbs-v4-shared-${{ steps.cachedate.outputs.date }}
         restore-keys: |
-          turso-dbs-v3-shared-
+          turso-dbs-v4-shared-
 
     # This leg's own market DB only.
     - name: Restore market database
       uses: actions/cache/restore@v5
       id: db-cache
       with:
-        path: |
-          ${{ steps.dbfile.outputs.db }}
-          ${{ steps.dbfile.outputs.db }}-info
-        key: turso-dbs-v3-mkt-${{ matrix.market }}-${{ steps.cachedate.outputs.date }}
+        path: ${{ steps.dbfile.outputs.db }}*
+        key: turso-dbs-v4-mkt-${{ matrix.market }}-${{ steps.cachedate.outputs.date }}
         restore-keys: |
-          turso-dbs-v3-mkt-${{ matrix.market }}-
+          turso-dbs-v4-mkt-${{ matrix.market }}-
 
     - name: Log cache status
       run: |
@@ -142,7 +159,7 @@ jobs:
         echo "Market cache hit: ${{ steps.db-cache.outputs.cache-hit }} (key: ${{ steps.db-cache.outputs.cache-matched-key }})"
         echo "Shared cache hit: ${{ steps.shared-cache.outputs.cache-hit }} (key: ${{ steps.shared-cache.outputs.cache-matched-key }})"
         echo "Database files after restore:"
-        ls -lh *.db *.db-info 2>/dev/null || echo "No database files found (cache miss)"
+        ls -lh *.db *.db-* 2>/dev/null || echo "No database files found (cache miss)"
 
     - name: Set up environment variables
       run: |
@@ -152,13 +169,13 @@ jobs:
         echo "TURSO_SDE_TOKEN=${{ secrets.TURSO_SDE_TOKEN }}" >> $GITHUB_ENV
         echo "TURSO_FITTING_URL=${{ secrets.TURSO_FITTING_URL }}" >> $GITHUB_ENV
         echo "TURSO_FITTING_TOKEN=${{ secrets.TURSO_FITTING_TOKEN }}" >> $GITHUB_ENV
-        # primary market (4-HWWF WinterCo Central Station / wcmktnewkeep.db)
+        # primary market (4-HWWF WinterCo Central Station)
         echo "TURSO_WCMKTNEWKEEP_URL=${{ secrets.TURSO_WCMKTNEWKEEP_URL }}" >> $GITHUB_ENV
         echo "TURSO_WCMKTNEWKEEP_TOKEN=${{ secrets.TURSO_WCMKTNEWKEEP_TOKEN }}" >> $GITHUB_ENV
-        # deployment market (X47L-Q Rogue Threshold / wcmktnorth2.db)
+        # deployment market (X47L-Q Rogue Threshold)
         echo "TURSO_WCMKTNORTH_URL=${{ secrets.TURSO_WCMKTNORTH_URL }}" >> $GITHUB_ENV
         echo "TURSO_WCMKTNORTH_TOKEN=${{ secrets.TURSO_WCMKTNORTH_TOKEN }}" >> $GITHUB_ENV
-        # market3 market (BKG-Q2 Insidious Prime / wcmktbkg.db)
+        # market3 market (BKG-Q2 Insidious Prime)
         echo "TURSO_WCMKTBKG_URL=${{ secrets.TURSO_WCMKTBKG_URL }}" >> $GITHUB_ENV
         echo "TURSO_WCMKTBKG_TOKEN=${{ secrets.TURSO_WCMKTBKG_TOKEN }}" >> $GITHUB_ENV
         # Janice API key for Jita price fallback
@@ -220,10 +237,8 @@ jobs:
       uses: actions/cache/save@v5
       if: success()
       with:
-        path: |
-          ${{ steps.dbfile.outputs.db }}
-          ${{ steps.dbfile.outputs.db }}-info
-        key: turso-dbs-v3-mkt-${{ matrix.market }}-${{ steps.cachedate.outputs.date }}
+        path: ${{ steps.dbfile.outputs.db }}*
+        key: turso-dbs-v4-mkt-${{ matrix.market }}-${{ steps.cachedate.outputs.date }}
 
     # Save the shared SDE + fitting DBs from the primary leg ONLY, so this key has a
     # single writer and the deployment/market3 legs never race to reserve it.
@@ -232,11 +247,9 @@ jobs:
       if: success() && matrix.market == 'primary'
       with:
         path: |
-          sdelite.db
-          sdelite.db-info
-          wcfitting.db
-          wcfitting.db-info
-        key: turso-dbs-v3-shared-${{ steps.cachedate.outputs.date }}
+          ${{ steps.dbfile.outputs.sde }}*
+          ${{ steps.dbfile.outputs.fittings }}*
+        key: turso-dbs-v4-shared-${{ steps.cachedate.outputs.date }}
 
     - name: Upload logs as artifacts
       uses: actions/upload-artifact@v7

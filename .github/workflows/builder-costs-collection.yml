@@ -20,24 +20,54 @@ jobs:
       - run: uv sync
       - run: uv pip install -e .
       - run: mkdir -p logs data databackup
+      # Bucketed by UTC date, not run_id: GitHub caches are immutable, so a
+      # per-run key can never hit on restore and would write a new entry every
+      # run. A daily key reuses the same entry within a day (restore-keys
+      # prefix still warm-starts from the most recent).
+      - name: Compute cache date
+        id: cachedate
+        run: echo "date=$(date -u +%Y-%m-%d)" >> "$GITHUB_OUTPUT"
+      # Resolve database filenames from settings.toml via `mkts-backend
+      # --db-path` — the single source for these names, not this YAML. Must
+      # run after `uv sync` (and the editable install), since it invokes
+      # `uv run mkts-backend`.
+      - name: Resolve database paths
+        id: dbfile
+        run: |
+          # Capture into a variable as its own statement (not inline in the
+          # echo) so a non-zero exit aborts the step under bash's -e; a
+          # command substitution embedded in a larger command does not. Also
+          # fail on an empty result: a 0-exit-with-no-output would otherwise
+          # collapse the corresponding cache `path:` to a bare `*`.
+          resolve() {
+            local key="$1" out_name="$2" value
+            value="$(uv run mkts-backend --db-path="$key")"
+            if [ -z "$value" ]; then
+              echo "Failed to resolve db path for '$key' (empty result)" >&2
+              exit 1
+            fi
+            echo "$out_name=$value" >> "$GITHUB_OUTPUT"
+          }
+          resolve sde sde
+          resolve primary primary
+          resolve buildcost buildcost
+      # Each DB is cached as `<file>.db*` so the pyturso sync engine's sidecar
+      # files (-info, -changes, -wal, -wal-revert) travel with the db file.
       - name: Restore cached databases
         uses: actions/cache/restore@v5
         with:
           path: |
-            sdelite.db
-            sdelite.db-info
-            wcmktprod.db
-            wcmktprod.db-info
-            buildcost.db
-            buildcost.db-info
-          key: builder-cost-dbs-v3-${{ github.run_id }}
+            ${{ steps.dbfile.outputs.sde }}*
+            ${{ steps.dbfile.outputs.primary }}*
+            ${{ steps.dbfile.outputs.buildcost }}*
+          key: builder-cost-dbs-v4-${{ steps.cachedate.outputs.date }}
           restore-keys: |
-            builder-cost-dbs-v3-
+            builder-cost-dbs-v4-
       - name: Run builder costs collection
         run: uv run mkts-backend update-builder-costs
         env:
-          TURSO_WCMKTNEWKEEP_URL: ${{ secrets.TURSO_WCMKTPROD_URL }}
-          TURSO_WCMKTNEWKEEP_TOKEN: ${{ secrets.TURSO_WCMKTPROD_TOKEN }}
+          TURSO_WCMKTNEWKEEP_URL: ${{ secrets.TURSO_WCMKTNEWKEEP_URL }}
+          TURSO_WCMKTNEWKEEP_TOKEN: ${{ secrets.TURSO_WCMKTNEWKEEP_TOKEN }}
           TURSO_SDE_URL: ${{ secrets.TURSO_SDE_URL }}
           TURSO_SDE_TOKEN: ${{ secrets.TURSO_SDE_TOKEN }}
           TURSO_BUILDCOST_URL: ${{ secrets.TURSO_BUILDCOST_URL }}
@@ -47,13 +77,10 @@ jobs:
         if: success()
         with:
           path: |
-            sdelite.db
-            sdelite.db-info
-            wcmktnewkeep.db
-            wcmktnewkeeo.db-info
-            buildcost.db
-            buildcost.db-info
-          key: builder-cost-dbs-v2-${{ github.run_id }}
+            ${{ steps.dbfile.outputs.sde }}*
+            ${{ steps.dbfile.outputs.primary }}*
+            ${{ steps.dbfile.outputs.buildcost }}*
+          key: builder-cost-dbs-v4-${{ steps.cachedate.outputs.date }}
       - name: Upload logs
         if: always()
         uses: actions/upload-artifact@v7

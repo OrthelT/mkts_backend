@@ -1,10 +1,11 @@
-"""Seed a new market's remote Turso DB with reference/config tables.
+"""Seed a new market's Turso DB with reference/config tables.
 
 Copies the market-independent "reference" tables (watchlist, doctrines, fits,
-etc.) from a source market's LOCAL database into a destination market's REMOTE
-(Turso cloud) database. Market-data tables (marketorders, market_history,
-marketstats, jita_prices, esi_request_cache, update_log) are intentionally NOT
-copied — those are populated by the normal collection run for the new market.
+etc.) from a source market's LOCAL database into a destination market's local
+pyturso replica, then pushes the result to that market's Turso remote.
+Market-data tables (marketorders, market_history, marketstats, jita_prices,
+esi_request_cache, update_log) are intentionally NOT copied — those are
+populated by the normal collection run for the new market.
 
 Use this to bootstrap a freshly-created market so the frontend has doctrines,
 watchlist, and targets to display before the first data-collection run.
@@ -15,7 +16,7 @@ tables from Base (checkfirst leaves existing tables alone).
 Flow per table:
   1. Read source rows (model column set) from <source> local DB.
   2. CSV backup of current destination rows (if any).
-  3. In one transaction on the destination remote engine: DELETE all
+  3. In one transaction on the destination's local replica: DELETE all
      destination rows, INSERT the source rows (ids preserved so cross-table
      references stay consistent), then verify destination row count ==
      source row count — a mismatch rolls the whole transaction back.
@@ -24,8 +25,11 @@ Market-derived columns (stock, price, timestamps — see MARKET_DERIVED_RESET)
 are reset on insert so the new market starts at zero availability instead of
 reporting the source market's numbers until its first collection run.
 
-Writes to the destination CLOUD only. The destination's local .db mirror stays
-stale until a subsequent `mkts-backend sync`.
+Writes land on the destination's local replica, table by table. Once every
+requested table has been processed, the whole run pushes to Turso a single
+time (skipped on a dry run, or when nothing was actually written). A push
+failure is reported and fails the command, even though the local writes it's
+reporting on already committed.
 
 Dry-run by default. Pass --apply to actually write.
 
@@ -198,13 +202,17 @@ def main() -> int:
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
+    # Required, not defaulted: this script wipes and re-seeds reference tables
+    # on the destination, so it must never guess which databases it is pointed
+    # at. Aliases come from settings.toml [markets.*] database_alias.
     parser.add_argument(
-        "--source", default="wcmktnewkeep",
-        help="Source market DB alias to copy from (LOCAL db). Default: wcmktnewkeep.",
+        "--source", required=True,
+        help="Source market DB alias to copy from (LOCAL db).",
     )
     parser.add_argument(
-        "--dest", default="wcmktbkg",
-        help="Destination market DB alias to seed (REMOTE Turso db). Default: wcmktbkg.",
+        "--dest", required=True,
+        help="Destination market DB alias to seed (local replica; pushed to "
+             "Turso once after --apply).",
     )
     parser.add_argument(
         "--only", action="append", metavar="table",
@@ -245,7 +253,7 @@ def main() -> int:
 
     print(f"Mode: {'APPLY' if args.apply else 'DRY-RUN'}")
     print(f"Source (local): {src.alias} ({src.path})")
-    print(f"Destination (remote): {dest.alias} -> {dest.turso_url}")
+    print(f"Destination (local, pushed to Turso after apply): {dest.alias} ({dest.path})")
     print(f"Tables: {[m.__tablename__ for m in models]}")
 
     # Ensure destination schema once, up front (only when applying). checkfirst
@@ -258,15 +266,33 @@ def main() -> int:
         )
 
     failed = []
+    wrote_any = False
     for model in models:
         try:
-            if not seed_table(src, dest, model, apply=args.apply,
-                              allow_empty_source=args.allow_empty_source):
+            if seed_table(src, dest, model, apply=args.apply,
+                          allow_empty_source=args.allow_empty_source):
+                if args.apply:
+                    wrote_any = True
+            else:
                 failed.append(model.__tablename__)
         except Exception as e:
             logger.exception(f"Seeding failed for {model.__tablename__}")
             print(f"EXCEPTION on {model.__tablename__}: {e}")
             failed.append(model.__tablename__)
+
+    # Push once for the whole run, not once per table — a per-table push
+    # multiplies round trips for no benefit and leaves more partial states.
+    # Skip entirely on a dry run, and when every table was refused or failed
+    # before writing anything. A run with failures still pushes whatever
+    # committed (local truth; the queue converges) but must still fail below.
+    if wrote_any:
+        try:
+            dest.push()
+            print(f"Pushed {dest.alias} to Turso.")
+        except Exception as e:
+            logger.exception("Push to Turso failed")
+            print(f"PUSH FAILED for {dest.alias}: {e}")
+            failed.append("push")
 
     if failed:
         print(f"\nFAILED: {failed}")

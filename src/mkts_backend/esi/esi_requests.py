@@ -76,6 +76,10 @@ def fetch_market_orders(
     url = esi.market_orders_url
     headers = esi.headers
 
+    logger.debug(url)
+    logger.debug("-------------")
+    logger.debug(headers)
+
     while page <= max_pages:
         request_count += 1
         logger.debug(
@@ -95,7 +99,9 @@ def fetch_market_orders(
             logger.debug(f"Page {page} request: no etag (fresh request)")
 
         logger.debug(f"Page {page} request headers: {page_headers}")
-        response = requests.get(url, headers=page_headers, params=querystring, timeout=10)
+        response = requests.get(
+            url, headers=page_headers, params=querystring, timeout=10
+        )
         logger.debug(
             f"Page {page} response: status={response.status_code}, "
             f"ETag={response.headers.get('ETag')}, "
@@ -126,9 +132,7 @@ def fetch_market_orders(
             try:
                 data = response.json()
             except requests.exceptions.JSONDecodeError:
-                logger.warning(
-                    f"Malformed JSON on page {page}, retrying once..."
-                )
+                logger.warning(f"Malformed JSON on page {page}, retrying once...")
                 time.sleep(1)
                 response = requests.get(
                     url, headers=page_headers, params=querystring, timeout=10
@@ -176,12 +180,19 @@ def fetch_market_orders(
     # shifted. Re-fetch all pages clean (without etags) to get a consistent dataset.
     if got_any_200 and got_any_304:
         if _clean_retry:
-            logger.error("Mixed 200/304 on clean re-fetch; returning available data as-is")
+            logger.error(
+                "Mixed 200/304 on clean re-fetch; returning available data as-is"
+            )
         else:
-            logger.info("Mixed 200/304 responses detected — re-fetching all pages clean")
+            logger.info(
+                "Mixed 200/304 responses detected — re-fetching all pages clean"
+            )
             return fetch_market_orders(
-                esi, order_type=order_type, page_etags=None,
-                test_mode=test_mode, _clean_retry=True,
+                esi,
+                order_type=order_type,
+                page_etags=None,
+                test_mode=test_mode,
+                _clean_retry=True,
             )
 
     # All pages returned 304 — nothing changed
@@ -203,6 +214,7 @@ def fetch_market_orders(
 
 def fetch_history(watchlist: pd.DataFrame) -> list[dict[str, object]] | None:
     from mkts_backend.config.market_context import MarketContext
+
     esi = ESIConfig(market_context=MarketContext.from_settings("primary"))
     url = esi.market_history_url
     error_count = 0
@@ -311,7 +323,9 @@ def fetch_history(watchlist: pd.DataFrame) -> list[dict[str, object]] | None:
         return None
 
 
-def fetch_region_orders(region_id: int, order_type: str = "sell") -> list[dict[str, object]]:
+def fetch_region_orders(
+    region_id: int, order_type: str = "sell"
+) -> list[dict[str, object]]:
     orders: list[dict[str, object]] = []
     max_pages = 1
     page = 1
@@ -373,7 +387,9 @@ def fetch_region_orders(region_id: int, order_type: str = "sell") -> list[dict[s
 
         if status_code == 200:
             if response is None:
-                logger.error(f"page {page} of {max_pages} | request missing response object")
+                logger.error(
+                    f"page {page} of {max_pages} | request missing response object"
+                )
                 error_count += 1
                 if error_count > 5:
                     raise Exception(f"Too many errors: {error_count}")

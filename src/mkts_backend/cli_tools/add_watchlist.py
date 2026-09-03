@@ -1,5 +1,6 @@
 import csv
 
+from mkts_backend.config.db_config import DatabaseConfig
 from mkts_backend.config.logging_config import configure_logging
 from mkts_backend.utils.db_utils import add_missing_items_to_watchlist
 from mkts_backend.cli_tools.arg_utils import ParsedArgs
@@ -92,8 +93,14 @@ def add_watchlist(args: list[str], market_alias: str = "primary") -> bool:
     all_ok = True
     for db_alias in target_aliases:
         print(f"Adding to watchlist on {db_alias} (remote={remote})...")
-        success = process_add_watchlist(type_ids, remote=remote, db_alias=db_alias)
-        if not success:
+        if not process_add_watchlist(type_ids, remote=remote, db_alias=db_alias):
+            all_ok = False
+            continue
+        try:
+            DatabaseConfig(db_alias).push()
+        except Exception as exc:
+            logger.error(f"{db_alias}: push failed: {exc}")
+            print(f"Error: {db_alias}: push failed: {exc}")
             all_ok = False
 
     if all_ok:
@@ -107,9 +114,8 @@ def _mirror_to_build_watchlist(type_ids: list[int]) -> None:
     """Best-effort mirror to build_watchlist after a successful market write.
 
     Failure here does not roll back the market-side write; we only log and
-    print a warning. Buildable filter is applied by ``add_to_build_watchlist``.
-    Pulls the buildcost local mirror after the remote write so subsequent
-    local reads see the new rows.
+    print a warning. Buildable filter is applied by ``add_to_build_watchlist``;
+    the underlying ``upsert_build_watchlist`` pushes the write to Turso.
     """
     try:
         from mkts_backend.builder_costs.watchlist_sync import add_to_build_watchlist
@@ -131,12 +137,6 @@ def _mirror_to_build_watchlist(type_ids: list[int]) -> None:
         if details:
             msg += f"; {'; '.join(details)}"
         print(msg)
-        if result.added > 0:
-            try:
-                buildcost_db.sync()
-                print("Synced local buildcost mirror")
-            except Exception as exc:
-                logger.warning(f"buildcost local sync failed: {exc}")
     except Exception as exc:
         logger.warning(f"build_watchlist mirror failed (market write succeeded): {exc}")
         print(f"Warning: build_watchlist mirror failed: {exc}")

@@ -4,7 +4,8 @@ Backfill group_id / category_id on doctrine rows where these IDs are 0.
 Some historical rows in the `doctrines` table have group_id = 0 and
 category_id = 0 even though their group_name / category_name strings are
 correct. This script looks up the correct IDs in sdelite.db (`sdetypes`
-table) and writes them back to the Turso remote for both markets.
+table), writes them into each market's local pyturso replica, and pushes
+the writes to Turso.
 
 Run with: uv run python scripts/backfill_doctrine_group_category_ids.py
 
@@ -50,12 +51,12 @@ def _load_sde_lookup(type_ids: list[int]) -> dict[int, dict]:
 
 
 def backfill_market(alias: str) -> tuple[int, list[int]]:
-    """Backfill one market's doctrines table on the Turso remote.
+    """Backfill one market's doctrines table and push the writes to Turso.
 
     Returns (rows_updated, missing_type_ids).
     """
     db = DatabaseConfig(alias)
-    engine = db.remote_engine
+    engine = db.engine
 
     select_bad = text(
         "SELECT DISTINCT type_id FROM doctrines "
@@ -104,7 +105,11 @@ def backfill_market(alias: str) -> tuple[int, list[int]]:
             f"  {alias}: updated {rows_updated} rows "
             f"({before} → {after} remaining bad)"
         )
-        return rows_updated, missing
+
+    if rows_updated:
+        db.push()
+        print(f"  {alias}: pushed {rows_updated} updated rows to Turso")
+    return rows_updated, missing
 
 
 def main() -> int:
@@ -120,8 +125,11 @@ def main() -> int:
             print(f"  {alias}: {tid}")
         return 1
 
-    print("\nAll markets backfilled cleanly.")
-    print("Next step: run `mkts-backend sync --all` to pull updates into local DBs.")
+    print("\nAll markets backfilled cleanly and pushed to Turso.")
+    print(
+        "Do NOT run `mkts-backend sync` afterwards: sync is a pull "
+        "(Turso → local) and would overwrite the local replica."
+    )
     return 0
 
 

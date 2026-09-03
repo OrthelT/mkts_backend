@@ -10,7 +10,50 @@ These tests verify that:
 import pytest
 import json
 from pathlib import Path
-from unittest.mock import patch, MagicMock, PropertyMock
+from unittest.mock import patch
+
+_PYTURSO_INFO = {
+    "version": "v1",
+    "client_unique_id": "turso-sync-py-test",
+    "saved_configuration": {"remote_url": "https://test-db.turso.io"},
+}
+_LIBSQL_INFO = {"hash": "0" * 64, "version": 0, "generation": 1}
+
+
+def _write_pyturso_info(path):
+    Path(f"{path}-info").write_text(json.dumps(_PYTURSO_INFO))
+
+
+def _write_libsql_info(path):
+    Path(f"{path}-info").write_text(json.dumps(_LIBSQL_INFO))
+
+
+def _make_db(tmp_path, monkeypatch):
+    """A DatabaseConfig pointed at tmp_path with no real remote."""
+    from mkts_backend.config.db_config import DatabaseConfig
+
+    db = DatabaseConfig.__new__(DatabaseConfig)
+    db.alias = "testing"
+    db.path = str(tmp_path / "sample.db")
+    db.turso_url = "https://test-db.turso.io"
+    db.token = "test-token"
+    db._engine = None
+    return db
+
+
+def _count_pulls(db, monkeypatch, heals=False):
+    """Replace pull() with a counter. With heals=True it also writes valid
+    pyturso metadata, standing in for a successful remote pull."""
+    calls = []
+
+    def fake_pull(self):
+        calls.append(1)
+        if heals:
+            _write_pyturso_info(self.path)
+            Path(self.path).write_bytes(b"x")
+
+    monkeypatch.setattr(type(db), "pull", fake_pull)
+    return lambda: len(calls)
 
 
 class TestVerifyDbExists:
@@ -30,7 +73,7 @@ class TestVerifyDbExists:
             db = DatabaseConfig()
             db.path = str(temp_db_path)
             db.alias = "test"
-            db.turso_url = "libsql://test.turso.io"
+            db.turso_url = "https://test-db.turso.io"
             db.token = "test-token"
             db._engine = None
             yield db
@@ -41,11 +84,15 @@ class TestVerifyDbExists:
         path.touch()
 
     def _create_metadata_file(self, path: Path):
-        """Helper to create a metadata -info file."""
+        """Helper to create a valid pyturso metadata -info file.
+
+        Must classify as "pyturso" (see replica_metadata.classify_metadata) —
+        verify_db_exists() now routes a present-and-present state through
+        heal_metadata(), which re-pulls anything that classifies otherwise.
+        """
         info_path = Path(f"{path}-info")
         info_path.parent.mkdir(parents=True, exist_ok=True)
-        info_data = {"generation": 1, "durable_frame_num": 100}
-        info_path.write_text(json.dumps(info_data))
+        info_path.write_text(json.dumps(_PYTURSO_INFO))
 
     def test_case1_neither_exists_syncs_and_creates_both(self, mock_db_config, temp_db_path):
         """
@@ -155,8 +202,8 @@ class TestVerifyDbExists:
         # Create db file without metadata
         self._create_db_file(temp_db_path)
 
-        # Mock _nuke_db_file to fail
-        with patch.object(mock_db_config, '_nuke_db_file', return_value=False):
+        # Mock nuke_db to fail
+        with patch.object(mock_db_config, 'nuke_db', return_value=False):
             with patch.object(mock_db_config, 'sync', side_effect=AssertionError("sync should not be called after nuke failure")):
                 result = mock_db_config.verify_db_exists()
 
@@ -233,7 +280,7 @@ class TestNeedsInit:
 
 
 class TestNukeMethods:
-    """Tests for _nuke_db_file, _nuke_metadata_file, and nuke_db methods."""
+    """Tests for nuke_db(): the db file and every pyturso sidecar go together."""
 
     @pytest.fixture
     def temp_db_path(self, tmp_path):
@@ -258,52 +305,29 @@ class TestNukeMethods:
         info_path.parent.mkdir(parents=True, exist_ok=True)
         info_path.write_text(json.dumps({"generation": 1}))
 
-    def test_nuke_db_file_deletes_existing_file(self, mock_db_config, temp_db_path):
-        """_nuke_db_file deletes the db file when it exists."""
-        self._create_db_file(temp_db_path)
-        assert temp_db_path.exists()
+    def _sidecar_paths(self, path: Path) -> list[Path]:
+        from mkts_backend.config.db_config import DB_FILE_SUFFIXES
 
-        result = mock_db_config._nuke_db_file()
+        return [Path(f"{path}{suffix}") for suffix in DB_FILE_SUFFIXES]
 
-        assert result is True
-        assert not temp_db_path.exists()
+    def test_nuke_db_deletes_every_sidecar(self, mock_db_config, temp_db_path):
+        """Regression guard: nuke_db once removed only .db and -info, leaving a
+        stale CDC queue and WAL beside the next freshly pulled database."""
+        temp_db_path.parent.mkdir(parents=True, exist_ok=True)
+        paths = self._sidecar_paths(temp_db_path)
+        for path in paths:
+            path.touch()
 
-    def test_nuke_db_file_returns_true_when_not_exists(self, mock_db_config, temp_db_path):
-        """_nuke_db_file returns True when file doesn't exist."""
-        assert not temp_db_path.exists()
-
-        result = mock_db_config._nuke_db_file()
-
-        assert result is True
-
-    def test_nuke_metadata_file_deletes_existing_file(self, mock_db_config, temp_db_path):
-        """_nuke_metadata_file deletes the metadata file when it exists."""
-        self._create_metadata_file(temp_db_path)
-        info_path = Path(f"{temp_db_path}-info")
-        assert info_path.exists()
-
-        result = mock_db_config._nuke_metadata_file()
+        result = mock_db_config.nuke_db()
 
         assert result is True
-        assert not info_path.exists()
+        assert [p for p in paths if p.exists()] == []
 
-    def test_nuke_metadata_file_returns_true_when_not_exists(self, mock_db_config, temp_db_path):
-        """_nuke_metadata_file returns True when file doesn't exist."""
-        info_path = Path(f"{temp_db_path}-info")
-        assert not info_path.exists()
-
-        result = mock_db_config._nuke_metadata_file()
-
-        assert result is True
-
-    def test_nuke_db_deletes_both_files(self, mock_db_config, temp_db_path):
-        """nuke_db deletes both db and metadata files."""
+    def test_nuke_db_deletes_db_and_metadata(self, mock_db_config, temp_db_path):
+        """The common case: db file plus its -info metadata."""
         self._create_db_file(temp_db_path)
         self._create_metadata_file(temp_db_path)
         info_path = Path(f"{temp_db_path}-info")
-
-        assert temp_db_path.exists()
-        assert info_path.exists()
 
         result = mock_db_config.nuke_db()
 
@@ -331,7 +355,7 @@ class TestNukeMethods:
         assert not info_path.exists()
 
     def test_nuke_db_handles_neither_exists(self, mock_db_config, temp_db_path):
-        """nuke_db returns True when neither file exists."""
+        """nuke_db returns True when no files exist."""
         result = mock_db_config.nuke_db()
 
         assert result is True
@@ -370,43 +394,6 @@ class TestConfirmMetadataExists:
         assert mock_db_config.confirm_metadata_exists() is False
 
 
-class TestReadDbInfo:
-    """Tests for read_db_info() method."""
-
-    @pytest.fixture
-    def temp_db_path(self, tmp_path):
-        return tmp_path / "test.db"
-
-    @pytest.fixture
-    def mock_db_config(self, temp_db_path):
-        from mkts_backend.config.db_config import DatabaseConfig
-
-        with patch.object(DatabaseConfig, '__init__', lambda self, *args, **kwargs: None):
-            db = DatabaseConfig()
-            db.path = str(temp_db_path)
-            db.alias = "test"
-            yield db
-
-    def test_returns_content_when_exists(self, mock_db_config, temp_db_path):
-        """Returns file content when -info file exists."""
-        info_path = Path(f"{temp_db_path}-info")
-        info_path.parent.mkdir(parents=True, exist_ok=True)
-        expected_data = {"generation": 5, "durable_frame_num": 500}
-        info_path.write_text(json.dumps(expected_data))
-
-        result = mock_db_config.read_db_info()
-
-        assert result is not None
-        parsed = json.loads(result)
-        assert parsed == expected_data
-
-    def test_returns_none_when_missing(self, mock_db_config, temp_db_path):
-        """Returns None when -info file doesn't exist."""
-        result = mock_db_config.read_db_info()
-
-        assert result is None
-
-
 class TestIntegrationScenarios:
     """Integration tests for realistic database initialization scenarios."""
 
@@ -422,7 +409,7 @@ class TestIntegrationScenarios:
             db = DatabaseConfig()
             db.path = str(temp_db_path)
             db.alias = "test"
-            db.turso_url = "libsql://test.turso.io"
+            db.turso_url = "https://test-db.turso.io"
             db.token = "test-token"
             yield db
 
@@ -431,9 +418,10 @@ class TestIntegrationScenarios:
         path.touch()
 
     def _create_metadata_file(self, path: Path):
+        """Valid pyturso metadata — see the note on the same helper above."""
         info_path = Path(f"{path}-info")
         info_path.parent.mkdir(parents=True, exist_ok=True)
-        info_path.write_text(json.dumps({"generation": 1, "durable_frame_num": 100}))
+        info_path.write_text(json.dumps(_PYTURSO_INFO))
 
     def test_fresh_ci_environment_initialization(self, mock_db_config, temp_db_path):
         """
@@ -500,3 +488,61 @@ class TestIntegrationScenarios:
         assert result2 is True
         assert result3 is True
         assert len(sync_calls) == 0, "sync should never be called for valid db state"
+
+
+class TestHealMetadata:
+    """A replica whose -info is not pyturso metadata must be repaired, not used.
+
+    verify_db_exists() previously accepted any -info file, so a libsql-era
+    sidecar surviving a cutover passed the check and every later engine call
+    raised turso.lib.DatabaseError.
+    """
+
+    def test_pyturso_metadata_is_left_alone(self, tmp_path, monkeypatch):
+        db = _make_db(tmp_path, monkeypatch)
+        _write_pyturso_info(db.path)
+        Path(db.path).write_bytes(b"")
+        pulls = _count_pulls(db, monkeypatch)
+        assert db.heal_metadata() is True
+        assert pulls() == 0
+
+    def test_libsql_metadata_triggers_repull(self, tmp_path, monkeypatch):
+        db = _make_db(tmp_path, monkeypatch)
+        _write_libsql_info(db.path)
+        Path(db.path).write_bytes(b"")
+        pulls = _count_pulls(db, monkeypatch, heals=True)
+        assert db.heal_metadata() is True
+        assert pulls() == 1
+
+    def test_corrupt_metadata_triggers_repull(self, tmp_path, monkeypatch):
+        db = _make_db(tmp_path, monkeypatch)
+        Path(f"{db.path}-info").write_text("not json")
+        Path(db.path).write_bytes(b"")
+        pulls = _count_pulls(db, monkeypatch, heals=True)
+        assert db.heal_metadata() is True
+        assert pulls() == 1
+
+    def test_missing_metadata_triggers_repull(self, tmp_path, monkeypatch):
+        db = _make_db(tmp_path, monkeypatch)
+        Path(db.path).write_bytes(b"")
+        pulls = _count_pulls(db, monkeypatch, heals=True)
+        assert db.heal_metadata() is True
+        assert pulls() == 1
+
+    def test_pull_that_does_not_repair_returns_false(self, tmp_path, monkeypatch):
+        """A pull that leaves non-pyturso metadata must fail loudly."""
+        db = _make_db(tmp_path, monkeypatch)
+        _write_libsql_info(db.path)
+        Path(db.path).write_bytes(b"")
+        monkeypatch.setattr(type(db), "pull", lambda self: None)
+        assert db.heal_metadata() is False
+
+    def test_verify_db_exists_heals_libsql_metadata(self, tmp_path, monkeypatch):
+        """Case 2 (db + metadata both present) must no longer short-circuit
+        on a libsql -info."""
+        db = _make_db(tmp_path, monkeypatch)
+        _write_libsql_info(db.path)
+        Path(db.path).write_bytes(b"x")
+        pulls = _count_pulls(db, monkeypatch, heals=True)
+        assert db.verify_db_exists() is True
+        assert pulls() >= 1

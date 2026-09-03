@@ -1,0 +1,182 @@
+"""Shape checks for the pyturso -info sidecar.
+
+A libsql-era -info is valid JSON, so an existence check or a bare
+json.loads() accepts it and every later engine call raises
+turso.lib.DatabaseError. These fixtures pin the discriminators.
+"""
+import json
+
+import pytest
+
+from mkts_backend.config.replica_metadata import (
+    classify_metadata,
+    metadata_remote_url,
+)
+
+PYTURSO_INFO = {
+    "version": "v1",
+    "client_unique_id": "turso-sync-py-2d5e3bef-a5f3-407c-a807-e386e2ee1c0e",
+    "synced_revision": {"type": "v1", "revision": "{}"},
+    "last_pull_unix_time": 1787620313,
+    "last_push_unix_time": 1787620467,
+    "saved_configuration": {
+        "remote_url": "https://wcmktnewkeeptest-orthelt.aws-us-east-1.turso.io"
+    },
+}
+LIBSQL_INFO = {"hash": "0" * 64, "version": 0, "generation": 1}
+
+
+@pytest.fixture
+def db_path(tmp_path):
+    p = tmp_path / "sample.db"
+    p.write_bytes(b"")
+    return p
+
+
+def write_info(db_path, payload):
+    (db_path.parent / f"{db_path.name}-info").write_text(
+        payload if isinstance(payload, str) else json.dumps(payload)
+    )
+
+
+def test_pyturso_metadata_classified(db_path):
+    write_info(db_path, PYTURSO_INFO)
+    assert classify_metadata(db_path) == "pyturso"
+
+
+def test_libsql_metadata_classified(db_path):
+    write_info(db_path, LIBSQL_INFO)
+    assert classify_metadata(db_path) == "libsql"
+
+
+def test_non_json_is_corrupt(db_path):
+    write_info(db_path, "not json at all")
+    assert classify_metadata(db_path) == "corrupt"
+
+
+def test_json_of_unknown_shape_is_corrupt(db_path):
+    write_info(db_path, {"something": "else"})
+    assert classify_metadata(db_path) == "corrupt"
+
+
+def test_json_scalar_is_corrupt(db_path):
+    write_info(db_path, "42")
+    assert classify_metadata(db_path) == "corrupt"
+
+
+def test_absent_metadata_is_missing(db_path):
+    assert classify_metadata(db_path) == "missing"
+
+
+def test_orphaned_metadata_still_classified(tmp_path):
+    """No .db beside it. Classification describes the -info only."""
+    orphan = tmp_path / "gone.db"
+    write_info(orphan, PYTURSO_INFO)
+    assert classify_metadata(orphan) == "pyturso"
+
+
+def test_empty_string_version_is_not_pyturso(db_path):
+    write_info(db_path, {**PYTURSO_INFO, "version": ""})
+    assert classify_metadata(db_path) == "corrupt"
+
+
+def test_empty_client_unique_id_is_not_pyturso(db_path):
+    write_info(db_path, {**PYTURSO_INFO, "client_unique_id": ""})
+    assert classify_metadata(db_path) == "corrupt"
+
+
+def test_non_string_client_unique_id_is_not_pyturso(db_path):
+    write_info(db_path, {**PYTURSO_INFO, "client_unique_id": 123})
+    assert classify_metadata(db_path) == "corrupt"
+
+
+def test_unknown_string_version_is_not_silently_accepted(db_path):
+    write_info(db_path, {**PYTURSO_INFO, "version": "v999"})
+    assert classify_metadata(db_path) == "corrupt"
+
+
+def test_remote_url_read_from_metadata(db_path):
+    write_info(db_path, PYTURSO_INFO)
+    assert metadata_remote_url(db_path) == (
+        "https://wcmktnewkeeptest-orthelt.aws-us-east-1.turso.io"
+    )
+
+
+def test_remote_url_none_when_metadata_missing(db_path):
+    assert metadata_remote_url(db_path) is None
+
+
+def test_remote_url_none_when_metadata_libsql(db_path):
+    write_info(db_path, LIBSQL_INFO)
+    assert metadata_remote_url(db_path) is None
+
+
+class TestRemoteMatchesMetadata:
+    """A test-data replica left under a production configuration must be
+    caught before it is read or pushed."""
+
+    def _db(self, tmp_path, url):
+        from mkts_backend.config.db_config import DatabaseConfig
+
+        db = DatabaseConfig.__new__(DatabaseConfig)
+        db.alias = "primary"
+        db.path = str(tmp_path / "market.db")
+        db.turso_url = url
+        db.token = "t"
+        db._engine = None
+        return db
+
+    def test_matching_remote(self, tmp_path):
+        db = self._db(tmp_path, "https://wcmktnewkeeptest-orthelt.aws-us-east-1.turso.io")
+        write_info(tmp_path / "market.db", PYTURSO_INFO)
+        assert db.remote_matches_metadata() is True
+
+    def test_mismatched_remote(self, tmp_path):
+        db = self._db(tmp_path, "https://wcmktnewkeep-orthelt.aws-us-east-1.turso.io")
+        write_info(tmp_path / "market.db", PYTURSO_INFO)
+        assert db.remote_matches_metadata() is False
+
+    def test_scheme_and_trailing_slash_ignored(self, tmp_path):
+        db = self._db(tmp_path, "libsql://wcmktnewkeeptest-orthelt.aws-us-east-1.turso.io/")
+        write_info(tmp_path / "market.db", PYTURSO_INFO)
+        assert db.remote_matches_metadata() is True
+
+    def test_unknown_without_metadata(self, tmp_path):
+        db = self._db(tmp_path, "https://anything.turso.io")
+        assert db.remote_matches_metadata() is None
+
+    def test_unknown_without_configured_url(self, tmp_path):
+        db = self._db(tmp_path, None)
+        write_info(tmp_path / "market.db", PYTURSO_INFO)
+        assert db.remote_matches_metadata() is None
+
+    def test_engine_refuses_mismatched_remote_before_create_engine(
+        self, tmp_path, monkeypatch
+    ):
+        db = self._db(tmp_path, "https://wcmktnewkeep-orthelt.aws-us-east-1.turso.io")
+        write_info(tmp_path / "market.db", PYTURSO_INFO)
+        called = False
+
+        def forbidden(*args, **kwargs):
+            nonlocal called
+            called = True
+            raise AssertionError("create_engine must not run on a mismatched replica")
+
+        monkeypatch.setattr("mkts_backend.config.db_config.create_engine", forbidden)
+        with pytest.raises(RuntimeError, match="different Turso remote"):
+            _ = db.engine
+        assert called is False
+
+    def test_push_and_pull_refuse_mismatched_remote(self, tmp_path):
+        db = self._db(tmp_path, "https://wcmktnewkeep-orthelt.aws-us-east-1.turso.io")
+        write_info(tmp_path / "market.db", PYTURSO_INFO)
+        with pytest.raises(RuntimeError, match="different Turso remote"):
+            db.push()
+        with pytest.raises(RuntimeError, match="different Turso remote"):
+            db.pull()
+
+    def test_turso_local_connect_refuses_mismatched_remote(self, tmp_path):
+        db = self._db(tmp_path, "https://wcmktnewkeep-orthelt.aws-us-east-1.turso.io")
+        write_info(tmp_path / "market.db", PYTURSO_INFO)
+        with pytest.raises(RuntimeError, match="different Turso remote"):
+            _ = db.turso_local_connect

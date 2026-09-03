@@ -11,15 +11,15 @@ physical database — but column definitions are owned here.
 
 from __future__ import annotations
 
-from sqlalchemy import Column, DateTime, Integer, String, UniqueConstraint
+from sqlalchemy import Column, DateTime, String
 
 
 class UpdateLogMixin:
     __tablename__ = "updatelog"
-    __table_args__ = (
-        UniqueConstraint("table_name", name="uq_updatelog_table_name"),
-    )
 
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    table_name = Column(String, nullable=False)
+    # table_name is the natural key — one row per table. Using it as the
+    # PRIMARY KEY (instead of a surrogate autoincrement id) makes
+    # ON CONFLICT(table_name) valid on every DB and removes the id whose
+    # churn under delete+insert poisoned the Turso CDC push queue.
+    table_name = Column(String, primary_key=True)
     timestamp = Column(DateTime, nullable=False)

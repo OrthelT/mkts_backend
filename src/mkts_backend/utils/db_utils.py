@@ -13,7 +13,7 @@ logger = configure_logging(__name__)
 sde_db = DatabaseConfig("sde")
 wcmkt_db = DatabaseConfig("wcmkt")
 
-def add_missing_items_to_watchlist(missing_items: list[int], remote: bool = False, db_alias: str = "wcmkt"):
+def add_missing_items_to_watchlist(missing_items: list[int], remote: bool = False, db_alias: str = "wcmkt") -> bool:
     """
     Add missing items to the watchlist by fetching type information from SDE database.
 
@@ -22,11 +22,14 @@ def add_missing_items_to_watchlist(missing_items: list[int], remote: bool = Fals
         remote: Whether to use remote database (default: False for local)
 
     Returns:
-        String message indicating success and items added
+        True if the watchlist is left in the desired state (items inserted, or
+        already present), False on any failure. Callers that need a push must
+        do it themselves at the command boundary — this function only writes
+        through the local engine.
     """
     if not missing_items:
         logger.warning("No items provided to add to watchlist")
-        return "No items provided to add to watchlist"
+        return False
 
     logger.info(f"Adding {len(missing_items)} items to watchlist: {missing_items}")
 
@@ -35,7 +38,7 @@ def add_missing_items_to_watchlist(missing_items: list[int], remote: bool = Fals
 
     if df.empty:
         logger.error("No type information found for provided type IDs")
-        return "No type information found for provided type IDs"
+        return False
 
     # Get current watchlist to check for duplicates
     db = DatabaseConfig(db_alias)
@@ -55,7 +58,7 @@ def add_missing_items_to_watchlist(missing_items: list[int], remote: bool = Fals
 
     if new_items.empty:
         logger.info("All provided items already exist in watchlist")
-        return f"All {len(missing_items)} items already exist in watchlist"
+        return True
 
     # Prepare data for insertion
     inv_cols = ['type_id', 'type_name', 'group_id', 'group_name', 'category_id', 'category_name']
@@ -90,11 +93,11 @@ def add_missing_items_to_watchlist(missing_items: list[int], remote: bool = Fals
 
         engine.dispose()
         logger.info(f"Successfully added {len(new_items)} new items to watchlist")
-        return f"Added {len(new_items)} items to watchlist: {new_items['type_name'].tolist()}"
+        return True
 
     except Exception as e:
         logger.error(f"Error adding items to watchlist: {e}")
-        return f"Error adding items to watchlist: {e}"
+        return False
 
 def get_type_info(type_ids: list[int], remote: bool = False):
     engine = sde_db.remote_engine if remote else sde_db.engine

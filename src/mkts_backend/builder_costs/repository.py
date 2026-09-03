@@ -1,8 +1,8 @@
 """Buildcost.db access for the builder-costs flow.
 
 Owns reads and writes against ``buildcost.db`` (and its Turso remote). Writes
-target the remote engine; the local mirror is refreshed via
-``DatabaseConfig.sync()`` separately.
+land on the local replica and reach Turso via ``DatabaseConfig.push()``,
+called at the end of every writer in this module.
 """
 
 from __future__ import annotations
@@ -27,32 +27,54 @@ _UPSERT_CHUNK_SIZE = 500
 
 
 def init_buildcost_tables(db: DatabaseConfig) -> None:
-    """Idempotently create build_watchlist, builder_costs and updatelog on the remote.
+    """Idempotently create build_watchlist, builder_costs and updatelog.
 
-    ``checkfirst=True`` is per-table — the existing structures/rigs/industry_index
-    tables are untouched. Each create is logged on failure so a partial init
-    surfaces *which* table the libsql remote rejected, not just a raw stack.
+    Inspects which of the three tables are actually missing before creating
+    anything, and pushes once only if at least one table was created — a
+    no-op daily run (schema already present) must not push an unnecessary
+    DDL-only transaction. ``checkfirst=True`` is per-table — the existing
+    structures/rigs/industry_index tables are untouched. Each create is
+    logged on failure so a partial init surfaces *which* table the Turso
+    remote rejected, not just a raw stack.
     """
-    engine = db.remote_engine
-    for model in (BuildWatchlist, BuilderCosts, UpdateLog):
+    engine = db.engine
+    models = (BuildWatchlist, BuilderCosts, UpdateLog)
+    with engine.connect() as conn:
+        existing_tables = {
+            row[0]
+            for row in conn.execute(
+                text("SELECT name FROM sqlite_master WHERE type='table'")
+            ).fetchall()
+        }
+
+    created_any = False
+    for model in models:
+        if model.__tablename__ in existing_tables:
+            continue
         try:
             model.__table__.create(engine, checkfirst=True)
+            created_any = True
         except SQLAlchemyError:
             logger.error(
                 f"buildcost.db schema init failed for table {model.__tablename__!r}"
             )
             raise
-    logger.info(
-        "Confirmed buildcost.db schema for build_watchlist, builder_costs, updatelog"
-    )
+
+    if created_any:
+        db.push()
+        logger.info(
+            "Confirmed buildcost.db schema for build_watchlist, builder_costs, "
+            "updatelog (pushed newly created tables)"
+        )
+    else:
+        logger.info(
+            "Confirmed buildcost.db schema for build_watchlist, builder_costs, "
+            "updatelog (already present, no push needed)"
+        )
 
 
 def read_jita_prices(market_db: DatabaseConfig) -> dict[int, float]:
-    """Return ``{type_id: sell_price}`` from the given market DB local mirror.
-
-    Empty dict on failure or empty table — Jita prices only gate ME/runs for
-    high-value T2 modules; absence degrades gracefully.
-    """
+    """Return ``{type_id: sell_price}`` from the given market DB local mirror."""
     try:
         with market_db.engine.connect() as conn:
             df = pd.read_sql_query(
@@ -64,7 +86,9 @@ def read_jita_prices(market_db: DatabaseConfig) -> dict[int, float]:
         return {}
 
     if df.empty:
-        logger.info(f"No jita_prices rows in {market_db.alias}; high-value gating disabled")
+        logger.info(
+            f"No jita_prices rows in {market_db.alias}; high-value gating disabled"
+        )
         return {}
 
     return {
@@ -75,17 +99,18 @@ def read_jita_prices(market_db: DatabaseConfig) -> dict[int, float]:
 
 
 def read_build_watchlist(db: DatabaseConfig) -> list[dict]:
-    """Return all rows from build_watchlist as plain dicts.
-
-    Reads the local mirror; sync the remote first if up-to-date data matters.
-    """
+    """Return all rows from build_watchlist as plain dicts."""
     with db.engine.connect() as conn:
-        rows = conn.execute(
-            text(
-                "SELECT type_id, type_name, group_name, category_id "
-                "FROM build_watchlist"
+        rows = (
+            conn.execute(
+                text(
+                    "SELECT type_id, type_name, group_name, category_id "
+                    "FROM build_watchlist"
+                )
             )
-        ).mappings().all()
+            .mappings()
+            .all()
+        )
     return [dict(row) for row in rows]
 
 
@@ -106,7 +131,7 @@ def delete_build_watchlist_rows(db: DatabaseConfig, type_ids: list[int]) -> int:
         return 0
 
     table = BuildWatchlist.__table__
-    engine = db.remote_engine
+    engine = db.engine
     deleted = 0
     session = Session(bind=engine)
     try:
@@ -116,14 +141,14 @@ def delete_build_watchlist_rows(db: DatabaseConfig, type_ids: list[int]) -> int:
                 placeholders = ", ".join(f":t_{i}" for i, _ in enumerate(chunk))
                 params = {f"t_{i}": tid for i, tid in enumerate(chunk)}
                 result = session.execute(
-                    text(
-                        f"DELETE FROM {table.name} WHERE type_id IN ({placeholders})"
-                    ),
+                    text(f"DELETE FROM {table.name} WHERE type_id IN ({placeholders})"),
                     params,
                 )
                 deleted += result.rowcount or 0
     finally:
         session.close()
+    logger.debug("Pushing changes to remote db.")
+    db.push()
     logger.info(f"Deleted {deleted} rows from build_watchlist")
     return deleted
 
@@ -139,7 +164,7 @@ def upsert_build_watchlist(db: DatabaseConfig, items: list[dict]) -> int:
         return 0
 
     table = BuildWatchlist.__table__
-    engine = db.remote_engine
+    engine = db.engine
     session = Session(bind=engine)
     try:
         with session.begin():
@@ -158,6 +183,8 @@ def upsert_build_watchlist(db: DatabaseConfig, items: list[dict]) -> int:
                 session.execute(stmt)
     finally:
         session.close()
+    logger.debug(f"pushing batched changes for {len(items)} to remote")
+    db.push()
     logger.info(f"Upserted {len(items)} rows to build_watchlist")
     return len(items)
 
@@ -172,7 +199,7 @@ def delete_orphan_builder_costs(db: DatabaseConfig) -> int:
     ensure build_watchlist is non-empty before invoking — the runner enforces
     this in ``run()`` before reaching the prune step.
     """
-    engine = db.remote_engine
+    engine = db.engine
     deleted = 0
     session = Session(bind=engine)
     try:
@@ -186,6 +213,10 @@ def delete_orphan_builder_costs(db: DatabaseConfig) -> int:
             deleted = result.rowcount or 0
     finally:
         session.close()
+    # Every other writer here pushes its own changes. Without this the prune
+    # only reaches Turso when a later caller happens to push — the runner does,
+    # but not if its next step raises.
+    db.push()
     if deleted:
         logger.info(f"Pruned {deleted} orphan rows from builder_costs")
     return deleted
@@ -197,7 +228,7 @@ def upsert_builder_costs(db: DatabaseConfig, records: list[dict]) -> int:
         return 0
 
     table = BuilderCosts.__table__
-    engine = db.remote_engine
+    engine = db.engine
     session = Session(bind=engine)
     try:
         with session.begin():
@@ -217,13 +248,13 @@ def upsert_builder_costs(db: DatabaseConfig, records: list[dict]) -> int:
                 session.execute(stmt)
     finally:
         session.close()
+    logger.debug(f"pushing builder_costs to remote: {db.turso_url}")
+    db.push()
     logger.info(f"Upserted {len(records)} rows to builder_costs")
     return len(records)
 
 
-def log_buildcost_update(
-    db: DatabaseConfig, table_name: str = "buildcost"
-) -> datetime:
+def log_buildcost_update(db: DatabaseConfig, table_name: str = "buildcost") -> datetime:
     """Stamp the remote ``updatelog`` so the wcmkts_new frontend detects the change.
 
     Targets buildcost.db's remote engine and the buildcost-bound ``UpdateLog``
@@ -233,7 +264,7 @@ def log_buildcost_update(
     stamped timestamp so callers can surface it in their result record.
     """
     stamped_at = datetime.now(timezone.utc)
-    engine = db.remote_engine
+    engine = db.engine
     stmt = sqlite_insert(UpdateLog.__table__).values(
         table_name=table_name, timestamp=stamped_at
     )
@@ -243,5 +274,7 @@ def log_buildcost_update(
     )
     with Session(bind=engine) as session, session.begin():
         session.execute(stmt)
+    logger.debug("Pushing timestamps to builder_costs updatelog.")
+    db.push()
     logger.info(f"Stamped buildcost updatelog for table_name={table_name!r}")
     return stamped_at

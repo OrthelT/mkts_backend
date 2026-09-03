@@ -8,6 +8,7 @@ from mkts_backend.utils.validation import validate_all
 from mkts_backend.cli_tools.cli_db_commands import check_tables
 from mkts_backend.config.logging_config import configure_logging
 import os
+import sys
 
 logger = configure_logging(__name__)
 
@@ -67,6 +68,39 @@ def parse_args(args: list[str]) -> dict | None:
                 })"
             )
         exit()
+
+    if "--list-db-paths" in args:
+        from mkts_backend.config.settings_service import SettingsService
+
+        for alias, cfg in SettingsService().database_routing().items():
+            print(f"{alias}\t{cfg['file']}")
+        raise SystemExit(0)
+
+    db_path_arg = next(
+        (a for a in args if a.startswith("--db-path=")), None
+    )
+    if db_path_arg:
+        from mkts_backend.config.settings_service import (
+            SettingsService,
+            get_all_market_contexts,
+        )
+
+        wanted = db_path_arg.split("=", 1)[1]
+        routing = SettingsService().database_routing()
+        if wanted in routing:
+            print(routing[wanted]["file"])
+            raise SystemExit(0)
+        # CI matrix legs use the [markets.<section>] name, not the alias.
+        contexts = get_all_market_contexts()
+        if wanted in contexts:
+            print(contexts[wanted].database_file)
+            raise SystemExit(0)
+        print(
+            f"Unknown database: {wanted}. "
+            f"Known: {', '.join(sorted(set(routing) | set(contexts)))}",
+            file=sys.stderr,
+        )
+        raise SystemExit(1)
 
     if p.has_flag("check_tables"):
         check_tables(market_alias)

@@ -1,5 +1,5 @@
 import pandas as pd
-from sqlalchemy import select, insert, func, or_, delete
+from sqlalchemy import select, insert, func, or_, delete, text
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
@@ -20,7 +20,7 @@ from mkts_backend.config.logging_config import configure_logging
 from mkts_backend.db.models import Base, MarketHistory, MarketOrders, UpdateLog
 from mkts_backend.config.db_config import DatabaseConfig
 from mkts_backend.config.settings_service import SettingsService
-from mkts_backend.db.db_queries import get_table_length, get_remote_status
+from mkts_backend.db.db_queries import get_table_length
 
 if TYPE_CHECKING:
     from mkts_backend.config.market_context import MarketContext
@@ -34,6 +34,7 @@ _db = None
 _sde_db = None
 TableModel = TypeVar("TableModel", bound=Base)
 
+
 def _get_db(market_ctx: Optional["MarketContext"] = None) -> DatabaseConfig:
     """Get database config, optionally using market context."""
     if market_ctx is not None:
@@ -43,12 +44,14 @@ def _get_db(market_ctx: Optional["MarketContext"] = None) -> DatabaseConfig:
         _db = DatabaseConfig("wcmkt")
     return _db
 
+
 def _get_sde_db() -> DatabaseConfig:
     """Get SDE database config (shared across all markets)."""
     global _sde_db
     if _sde_db is None:
         _sde_db = DatabaseConfig("sde")
     return _sde_db
+
 
 def handle_nulls(df: pd.DataFrame, tabname: str) -> pd.DataFrame:
     # CRITICAL SAFETY CHECK: Clean all NaN/inf values before conversion to dict
@@ -64,64 +67,73 @@ def handle_nulls(df: pd.DataFrame, tabname: str) -> pd.DataFrame:
         df = df.replace([np.inf, -np.inf], np.nan)
 
         # Fill NaN in numeric columns with 0
-        numeric_cols = df.select_dtypes(include=['number']).columns
+        numeric_cols = df.select_dtypes(include=["number"]).columns
         df[numeric_cols] = df[numeric_cols].fillna(0)
 
         # Fill NaN in string columns with empty string
-        string_cols = df.select_dtypes(include=['object']).columns
-        df[string_cols] = df[string_cols].fillna('')
-
+        string_cols = df.select_dtypes(include=["object"]).columns
+        df[string_cols] = df[string_cols].fillna("")
 
         # Fill NaN in datetime columns with current timestamp
         # SQLite DateTime type requires Python datetime objects, not None or strings
-        datetime_cols = df.select_dtypes(include=['datetime', 'datetime64']).columns.tolist()
+        datetime_cols = df.select_dtypes(
+            include=["datetime", "datetime64"]
+        ).columns.tolist()
 
         for col in datetime_cols:
             null_mask = df[col].isna()
             if null_mask.any():
                 null_count = null_mask.sum()
                 logger.warning(f"Null {col} found in {tabname}: {null_count} rows")
-                
+
                 # Log details of rows with null timestamps (for debugging)
-                if col == 'timestamp' and null_count <= 10:
+                if col == "timestamp" and null_count <= 10:
                     null_rows = df[null_mask]
                     null_info = []
                     for idx, row in null_rows.iterrows():
-                        info = {"type_id": row.get("type_id"), "type_name": row.get("type_name")}
+                        info = {
+                            "type_id": row.get("type_id"),
+                            "type_name": row.get("type_name"),
+                        }
                         if "fit_id" in row:
                             info["fit_id"] = row.get("fit_id")
                         null_info.append(info)
                         logger.info(f"Null timestamp row: {info}")
-                    
+
                     os.makedirs("data", exist_ok=True)
                     with open("data/null_timestamps.json", "w") as f:
                         json.dump(null_info, f, indent=4)
-                
+
                 # Fill NaT with current datetime (SQLite requires datetime objects, not None)
                 # Use timezone-naive datetime to match pandas datetime64[ns] dtype
-                current_time = pd.Timestamp.now('UTC').tz_localize(None)
+                current_time = pd.Timestamp.now("UTC").tz_localize(None)
                 df.loc[null_mask, col] = current_time
-                logger.info(f"Filled {null_count} null {col} values with current timestamp")
+                logger.info(
+                    f"Filled {null_count} null {col} values with current timestamp"
+                )
 
         # Final check
         if df.isnull().any().any():
-            logger.error(f"NaN values STILL present after cleaning: {df.isnull().sum()}")
+            logger.error(
+                f"NaN values STILL present after cleaning: {df.isnull().sum()}"
+            )
             remaining_nan_cols = df.columns[df.isnull().any()].tolist()
             logger.error(f"Remaining NaN in columns: {remaining_nan_cols}")
             # Last resort: fill remaining NaN values
             for col in remaining_nan_cols:
                 if col in datetime_cols:
                     # Fill datetime columns with current timestamp (timezone-naive)
-                    current_time = pd.Timestamp.now('UTC').tz_localize(None)
+                    current_time = pd.Timestamp.now("UTC").tz_localize(None)
                     df.loc[df[col].isna(), col] = current_time
                 else:
                     df[col] = df[col].fillna(0)
     return df
 
+
 def upsert_database(
     table: type[TableModel],
     df: pd.DataFrame,
-    market_ctx: Optional["MarketContext"] = None
+    market_ctx: Optional["MarketContext"] = None,
 ) -> bool:
     """Upsert data into the database.
 
@@ -157,8 +169,10 @@ def upsert_database(
     db = _get_db(market_ctx)
     logger.info(f"updating: {db.alias} ({db.path})")
 
-    remote_engine = db.remote_engine
-    session = Session(bind=remote_engine)
+    # TODO "remove remote_db"
+    # remote_engine = db.remote_engine
+    engine = db.engine
+    session = Session(bind=engine)
 
     t = table.__table__
     pk_cols = list(t.primary_key.columns)
@@ -173,7 +187,6 @@ def upsert_database(
     try:
         logger.info(f"Updating {len(data)} rows into {table.__tablename__}")
         with session.begin():
-
             if is_wipe_replace:
                 logger.info(
                     f"Wiping and replacing {len(data)} rows into {table.__tablename__}"
@@ -190,7 +203,9 @@ def upsert_database(
                             f"  • chunk {idx // chunk_size + 1}, {len(chunk)} rows"
                         )
 
-                count = session.execute(select(func.count()).select_from(t)).scalar_one()
+                count = session.execute(
+                    select(func.count()).select_from(t)
+                ).scalar_one()
                 if count != len(data):
                     raise RuntimeError(
                         f"Row count mismatch: expected {len(data)}, got {count}"
@@ -200,14 +215,20 @@ def upsert_database(
                 deleted_count = 0
                 if isinstance(pk_col, list):
                     # Composite primary key - build list of tuples
-                    incoming_pks = [tuple(row[col.name] for col in pk_col) for row in data]
+                    incoming_pks = [
+                        tuple(row[col.name] for col in pk_col) for row in data
+                    ]
                     # For composite keys, build a condition for each tuple
                     delete_conditions = []
                     for pk_tuple in incoming_pks:
-                        tuple_conditions = [pk_cols[i] == pk_tuple[i] for i in range(len(pk_cols))]
+                        tuple_conditions = [
+                            pk_cols[i] == pk_tuple[i] for i in range(len(pk_cols))
+                        ]
                         delete_conditions.append(tuple_conditions)
                     # Delete where NOT IN incoming PKs (complex for composite, skip for now)
-                    logger.warning(f"Stale record deletion not yet implemented for composite primary keys in {tabname}")
+                    logger.warning(
+                        f"Stale record deletion not yet implemented for composite primary keys in {tabname}"
+                    )
                 else:
                     # Single primary key - delete records not in incoming data
                     incoming_pks = [row[pk_col.name] for row in data]
@@ -225,7 +246,9 @@ def upsert_database(
                             delete_result = session.execute(delete_stmt)
                             deleted_count += delete_result.rowcount
 
-                        chunk_batches = (len(stale_pks) + delete_chunk_size - 1) // delete_chunk_size
+                        chunk_batches = (
+                            len(stale_pks) + delete_chunk_size - 1
+                        ) // delete_chunk_size
                         logger.info(
                             f"Deleted {deleted_count} stale records from {tabname} "
                             f"in {chunk_batches} chunks"
@@ -233,7 +256,12 @@ def upsert_database(
 
                 non_pk_cols = [c for c in t.columns if c not in pk_cols]
                 # Exclude timestamp columns from change detection to avoid unnecessary updates
-                data_cols = [c for c in non_pk_cols if c.name not in ['timestamp', 'last_update', 'created_at', 'updated_at']]
+                data_cols = [
+                    c
+                    for c in non_pk_cols
+                    if c.name
+                    not in ["timestamp", "last_update", "created_at", "updated_at"]
+                ]
 
                 total_updated = 0
                 total_skipped = 0
@@ -247,7 +275,9 @@ def upsert_database(
 
                     # Only check for changes in data columns (exclude timestamp fields)
                     if data_cols:
-                        changed_pred = or_(*[c.is_distinct_from(excluded[c.name]) for c in data_cols])
+                        changed_pred = or_(
+                            *[c.is_distinct_from(excluded[c.name]) for c in data_cols]
+                        )
                     else:
                         # If no data columns to check, always update (shouldn't happen in practice)
                         changed_pred = True
@@ -261,33 +291,58 @@ def upsert_database(
                     else:
                         # Single primary key
                         stmt = base.on_conflict_do_update(
-                            index_elements=[pk_col], set_=set_mapping, where=changed_pred
+                            index_elements=[pk_col],
+                            set_=set_mapping,
+                            where=changed_pred,
                         )
 
                     result = session.execute(stmt)
                     # Count affected rows (updated + inserted)
                     chunk_affected = result.rowcount
-                    chunk_updated = min(chunk_affected, len(chunk))  # Approximate updates
+                    chunk_updated = min(
+                        chunk_affected, len(chunk)
+                    )  # Approximate updates
                     chunk_skipped = len(chunk) - chunk_updated
 
                     total_updated += chunk_updated
                     total_skipped += chunk_skipped
 
-                    print(f"\r upserting {table.__tablename__}. {round(100*(idx/len(data)),3)}%", end="", flush=True)
+                    print(
+                        f"\r upserting {table.__tablename__}. {round(100 * (idx / len(data)), 3)}%",
+                        end="",
+                        flush=True,
+                    )
 
                 # Calculate insertions: total incoming minus those that already existed
-                count_after = session.execute(select(func.count()).select_from(t)).scalar_one()
-                count_before = count_after - (deleted_count if not isinstance(pk_col, list) else 0)
-                total_inserted = max(0, len(data) - (count_before - (deleted_count if not isinstance(pk_col, list) else 0)))
+                count_after = session.execute(
+                    select(func.count()).select_from(t)
+                ).scalar_one()
+                count_before = count_after - (
+                    deleted_count if not isinstance(pk_col, list) else 0
+                )
+                total_inserted = max(
+                    0,
+                    len(data)
+                    - (
+                        count_before
+                        - (deleted_count if not isinstance(pk_col, list) else 0)
+                    ),
+                )
 
                 if deleted_count > 0:
-                    logger.info(f"Upsert summary for {table.__tablename__}: {deleted_count} rows deleted, {total_inserted} rows inserted, {total_updated} rows updated, {total_skipped} rows skipped (no data changes)")
+                    logger.info(
+                        f"Upsert summary for {table.__tablename__}: {deleted_count} rows deleted, {total_inserted} rows inserted, {total_updated} rows updated, {total_skipped} rows skipped (no data changes)"
+                    )
                 else:
-                    logger.info(f"Upsert summary for {table.__tablename__}: {total_inserted} rows inserted, {total_updated} rows updated, {total_skipped} rows skipped (no data changes)")
+                    logger.info(
+                        f"Upsert summary for {table.__tablename__}: {total_inserted} rows inserted, {total_updated} rows updated, {total_skipped} rows skipped (no data changes)"
+                    )
             # Calculate distinct incoming records based on primary key type
             if isinstance(pk_col, list):
                 # Composite primary key - create tuples of all pk column values
-                distinct_incoming = len({tuple(row[col.name] for col in pk_col) for row in data})
+                distinct_incoming = len(
+                    {tuple(row[col.name] for col in pk_col) for row in data}
+                )
                 pk_desc = f"composite key ({', '.join(col.name for col in pk_col)})"
             else:
                 # Single primary key
@@ -312,12 +367,11 @@ def upsert_database(
         raise e
     finally:
         session.close()
-        remote_engine.dispose()
     return True
 
+
 def update_history(
-    history_results: list[dict],
-    market_ctx: Optional["MarketContext"] = None
+    history_results: list[dict], market_ctx: Optional["MarketContext"] = None
 ):
     """Prepares data for update to the market_history table, then calls upsert_database to update the table.
 
@@ -337,11 +391,15 @@ def update_history(
     count_200 = len(results_with_data)
 
     if count_304 > 0:
-        logger.info(f"History results: {count_200} with new data, {count_304} unchanged (304)")
+        logger.info(
+            f"History results: {count_200} with new data, {count_304} unchanged (304)"
+        )
 
     if not results_with_data:
         if count_304 > 0:
-            logger.info(f"All {count_304} items returned 304 Not Modified. No database update needed.")
+            logger.info(
+                f"All {count_304} items returned 304 Not Modified. No database update needed."
+            )
             return True
         logger.error("No history data to process")
         return False
@@ -359,10 +417,10 @@ def update_history(
 
         if isinstance(type_history, list):
             for record in type_history:
-                record['type_id'] = str(type_id)
+                record["type_id"] = str(type_id)
                 flattened_history.append(record)
         else:
-            type_history['type_id'] = str(type_id)
+            type_history["type_id"] = str(type_id)
             flattened_history.append(type_history)
 
     if not flattened_history:
@@ -376,33 +434,42 @@ def update_history(
     # Get type names efficiently with bulk lookup
     from sqlalchemy import text
 
-    unique_type_ids = history_df['type_id'].unique()
+    unique_type_ids = history_df["type_id"].unique()
 
     sde_db = _get_sde_db()
     engine = sde_db.engine
     with engine.connect() as conn:
-        placeholders = ','.join([':type_id_' + str(i) for i in range(len(unique_type_ids))])
-        params = {'type_id_' + str(i): int(unique_type_ids[i]) for i in range(len(unique_type_ids))}
+        placeholders = ",".join(
+            [":type_id_" + str(i) for i in range(len(unique_type_ids))]
+        )
+        params = {
+            "type_id_" + str(i): int(unique_type_ids[i])
+            for i in range(len(unique_type_ids))
+        }
 
-        stmt = text(f"SELECT typeID, typeName FROM sdetypes WHERE typeID IN ({placeholders})")
+        stmt = text(
+            f"SELECT typeID, typeName FROM sdetypes WHERE typeID IN ({placeholders})"
+        )
         res = conn.execute(stmt, params)
         type_name_map = dict(res.fetchall())
     engine.dispose()
 
-    history_df['type_name'] = history_df['type_id'].map(lambda x: type_name_map.get(int(x), f'Unknown_{x}'))
+    history_df["type_name"] = history_df["type_id"].map(
+        lambda x: type_name_map.get(int(x), f"Unknown_{x}")
+    )
 
     missing_columns = set(valid_history_columns) - set(history_df.columns)
     if missing_columns:
         logger.warning(f"Missing required columns: {missing_columns}")
         for col in missing_columns:
-            if col in ('timestamp',):
+            if col in ("timestamp",):
                 continue
             else:
                 history_df[col] = 0
 
     history_df = add_timestamp(history_df)
     history_df = validate_columns(history_df, valid_history_columns)
-    history_df = convert_datetime_columns(history_df, ['date'])
+    history_df = convert_datetime_columns(history_df, ["date"])
     history_df.infer_objects()
     history_df.fillna(0)
 
@@ -412,18 +479,18 @@ def update_history(
         logger.error(f"history data update failed: {e}")
         return False
 
-    status = get_remote_status(market_ctx=market_ctx)['market_history']
-    if status > 0:
-        logger.info(f"History updated:{get_table_length('market_history', market_ctx=market_ctx)} items")
-        print(f"History updated:{get_table_length('market_history', market_ctx=market_ctx)} items")
+    row_count = get_table_length("market_history", market_ctx=market_ctx)
+    if row_count > 0:
+        logger.info(f"History updated:{row_count} items")
+        print(f"History updated:{row_count} items")
     else:
         logger.error("Failed to update market history")
         return False
     return True
 
+
 def update_market_orders(
-    orders: list[dict],
-    market_ctx: Optional["MarketContext"] = None
+    orders: list[dict], market_ctx: Optional["MarketContext"] = None
 ) -> bool:
     """Prepares data for update to the marketorders table, then calls upsert_database to update the table.
 
@@ -439,13 +506,13 @@ def update_market_orders(
     type_names = get_type_names_from_df(orders_df)
     orders_df = orders_df.merge(type_names, on="type_id", how="left")
 
-    orders_df = convert_datetime_columns(orders_df, ['issued'])
+    orders_df = convert_datetime_columns(orders_df, ["issued"])
     orders_df = add_timestamp(orders_df)
     orders_df = orders_df.infer_objects()
-    numeric_cols = orders_df.select_dtypes(include=['number']).columns
-    string_cols = orders_df.select_dtypes(include=['object']).columns
+    numeric_cols = orders_df.select_dtypes(include=["number"]).columns
+    string_cols = orders_df.select_dtypes(include=["object"]).columns
     orders_df[numeric_cols] = orders_df[numeric_cols].fillna(0)
-    orders_df[string_cols] = orders_df[string_cols].fillna('')
+    orders_df[string_cols] = orders_df[string_cols].fillna("")
     orders_df = add_autoincrement(orders_df)
 
     valid_columns = MarketOrders.__table__.columns.keys()
@@ -454,38 +521,55 @@ def update_market_orders(
     logger.info(f"Orders fetched:{len(orders_df)} items")
     status = upsert_database(MarketOrders, orders_df, market_ctx=market_ctx)
     if status:
-        logger.info(f"Orders updated:{get_table_length('marketorders', market_ctx=market_ctx)} items")
+        logger.info(
+            f"Orders updated:{get_table_length('marketorders', market_ctx=market_ctx)} items"
+        )
         return True
     else:
         logger.error("Failed to update market orders")
         return False
 
-def log_update(
-    table_name: str,
-    remote: bool = False,
-    market_ctx: Optional["MarketContext"] = None
-):
+
+def log_update(table_name: str, market_ctx: Optional["MarketContext"] = None):
     """Log a table update timestamp.
 
     Args:
         table_name: Name of the table that was updated
-        remote: Whether to use remote database
         market_ctx: Optional MarketContext for market-specific database
     """
     db = _get_db(market_ctx)
-    engine = db.remote_engine if remote else db.engine
+    engine = db.engine
 
-    with Session(bind=engine) as session, session.begin():
-        session.execute(delete(UpdateLog).where(UpdateLog.table_name == table_name))
-        session.add(UpdateLog(table_name=table_name, timestamp=datetime.now(timezone.utc)))
+    # Upsert in place — never delete+insert. Rowid churn on this table poisons
+    # the Turso CDC push queue with duplicate-key INSERTs against the remote.
+    stmt = sqlite_insert(UpdateLog).values(
+        table_name=table_name, timestamp=datetime.now(timezone.utc)
+    )
+    stmt = stmt.on_conflict_do_update(
+        index_elements=["table_name"],
+        set_={"timestamp": stmt.excluded.timestamp},
+    )
+    with engine.begin() as conn:
+        conn.execute(stmt)
 
     return True
 
+
+_CACHE_UPSERT = text("""
+    INSERT INTO esi_request_cache (type_id, region_id, etag, last_modified, last_checked)
+    VALUES (:type_id, :region_id, :etag, :last_modified, :last_checked)
+    ON CONFLICT(type_id, region_id) DO UPDATE SET
+        etag = excluded.etag,
+        last_modified = excluded.last_modified,
+        last_checked = excluded.last_checked
+""")
+
+
 def ensure_cache_table(engine):
     """Create the esi_request_cache table if it doesn't exist."""
-    from sqlalchemy import text
-    with engine.connect() as conn:
-        conn.execute(text("""
+    with engine.begin() as conn:
+        conn.execute(
+            text("""
             CREATE TABLE IF NOT EXISTS esi_request_cache (
                 type_id INTEGER NOT NULL,
                 region_id INTEGER NOT NULL,
@@ -494,100 +578,77 @@ def ensure_cache_table(engine):
                 last_checked DATETIME,
                 PRIMARY KEY (type_id, region_id)
             )
-        """))
-        conn.commit()
+        """)
+        )
 
 
-def load_esi_cache(region_id: int, market_ctx: Optional["MarketContext"] = None) -> dict:
+def _cache_entry(
+    type_id: int, region_id: int, etag: str | None = None, last_modified: str | None = None
+) -> dict:
+    """Build one esi_request_cache row. region_id doubles as structure_id for
+    sentinel rows (type_id <= 0)."""
+    return {
+        "type_id": type_id,
+        "region_id": region_id,
+        "etag": etag,
+        "last_modified": last_modified,
+        "last_checked": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+def load_esi_cache(
+    region_id: int, market_ctx: Optional["MarketContext"] = None
+) -> dict:
     """Load ESI request cache entries for a given region.
 
     Returns:
         Dict mapping type_id -> {"etag": ..., "last_modified": ...}
     """
-    db = _get_db(market_ctx)
-    engine = db.engine
+    engine = _get_db(market_ctx).engine
     try:
         ensure_cache_table(engine)
-        from sqlalchemy import text
         with engine.connect() as conn:
             rows = conn.execute(
-                text("SELECT type_id, etag, last_modified FROM esi_request_cache WHERE region_id = :region_id"),
+                text(
+                    "SELECT type_id, etag, last_modified FROM esi_request_cache WHERE region_id = :region_id"
+                ),
                 {"region_id": region_id},
             ).fetchall()
         return {row[0]: {"etag": row[1], "last_modified": row[2]} for row in rows}
     except Exception as e:
         logger.warning(f"Failed to load ESI cache: {e}")
         return {}
-    finally:
-        engine.dispose()
 
 
-def save_esi_cache(results: list[dict], region_id: int, market_ctx: Optional["MarketContext"] = None):
+def save_esi_cache(
+    results: list[dict], region_id: int, market_ctx: Optional["MarketContext"] = None
+):
     """Save ESI request cache entries after a fetch run.
 
     Only saves entries that have an etag or last_modified value.
     Uses SQLite upsert on (type_id, region_id).
     """
-    db = _get_db(market_ctx)
-    engine = db.remote_engine
+    engine = _get_db(market_ctx).engine
     try:
         ensure_cache_table(engine)
-        from sqlalchemy import text
-        entries = []
-        for r in results:
-            if r is None:
-                continue
-            etag = r.get("etag")
-            last_modified = r.get("last_modified")
-            if etag or last_modified:
-                entries.append({
-                    "type_id": r["type_id"],
-                    "region_id": region_id,
-                    "etag": etag,
-                    "last_modified": last_modified,
-                    "last_checked": datetime.now(timezone.utc).isoformat(),
-                })
-
+        entries = [
+            _cache_entry(r["type_id"], region_id, r.get("etag"), r.get("last_modified"))
+            for r in results
+            if r is not None and (r.get("etag") or r.get("last_modified"))
+        ]
         if not entries:
             logger.info("No cache entries to save")
             return
-
-        # Batch inserts into multi-row VALUES to minimize remote round trips.
-        # SQLite limit is 999 params; 5 params per row → 199 max, use 100 for safety.
-        chunk_size = 100
-        with engine.connect() as conn:
-            for i in range(0, len(entries), chunk_size):
-                chunk = entries[i : i + chunk_size]
-                # Build multi-row VALUES clause with unique param names per row
-                value_clauses = []
-                params = {}
-                for j, entry in enumerate(chunk):
-                    suffix = f"_{j}"
-                    value_clauses.append(
-                        f"(:type_id{suffix}, :region_id{suffix}, :etag{suffix}, "
-                        f":last_modified{suffix}, :last_checked{suffix})"
-                    )
-                    for key, val in entry.items():
-                        params[f"{key}{suffix}"] = val
-
-                sql = f"""
-                    INSERT INTO esi_request_cache (type_id, region_id, etag, last_modified, last_checked)
-                    VALUES {', '.join(value_clauses)}
-                    ON CONFLICT(type_id, region_id) DO UPDATE SET
-                        etag = excluded.etag,
-                        last_modified = excluded.last_modified,
-                        last_checked = excluded.last_checked
-                """
-                conn.execute(text(sql), params)
-            conn.commit()
+        with engine.begin() as conn:
+            conn.execute(_CACHE_UPSERT, entries)
         logger.info(f"Saved {len(entries)} ESI cache entries for region {region_id}")
     except Exception as e:
         logger.warning(f"Failed to save ESI cache: {e}")
-    finally:
-        engine.dispose()
 
 
-def load_orders_cache(structure_id: int, market_ctx: Optional["MarketContext"] = None) -> dict:
+def load_orders_cache(
+    structure_id: int, market_ctx: Optional["MarketContext"] = None
+) -> dict:
     """Load cached etags and expires for structure market orders.
 
     Uses negative type_id sentinels in esi_request_cache:
@@ -598,31 +659,26 @@ def load_orders_cache(structure_id: int, market_ctx: Optional["MarketContext"] =
         {"expires": "HTTP-date string or None",
          "pages": {1: "etag", 2: "etag", ...}}
     """
-    db = _get_db(market_ctx)
-    engine = db.remote_engine
+    engine = _get_db(market_ctx).engine
+    result: dict = {"expires": None, "pages": {}}
     try:
         ensure_cache_table(engine)
-        from sqlalchemy import text
         with engine.connect() as conn:
             rows = conn.execute(
-                text("SELECT type_id, etag, last_modified FROM esi_request_cache WHERE region_id = :sid AND type_id <= 0"),
+                text(
+                    "SELECT type_id, etag, last_modified FROM esi_request_cache WHERE region_id = :sid AND type_id <= 0"
+                ),
                 {"sid": structure_id},
             ).fetchall()
-
-        result: dict = {"expires": None, "pages": {}}
-        for row in rows:
-            tid, etag, last_modified = row[0], row[1], row[2]
+        for tid, etag, last_modified in rows:
             if tid == 0:
                 result["expires"] = last_modified
             else:
                 # tid is -page_number
                 result["pages"][abs(tid)] = etag
-        return result
     except SQLAlchemyError as e:
         logger.error(f"Failed to load orders cache: {e}")
-        return {"expires": None, "pages": {}}
-    finally:
-        engine.dispose()
+    return result
 
 
 def save_orders_cache(
@@ -635,69 +691,30 @@ def save_orders_cache(
 
     Wipes old entries for this structure (type_id <= 0) and writes fresh ones.
     """
-    db = _get_db(market_ctx)
-    engine = db.remote_engine
+    engine = _get_db(market_ctx).engine
     try:
         ensure_cache_table(engine)
-        from sqlalchemy import text
-        with engine.connect() as conn:
-            # Wipe old entries
+        entries = []
+        if expires:
+            entries.append(_cache_entry(0, structure_id, last_modified=expires))
+        entries += [
+            _cache_entry(-page, structure_id, etag=etag)
+            for page, etag in page_etags.items()
+        ]
+        with engine.begin() as conn:
             conn.execute(
-                text("DELETE FROM esi_request_cache WHERE region_id = :sid AND type_id <= 0"),
+                text(
+                    "DELETE FROM esi_request_cache WHERE region_id = :sid AND type_id <= 0"
+                ),
                 {"sid": structure_id},
             )
-
-            entries = []
-            # type_id=0 stores the Expires header
-            if expires:
-                entries.append({
-                    "type_id": 0,
-                    "region_id": structure_id,
-                    "etag": None,
-                    "last_modified": expires,
-                    "last_checked": datetime.now(timezone.utc).isoformat(),
-                })
-
-            # type_id=-N stores per-page etags
-            for page_num, etag in page_etags.items():
-                entries.append({
-                    "type_id": -page_num,
-                    "region_id": structure_id,
-                    "etag": etag,
-                    "last_modified": None,
-                    "last_checked": datetime.now(timezone.utc).isoformat(),
-                })
-
             if entries:
-                chunk_size = 100
-                for i in range(0, len(entries), chunk_size):
-                    chunk = entries[i : i + chunk_size]
-                    value_clauses = []
-                    params = {}
-                    for j, entry in enumerate(chunk):
-                        suffix = f"_{j}"
-                        value_clauses.append(
-                            f"(:type_id{suffix}, :region_id{suffix}, :etag{suffix}, "
-                            f":last_modified{suffix}, :last_checked{suffix})"
-                        )
-                        for key, val in entry.items():
-                            params[f"{key}{suffix}"] = val
-
-                    sql = f"""
-                        INSERT INTO esi_request_cache (type_id, region_id, etag, last_modified, last_checked)
-                        VALUES {', '.join(value_clauses)}
-                        ON CONFLICT(type_id, region_id) DO UPDATE SET
-                            etag = excluded.etag,
-                            last_modified = excluded.last_modified,
-                            last_checked = excluded.last_checked
-                    """
-                    conn.execute(text(sql), params)
-                conn.commit()
-            logger.info(f"Saved orders cache for structure {structure_id}: expires={expires}, {len(page_etags)} page etags")
+                conn.execute(_CACHE_UPSERT, entries)
+        logger.info(
+            f"Saved orders cache for structure {structure_id}: expires={expires}, {len(page_etags)} page etags"
+        )
     except SQLAlchemyError as e:
         logger.error(f"Failed to save orders cache: {e}")
-    finally:
-        engine.dispose()
 
 
 if __name__ == "__main__":

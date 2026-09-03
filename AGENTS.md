@@ -6,17 +6,20 @@ This guide provides comprehensive documentation for LLM agents working with this
 
 **Run the main application:**
 ```bash
-uv run mkts-backend
+uv run mkts-backend update-markets   # all configured markets
 ```
+A bare `uv run mkts-backend` prints help; the pipeline needs the `update-markets`
+subcommand (aliases: `update`).
 
 **Include historical data:**
 ```bash
-uv run mkts-backend --history
+uv run mkts-backend update-markets --history
 ```
 
-**Specify a market (uses primary market by default):**
+**Specify a market (update-markets defaults to every market):**
 ```bash
-uv run mkts-backend --market=deployment  # Uses deployment market config
+uv run mkts-backend update-markets --market=deployment
+uv run mkts-backend update-markets --primary      # shorthand
 ```
 
 **Check database tables:**
@@ -25,15 +28,25 @@ uv run mkts-backend --check_tables
 uv run mkts-backend --check_tables --deployment  # Check deployment market tables
 ```
 
-**Sync and validate databases:**
+**Sync databases:**
 ```bash
-uv run mkts-backend sync              # Sync primary market database with Turso
-uv run mkts-backend sync --deployment # Sync deployment market database
-uv run mkts-backend sync --all        # Sync EVERY configured market (primary, deployment, market3)
-uv run mkts-backend validate          # Validate primary market database sync status
-uv run mkts-backend validate --market=deployment  # Validate deployment market
-# NOTE: --both is a legacy synonym for --all. Since a third market (market3) was
-# added it now spans all three markets, not just primary+deployment. Use --all.
+uv run mkts-backend sync              # Pull every routed replica: all markets +
+                                       # shared sde/fittings/buildcost (excludes
+                                       # the dev/test DB, [shared.testing])
+uv run mkts-backend sync --deployment # Pull the deployment market only
+uv run mkts-backend sync --no-buildcost    # Skip the optional buildcost replica
+uv run mkts-backend sync --markets-only    # Markets only, skip shared databases
+uv run mkts-backend sync --include-testing # Also pull [shared.testing]
+# NOTE: `sync` is a PULL (Turso → local). Local writes reach Turso only via push();
+# see "Turso sync model" below.
+# NOTE: --both is a legacy market-alias synonym for --all. It now spans all three
+# markets, not just primary+deployment. Use --all.
+```
+
+**Look up routed database paths** (global flags, not specific to `sync`):
+```bash
+uv run mkts-backend --list-db-paths     # Print every routed alias and file (alias<TAB>file)
+uv run mkts-backend --db-path=primary   # Print the file path for one database (by alias or market name)
 ```
 
 **Check market availability for a ship fit:**
@@ -86,13 +99,37 @@ The primary orchestration file that coordinates all data collection and processi
 
 ### Database Layer (`config/db_config.py`, `db/db_handlers.py`)
 Manages all database operations:
-- **DatabaseConfig class** (in `config/db_config.py`): Handles both local SQLite and remote Turso database sync
-  - Supports MarketContext-based initialization (preferred) or legacy alias-based init
-  - `verify_db_exists()`: Ensures database and metadata are in consistent state
+- **DatabaseConfig class** (in `config/db_config.py`): Manages the local pyturso replica and its Turso remote
+  - Supports MarketContext-based initialization (preferred) or alias-based init
+  - `engine` / `remote_engine`: both return the **same** `sqlite+turso_sync` engine.
+    `remote_engine` is a backwards-compatible alias kept during the migration; it
+    no longer opens a direct HTTP connection to Turso.
+  - `sync()` / `pull()`: pull remote changes into the local replica
+  - `push()`: send local writes to Turso. **Required** — a `commit()` alone leaves
+    the write in the local CDC queue.
+  - `verify_db_exists()`: Ensures database and metadata are in a consistent state
     - Handles 4 cases: neither exists, both exist, db without metadata, metadata without db
-    - Automatically syncs from remote or nukes inconsistent states
-  - `sync()`: Pulls remote Turso data into local database (one-way: cloud → local)
-  - `nuke()`: Safely removes local database and metadata files
+    - When both exist, calls `assert_remote_compatible()` then `heal_metadata()`
+      instead of assuming the pair is valid; otherwise nukes the inconsistent
+      state and syncs from remote
+  - `heal_metadata()`: confirms the replica's `-info` sidecar is genuine pyturso
+    metadata (not libsql-era or corrupt). If not, deletes just the `-info`
+    sidecar and re-pulls to rebuild it against the existing `.db`/`-wal`/
+    `-changes`. Returns `True` once the replica has pyturso metadata, `False` if
+    the repair pull fails.
+  - `remote_matches_metadata()`: compares the Turso remote recorded in `-info` at
+    bootstrap time against the currently configured remote (host + path only,
+    ignoring scheme and trailing slash). Returns `True`/`False`, or `None` if
+    either side is unknown. `assert_remote_compatible()` raises when it returns
+    `False` — the guard against reading or pushing a replica bootstrapped
+    against a different environment (e.g. a test replica opened under a
+    production config after cutover).
+  - `nuke_db()`: removes the database and each of its pyturso sidecars found on
+    disk — up to five (`-shm`, `-wal`, `-info`, `-changes`, `-wal-revert`). Not
+    every replica has all five: `-shm` is the WAL shared-memory index and is
+    usually absent once a connection closes cleanly. They must be deleted
+    together — a stale change queue beside a freshly pulled database replays
+    local state that is no longer there.
 - **db_handlers.py**: CRUD operations on market data tables
 - ORM-based data insertion with chunking for large datasets
 
@@ -104,7 +141,7 @@ SQLAlchemy ORM model definitions (at `src/mkts_backend/db/models.py`):
 - **Module Equivalents:** `ModuleEquivalents` - maps interchangeable faction modules by `equiv_group_id`
 - **Asset Cache:** Stored in local-only `cli_cache.db` (not synced to Turso); schema managed by `asset_cache._ensure_table()`
 - `DoctrineFitItems` maps to `doctrine_fits` table; includes `friendly_name` field (nullable) added in Feb 2026
-- Tables stored in market-specific databases (e.g., `wcmktprod.db`, `wcmktnorth2.db`)
+- Tables stored in market-specific databases (e.g., `wcmktnewkeeptest.db`, `wcmktnorth2test.db`)
 
 ### OAuth Authentication (`ESI_OAUTH_FLOW.py` / `esi_auth.py`)
 Handles Eve Online SSO authentication:
@@ -132,19 +169,29 @@ Statistics and analysis calculations:
 
 Configuration is now managed through `settings.toml` with market-specific configs:
 
-### Primary Market (Production)
-- **Name:** 4-HWWF Keepstar
-- **Structure ID:** `1035466617946`
-- **Region ID:** `10000003` (The Vale of Silent)
-- **System ID:** `30000240`
-- **Database:** `wcmktprod.db` with Turso sync
+Values below are the current contents of `settings.toml` in this worktree.
+`settings.toml` is authoritative — read it rather than trusting this table.
 
-### Deployment Market (Optional)
-- **Name:** B-9C24 Keepstar
+### Primary Market (`markets.primary`)
+- **Name:** 4-HWWF - WinterCo. Central Station
+- **Region ID:** `10000003` (Vale of the Silent)
+- **System ID:** `30000240`
+- **Structure ID:** `1053970513596`
+- **Database:** alias `wcmktnewkeeptest`, file `wcmktnewkeeptest.db`
+
+### Deployment Market (`markets.deployment`)
+- **Name:** X47L-Q - Rogue Threshold
 - **Region ID:** `10000023` (Pure Blind)
-- **System ID:** `30002029` (B-9C24)
-- **Structure ID:** `1046831245129`
-- **Database:** `wcmktnorth2.db` with Turso sync
+- **System ID:** `30001967`
+- **Structure ID:** `1041669946862`
+- **Database:** alias `wcmktnorthtest`, file `wcmktnorth2test.db`
+
+### Third Market (`markets.market3`)
+- **Name:** BKG-Q2 - Insidious Prime
+- **Region ID:** `10000055` (Branch)
+- **System ID:** `30004333`
+- **Structure ID:** `1032721770598`
+- **Database:** alias `wcmktbkgtest`, file `wcmktbkgtest.db`
 
 ### Configuration Files
 - **Market Settings:** `src/mkts_backend/config/settings.toml`
@@ -168,10 +215,12 @@ s = SettingsService()
 s.environment              # "production" or "development"
 s.log_level                # "INFO" / "DEBUG" / ...
 s.esi_user_agent           # User-Agent string for ESI requests
-s.wipe_replace_tables      # ["marketstats", "doctrines", "jita_prices"]
-s.settings_dict            # Raw dict, for keys without a typed accessor
+s.wipe_replace_tables      # ["marketstats", "doctrines", "jita_prices", "builder_costs"]
+s.database_routing()       # {alias: {file, turso_url_env, turso_token_env, optional}}
+                           #   for every [markets.*] and [shared.*] block
+s.settings_dict            # Read-only view, for keys without a typed accessor
 
-get_all_market_contexts()  # {"primary": MarketContext, "deployment": MarketContext}
+get_all_market_contexts()  # {"primary": …, "deployment": …, "market3": MarketContext}
 get_all_characters()       # list[CharacterConfig], merges legacy [chareacters] typo section
 ```
 
@@ -189,26 +238,63 @@ Behavior:
 | `[esi]` | User-Agent, compatibility date |
 | `[auth]` | OAuth callback + token storage |
 | `[markets.<alias>]` | Per-market configuration (primary, deployment, market3) — the **single source** for all per-market DB config (alias, file, turso env vars, gsheets) |
-| `[shared]` | Market-independent databases (`sde_file`, `fittings_file`, `buildcost_file`) and `[shared.testing]` — the dev/test DB the default market routes to when `environment="development"` |
+| `[shared.<name>]` | Market-independent databases — `sde`, `fittings`, `buildcost`, `testing`. Each block has the same shape as a market DB block (`database_alias`, `database_file`, `turso_url_env`, `turso_token_env`, optional `optional = true`), so `database_routing()` emits markets and shared DBs through one code path. `[shared.testing]` is the dev/test DB the default market routes to when `environment="development"`. |
 | `[wipe_replace]` | `tables` — list of tables fully wiped/re-inserted on each upsert run (vs. incrementally upserted). Useful for resetting deployment history when switching regions. |
 | `[google_sheets]` | Sheets integration toggle + legacy URLs |
 | `[buildcost]` | `add_structure` CLI source sheet |
 | `[characters.<key>]` | Character definitions for asset checks |
+| `[corporations.<key>]` | Corporation definitions for asset checks |
 
 ## External Dependencies
 
 - **EVE Static Data Export (SDE):** `sdelite.db` - game item/type information (synced from Turso), uses `sdetypes` table for type lookups
 - **Custom dbtools:** Database utility functions in `utils/db_utils.py`
-- **Turso/libsql:** For remote database synchronization (optional in dev, required in production)
-  - **IMPORTANT:** libsql `sync()` is **one-way: cloud → local** (pull only). It does NOT push local writes to Turso cloud. To write data to Turso, use `DatabaseConfig` with a remote engine (direct HTTP connection to the Turso URL). The new Turso Database sync engine (currently in alpha) will add push capability; we will adopt it when the stable beta is released.
+- **pyturso:** Remote database synchronization (optional in dev, required in production).
+  Provides the `sqlite+turso`, `sqlite+turso_sync`, and `sqlite+aioturso` SQLAlchemy
+  dialects. The `libsql` and `sqlalchemy-libsql` packages have been removed.
 - **Google Sheets API:** For automated market data reporting (optional)
 - **prompt_toolkit:** For multiline input prompts (paste mode in fit-update)
+
+### Turso sync model (pyturso)
+
+pyturso is **local-first and bidirectional**, which inverts the old libsql rule:
+
+- Every engine — `db.engine` and its alias `db.remote_engine` — writes to the
+  **local** replica. There is no direct-to-cloud engine any more.
+- A write lands in the local CDC queue on `commit()` and reaches Turso only when
+  `db.push()` runs.
+- `db.sync()` / `db.pull()` bring remote changes down.
+- Sync-managed databases must be opened through the **sync dialect**
+  (`sqlite+turso_sync`), which `DatabaseConfig.engine` does automatically. A plain
+  `sqlite+turso` connection auto-checkpoints the WAL at 1000 frames, destroying the
+  baseline `pull()` needs and panicking turso core (`wal.rs` `frame_watermark`).
+
+**Consequence for writers:** any code path that writes must end with a `push()`.
+Every CLI-reachable writer and operator script does so as of this branch. Many
+call sites still name `remote_engine` (and still take a `remote=` parameter);
+both are inert aliases of the local engine, so a new writer must add its own
+`push()` rather than assume `remote_engine` reaches Turso.
+
+**Convergence when a push is skipped or fails:** a stranded write sits in the
+local CDC queue until some later command pushes that alias. Market databases
+converge on the 4-hourly market-data workflow and `buildcost` on the daily
+builder-costs workflow, but **`fittings` has no scheduled push** — a stranded
+fittings write converges only on the next manual fit command that pushes that
+alias.
+
+**Known pyturso constraints:**
+- `delete`+`insert` on a table with a secondary `UNIQUE` constraint churns primary
+  keys and makes the next `push()` fail with `UNIQUE constraint failed`. Upsert in
+  place instead.
+- CDC replays DDL from `sqlite_schema` text but row inserts from the live local
+  schema, and `ALTER … RENAME` emits no CDC at all. Migrate by
+  drop → create-with-final-name → reinsert; never create-copy-drop-rename.
 
 ## Data Processing Flow
 
 The complete data pipeline when running the application:
 
-1. **Initialize**: Load market configuration from settings.toml based on `--market` flag (defaults to primary)
+1. **Initialize**: Load market configuration from settings.toml. `update-markets` runs every configured market unless `--market=<alias>` narrows it
 2. **Database Setup**: Verify database exists with `verify_db_exists()` (syncs from Turso if needed)
 3. **Authenticate**: Authenticate with Eve SSO using required scopes
 4. **Market Orders**: Fetch current market orders for configured structure
@@ -218,7 +304,7 @@ The complete data pipeline when running the application:
 6. **Statistics**: Calculate market statistics (price, volume, days remaining)
 7. **Doctrine Analysis**: Analyze ship fitting availability based on market data
 8. **Google Sheets** (if enabled): Update spreadsheets with market data (primary market only, non-dev)
-9. **Storage**: Store all results in local database with automatic Turso sync
+9. **Storage**: Write all results to the local replica, then `db.push()` them to Turso (`cli.py`)
 
 ## Environment Variables Required
 
@@ -233,24 +319,33 @@ GOOGLE_SHEET_KEY={"type":"service_account"...}  # Entire JSON key file content
 # OR
 GGOOGLE_APPLICATION_CREDENTIALS=<filename.json>  # Path to service account key file
 
-# Turso Remote Database (Production)
-TURSO_WCMKTPROD_URL=<production_market_db_url>
-TURSO_WCMKTPROD_TOKEN=<production_market_db_token>
+# Janice API key for Jita price fallback (optional)
+JANICE_KEY=<janice_api_key>
 
-# Turso Remote Database (Optional - Testing/Development)
-TURSO_WCMKTTEST_URL=<test_market_db_url>
-TURSO_WCMKTTEST_TOKEN=<test_market_db_token>
+# Turso — one URL/token pair per database. The var NAMES are set by
+# turso_url_env / turso_token_env in settings.toml; the VALUES decide whether
+# this checkout talks to production or test remotes.
+TURSO_WCMKTNEWKEEP_URL=<primary market db url>
+TURSO_WCMKTNEWKEEP_TOKEN=<primary market db token>
+TURSO_WCMKTNORTH_URL=<deployment market db url>
+TURSO_WCMKTNORTH_TOKEN=<deployment market db token>
+TURSO_WCMKTBKG_URL=<market3 db url>
+TURSO_WCMKTBKG_TOKEN=<market3 db token>
 
-# Turso Remote Database (Optional - Secondary "Deployment"" Market)
-TURSO_WCMKTNORTH_URL=<deployment_market_db_url>
-TURSO_WCMKTNORTH_TOKEN=<deployment_market_db_token>
+# Turso — shared, market-independent databases
+TURSO_SDE_URL=<sde db url>
+TURSO_SDE_TOKEN=<sde db token>
+TURSO_FITTING_URL=<fitting db url>
+TURSO_FITTING_TOKEN=<fitting db token>
 
-# Turso Remote Database (Shared Resources)
-TURSO_SDE_URL=<sde_db_url>
-TURSO_SDE_TOKEN=<sde_db_token>
-TURSO_FITTING_URL=<fitting_db_url>
-TURSO_FITTING_TOKEN=<fitting_db_token>
+# Turso — optional; a market run proceeds without these
+TURSO_BUILDCOST_URL=<buildcost db url>
+TURSO_BUILDCOST_TOKEN=<buildcost db token>
+TURSO_WCMKTTEST_URL=<dev/test db url>
+TURSO_WCMKTTEST_TOKEN=<dev/test db token>
 ```
+
+Check what is actually loaded with `uv run mkts-backend --validate-env`.
 **Important Notes**:
 - `REFRESH_TOKEN` must be obtained through OAuth flow (see `src/mkts_backend/esi/esi_auth.py`)
 - For local-only operation, Turso credentials are optional
@@ -258,7 +353,7 @@ TURSO_FITTING_TOKEN=<fitting_db_token>
 
 ## ESI Request Caching (Conditional Requests)
 
-Market order fetching uses a two-layer caching system to avoid redundant ESI requests and unnecessary database writes. Cache state is stored in the `esi_request_cache` table on the **remote** (Turso) database so it persists across runs and environments.
+Market order fetching uses a two-layer caching system to avoid redundant ESI requests and unnecessary database writes. Cache state is stored in the `esi_request_cache` table of the market database. Under pyturso both `load_orders_cache()` and `save_orders_cache()` use the **local** engine; the rows reach Turso with the pipeline's end-of-run `push()`.
 
 ### Cache Layers
 
@@ -285,7 +380,7 @@ The `region_id` column doubles as `structure_id` for sentinel rows. Queries filt
 ```
 process_market_orders (cli.py)
   │
-  ├─ load_orders_cache(structure_id)     ← reads sentinels from remote DB
+  ├─ load_orders_cache(structure_id)     ← reads sentinels from local replica
   │    returns {"expires": "...", "pages": {1: "etag1", 2: "etag2", ...}}
   │
   ├─ Layer 1: check expires → skip fetch if within cache window
@@ -301,7 +396,7 @@ process_market_orders (cli.py)
   │
   ├─ status 200 → upsert orders into marketorders table
   │
-  └─ save_orders_cache(structure_id, expires, page_etags)  ← writes sentinels to remote DB
+  └─ save_orders_cache(structure_id, expires, page_etags)  ← writes sentinels to local replica
 ```
 
 ### Key Implementation Details
@@ -309,7 +404,7 @@ process_market_orders (cli.py)
 - **Headers:** `ESIConfig.headers` provides base headers (auth, user-agent, etc.) without `If-None-Match`. The `fetch_market_orders` loop manages `If-None-Match` per-page, setting it from `page_etags` or removing it for fresh requests.
 - **User-Agent:** Loaded from `settings.toml` (`[esi] user_agent`), never hard-coded.
 - **Mixed responses:** If some pages return 304 and others 200, page boundaries may have shifted (ESI rebalances pages). The function discards partial results and re-fetches all pages without etags to get a consistent dataset. A `_clean_retry` flag prevents infinite recursion.
-- **Cache read/write engines:** Both `load_orders_cache` and `save_orders_cache` use `db.remote_engine` (direct Turso HTTP) so cache state persists independently of local sync timing.
+- **Cache read/write engines:** Both `load_orders_cache` and `save_orders_cache` use `db.engine` (the local pyturso replica). Cache rows travel to Turso with the pipeline's `push()`, so a run that dies before the push re-fetches those pages next time — the safe direction to fail.
 
 ### Related Files
 
@@ -435,34 +530,46 @@ Create a `.env` file in the repository root:
 Edit `src/mkts_backend/config/settings.toml` to match user's markets:
 
 ```toml
+[markets]
+default = "primary"
+
 [markets.primary]
 name = "Your Structure Name"
-region_id = 10000003        # Change to your region ID
-system_id = 30000240        # Change to your system ID
-structure_id = 1035466617946  # Change to your structure ID
-database_alias = "wcmktprod"
-database_file = "wcmktprod.db"
-turso_url_env = "TURSO_WCMKTPROD_URL"
-turso_token_env = "TURSO_WCMKTPROD_TOKEN"
+region_id = 10000003          # Change to your region ID
+system_id = 30000240          # Change to your system ID
+structure_id = 1053970513596  # Change to your structure ID
+database_alias = "wcmktnewkeeptest"
+database_file = "wcmktnewkeeptest.db"
+turso_url_env = "TURSO_WCMKTNEWKEEP_URL"
+turso_token_env = "TURSO_WCMKTNEWKEEP_TOKEN"
+gsheets_url = "https://docs.google.com/spreadsheets/d/…/edit"
 
 [markets.deployment]  # Optional second market
 name = "Deployment Market Name"
 region_id = 10000023          # Pure Blind
-system_id = 30002029
-structure_id = 1046831245129  # Change to your structure ID
-database_alias = "wcmktnorth"
-database_file = "wcmktnorth2.db"
+system_id = 30001967
+structure_id = 1041669946862  # Change to your structure ID
+database_alias = "wcmktnorthtest"
+database_file = "wcmktnorth2test.db"
 turso_url_env = "TURSO_WCMKTNORTH_URL"
 turso_token_env = "TURSO_WCMKTNORTH_TOKEN"
+gsheets_url = "https://docs.google.com/spreadsheets/d/…/edit"
 
-# Optional: Configure Jita comparative pricing for each market
-[markets.primary.jita_comparison]
-enabled = true
-region_id = 10000002  # The Forge
-
-[markets.deployment.jita_comparison]
-enabled = false
+# Optional per-market worksheet names
+[markets.primary.gsheets_worksheets]
+market_orders = "market_orders_4h"
+market_data = "market_data_4h"
+doctrines = "doctrines_mkt_4H"
 ```
+
+Adding a market needs no code change: `database_routing()` picks up any new
+`[markets.<alias>]` block, and `DatabaseConfig` resolves the alias by lookup. A
+malformed block (missing `database_alias`/`database_file`, or a duplicate
+`database_alias`) fails at import with a section-named error.
+
+Jita comparative pricing is no longer per-market — `process_jita_prices()` fetches
+once for the union of every market's watchlist and writes the result to each market
+database.
 
 ### Finding IDs:
 - **Structure ID**: In-game, right-click structure > Copy > Copy Info > paste somewhere > extract ID from `showinfo:` link
@@ -502,8 +609,8 @@ If tracking doctrine availability, add ship fittings:
 ### Step 7: Initialize Databases
 
 ```bash
-# First run will verify databases exist and sync from Turso if configured
-uv run mkts-backend
+# Pulls every configured database from Turso; skips any already initialized
+uv run mkts-backend sync
 ```
 
 The system will automatically:
@@ -511,11 +618,18 @@ The system will automatically:
 2. Sync from Turso remote if files are missing or inconsistent
 3. Create tables if needed
 
-This creates local copies of:
-- `wcmktprod.db` (primary market database)
-- `wcmktnorth2.db` (deployment market database, if configured)
-- `wcfitting.db` (fittings/doctrines)
-- `sdelite.db` (Eve static data export)
+This creates local copies of (names from `settings.toml`):
+- `wcmktnewkeeptest.db` (primary market)
+- `wcmktnorth2test.db` (deployment market)
+- `wcmktbkgtest.db` (market3)
+- `wcfittingtest.db` (fittings/doctrines)
+- `sdelitetest.db` (Eve static data export)
+- `buildcosttest.db` (manufacturing costs; optional credentials)
+
+Each arrives with up to five pyturso sidecars (`-shm`, `-wal`, `-info`,
+`-changes`, `-wal-revert`) — `-shm` is usually absent once a connection closes
+cleanly. Never move or delete one without the others; use `nuke_db()` or
+`./dbdeltest.sh` instead.
 
 **Database Schema**:
 - `marketorders`: Current market orders
@@ -555,10 +669,10 @@ class GoogleSheetConfig:
 
 ```bash
 # Run basic market data collection
-uv run mkts-backend
+uv run mkts-backend update-markets
 
 # Run with historical data processing (recommended)
-uv run mkts-backend --history
+uv run mkts-backend update-markets --history
 
 # Check database contents
 uv run mkts-backend --check_tables
@@ -577,7 +691,7 @@ Option B - Cron job (for local server):
 crontab -e
 
 # Add entry (runs every 4 hours)
-0 */4 * * * cd /path/to/mkts_backend && /path/to/uv run mkts-backend --history >> /path/to/logs/cron.log 2>&1
+0 */4 * * * cd /path/to/mkts_backend && /path/to/uv run mkts-backend update-markets --history >> /path/to/logs/cron.log 2>&1
 ```
 
 ### Step 10: Setup Streamlit Frontend
@@ -596,22 +710,24 @@ pip install -r requirements.txt
 
 **Configure Database Connection**:
 
-The frontend needs access to the backend database. Options:
+The frontend keeps its **own** pyturso replica of each market database and pulls it
+from the same Turso remotes the backend pushes to. Turso is the meeting point; the
+two repos never share a file.
 
-1. **Local Database** (development):
-   - Copy or symlink market database files (e.g., `wcmktprod.db`) from backend to frontend directory
-   - Update database path in frontend config
+**Do not copy or symlink a `.db` between the backend and frontend directories.** A
+pyturso replica is the database plus its sidecars (up to five), including
+per-client sync watermarks in `-info`. Two processes pointed at one file will
+corrupt each other's sync state.
 
-2. **Remote Database** (production):
-   - Use Turso database URLs
-   - Configure Turso credentials in frontend `.env`
+Frontend configuration lives in two files:
+- `settings.toml` — `[markets.<alias>]` (name, IDs, `database_alias`,
+  `database_file`, `turso_secret_key`) and `[db_paths]` (alias → filename). Every
+  `database_alias` must appear in both.
+- `.streamlit/secrets.toml` — one `[<key>_turso]` section per database with `url`
+  and `token`, keyed by the market's `turso_secret_key` (or `[db_turso_keys]` for
+  shared DBs, else the `{alias}_turso` convention).
 
-**Update Frontend Configuration**:
-
-Edit configuration files to match your database structure and preferences:
-- Database connection strings
-- Region/structure names
-- Display preferences
+Guard test: `uv run pytest tests/test_settings_toml.py`.
 
 **Run Streamlit App**:
 
@@ -659,14 +775,17 @@ For production deployment with remote database access:
 5. **Initial Sync**:
    ```python
    from mkts_backend.config.db_config import DatabaseConfig
+   from mkts_backend.config.market_context import MarketContext
 
-   # Pull from Turso cloud → local (libsql sync is one-way: cloud → local)
-   db = DatabaseConfig("wcmkt")
-   db.sync()
+   db = DatabaseConfig(market_context=MarketContext.from_settings("primary"))
 
-   # To push local data → Turso cloud, use a remote engine connection:
-   db_remote = DatabaseConfig("wcmkt", remote=True)
-   # Then execute writes against db_remote.engine
+   db.verify_db_exists()   # bootstrap the replica if it is missing or inconsistent
+   db.pull()               # Turso → local
+
+   # Writes go to the same local engine, then push them up:
+   with db.engine.begin() as conn:
+       ...                 # INSERT / UPDATE / DELETE
+   db.push()               # local → Turso; without this the write never leaves the box
    ```
 
 ## Common Customizations
@@ -678,7 +797,7 @@ To switch to a different market structure:
 1. Update `settings.toml` with new structure/region/system IDs
 2. Verify your ESI application has access (may need to re-authenticate)
 3. Clear old market data or create new database
-4. Run data collection: `uv run mkts-backend`
+4. Run data collection: `uv run mkts-backend update-markets`
 
 ### Adding Custom Doctrines
 
@@ -686,7 +805,7 @@ To switch to a different market structure:
 2. Parse fittings using `parse_fits.py` utilities
 3. Add to `wcfitting.db` database
 4. Link doctrines in `doctrine_map` table
-5. Run doctrine analysis: `uv run mkts-backend`
+5. Run doctrine analysis: `uv run mkts-backend update-markets`
 
 ### Multi-Market Support
 
@@ -705,8 +824,8 @@ To track multiple markets simultaneously:
 
 2. **Set Environment Variables**: Add Turso credentials for each market
    ```env
-   TURSO_WCMKTPROD_URL=...
-   TURSO_WCMKTPROD_TOKEN=...
+   TURSO_WCMKTNEWKEEP_URL=...
+   TURSO_WCMKTNEWKEEP_TOKEN=...
    TURSO_WCMKTNORTH_URL=...
    TURSO_WCMKTNORTH_TOKEN=...
    ```
@@ -714,10 +833,10 @@ To track multiple markets simultaneously:
 3. **Run Individual Markets**:
    ```bash
    # Process primary market (default)
-   uv run mkts-backend --history
+   uv run mkts-backend update-markets --history
 
    # Process deployment market
-   uv run mkts-backend --market=deployment --history
+   uv run mkts-backend update-markets --market=deployment --history
    ```
 
 4. **GitHub Actions Parallel Processing**:
@@ -747,7 +866,7 @@ To track multiple markets simultaneously:
 ### Database Issues
 
 **Problem**: "Database file does not exist"
-**Solution**: Run `uv run mkts-backend` to create initial database
+**Solution**: Run `uv run mkts-backend update-markets` to create initial database
 
 **Problem**: "Table not found"
 **Solution**: Database schema may be outdated, check migrations or recreate
@@ -785,17 +904,24 @@ To track multiple markets simultaneously:
 
 ### GitHub Actions Cache Issues
 
-**Problem**: Scheduled `Market Data Collection` runs fail because a cached DB (e.g., `wcmktnorth2.db`) has drifted out of sync with Turso cloud.
-**Solution**: Wipe the cached DB bundle for the affected market matrix leg. The cache is an immutable bundle keyed per matrix leg per UTC date (`turso-dbs-v2-<primary|deployment|market3>-<YYYY-MM-DD>`), so individual files cannot be removed — the whole entry must be deleted, after which the next run cold-starts and re-pulls from Turso. (The date bucket means at most one new cache per market per day; restore-keys prefix-matches the most recent.)
+**Problem**: Scheduled `Market Data Collection` runs fail because a cached DB (e.g., `wcmktnorth2test.db`) has drifted out of sync with Turso cloud, or carries libsql-era `-info` metadata that pyturso rejects.
+**Solution**: Wipe the cached DB bundle for the affected leg. Caches are immutable bundles keyed per leg per UTC date, so individual files cannot be removed — the whole entry must go, after which the next run cold-starts and re-pulls from Turso. (The date bucket means at most one new cache per leg per day; restore-keys prefix-matches the most recent.)
+
+Three key families, across `.github/workflows/market-data-collection.yml` and `.github/workflows/builder-costs-collection.yml`:
+- `turso-dbs-v4-mkt-<primary|deployment|market3>-<YYYY-MM-DD>` — one market DB, written only by its own matrix leg
+- `turso-dbs-v4-shared-<YYYY-MM-DD>` — the SDE + fitting DBs, written only by the primary leg
+- `builder-cost-dbs-v4-<YYYY-MM-DD>` — the buildcost DB, from `builder-costs-collection.yml`
 
 ```bash
 # Requires `gh` authenticated against the repo
-scripts/wipe_gha_db_cache.sh deployment   # wipe wcmktnorth2 leg only
-scripts/wipe_gha_db_cache.sh primary      # wipe wcmktprod leg only
-scripts/wipe_gha_db_cache.sh both         # wipe both
+scripts/wipe_gha_db_cache.sh deployment   # wipe the wcmktnorth2test leg only
+scripts/wipe_gha_db_cache.sh primary      # wipe the wcmktnewkeeptest leg only
+scripts/wipe_gha_db_cache.sh shared       # wipe the SDE + fitting bundle
+scripts/wipe_gha_db_cache.sh buildercost  # wipe the buildcost bundle
+scripts/wipe_gha_db_cache.sh all          # wipe all five
 ```
 
-The cache-save step in `.github/workflows/market-data-collection.yml` is gated on `if: success()`, so a failed run cannot poison the cache for the next run. Env overrides for the script: `GHA_CACHE_REF` (default `refs/heads/main`), `GHA_CACHE_PREFIX` (default `turso-dbs-v2`).
+The cache-save steps are gated on `if: success()`, so a failed run cannot poison the cache for the next run. Env overrides for the script: `GHA_CACHE_REF` (required, no default — the git ref whose caches to target; use `refs/heads/main` for production or `refs/heads/mkts-turso-main` on the staging repo) and `GHA_CACHE_PREFIX` (default `turso-dbs-v4`).
 
 ## Agent Workflow for User Support
 
@@ -871,10 +997,10 @@ Data Flow:
    ↓ (OAuth authenticated requests)
 2. Backend Data Collection (mkts_backend)
    ↓ (SQLAlchemy ORM)
-3. SQLite Database (wcmktprod.db, wcmktnorth2.db, etc.)
-   ↓ (libsql sync with verify_db_exists)
+3. Local pyturso replica (wcmktnewkeeptest.db, wcmktnorth2test.db, …)
+   ↓ (db.push() — local CDC queue → cloud)
 4. Turso Remote Database
-   ↓ (SQLite connection)
+   ↓ (db.pull() into the frontend's own replica)
 5. Streamlit Frontend (wcmkts_new)
    ↓ (Visualization)
 6. User Browser
@@ -906,8 +1032,8 @@ Side Channel:
 ## Version Compatibility
 
 - Python: 3.12+
-- SQLAlchemy: 2.x
-- libsql: Latest
+- SQLAlchemy: >=2.0.42 (floor imposed by the pyturso dialect)
+- pyturso: >=0.7.2 (0.7.2 in use; provides the `sqlite+turso*` dialects)
 - gspread: 5.x+
 - pandas: 2.x
 - prompt_toolkit: Latest

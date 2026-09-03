@@ -79,7 +79,12 @@ class TestRequiredCredentials:
     def test_market_without_turso_env_vars_does_not_crash(self, mock_env_vars):
         """A local-only market (no turso_*_env keys) must be skipped, not crash
         with os.getenv(None)."""
-        routing = {"localonly": {"file": "local.db", "turso_url_env": None, "turso_token_env": None}}
+        routing = {"localonly": {
+            "file": "local.db",
+            "turso_url_env": None,
+            "turso_token_env": None,
+            "optional": False,
+        }}
         with patch.object(SettingsService, "database_routing", return_value=routing):
             is_valid, missing, _ = validate_required_credentials()
 

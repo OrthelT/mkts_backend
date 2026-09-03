@@ -41,7 +41,7 @@ name = "X47L-Q - Rogue Threshold"
 region_id = 10000023 # Pure Blind
 system_id = 30001967
 structure_id = 1041669946862
-database_alias = "wckmktnorth"
+database_alias = "wcmktnorth"
 database_file = "wcmktnorth2.db"
 turso_url_env = "TURSO_WCMKTNORTH_URL"
 turso_token_env = "TURSO_WCMKTNORTH_TOKEN"
@@ -68,10 +68,30 @@ doctrines = "doctrines_mkt_4H"
 # Market-independent databases (same for every market). All per-market DB
 # config lives in [markets.<alias>] above — this is the only other pathway.
 
-[shared]
-sde_file = "sdelite.db"
-fittings_file = "wcfitting.db"
-buildcost_file = "buildcost.db"
+# Each block has the same shape as a [markets.<alias>] database block, so
+# database_routing() emits markets and shared databases through one code path.
+# optional = true means a run may proceed without those credentials.
+
+[shared.sde]
+database_alias = "sde"
+database_file = "sdelite.db"
+turso_url_env = "TURSO_SDE_URL"
+turso_token_env = "TURSO_SDE_TOKEN"
+
+[shared.fittings]
+database_alias = "fittings"
+database_file = "wcfitting.db"
+turso_url_env = "TURSO_FITTING_URL"
+turso_token_env = "TURSO_FITTING_TOKEN"
+
+# Only the buildcost pipeline needs these credentials; a market run must not
+# fail credential validation when they are unset.
+[shared.buildcost]
+database_alias = "buildcost"
+database_file = "buildcost.db"
+turso_url_env = "TURSO_BUILDCOST_URL"
+turso_token_env = "TURSO_BUILDCOST_TOKEN"
+optional = true
 
 # Test/dev database. When environment="development", the default market routes
 # here instead of its production DB (see MarketContext.from_settings).
@@ -80,6 +100,7 @@ database_alias = "wcmkttest"
 database_file = "wcmkttest.db"
 turso_url_env = "TURSO_WCMKTTEST_URL"
 turso_token_env = "TURSO_WCMKTTEST_TOKEN"
+optional = true
 
 # ============================================================================
 # GOOGLE SHEETS CONFIGURATION

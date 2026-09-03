@@ -447,63 +447,134 @@ def insert_fit_items_to_db(
     fit_items: list, fit_id: int, clear_existing: bool = True, remote: bool = False
 ) -> None:
     """
-    Insert parsed fit items into the fittings_fittingitem table.
+    Upsert parsed fit items into the fittings_fittingitem table in place.
+
+    Rows are matched on the natural key ``(fit_id, flag, type_id)`` treated
+    as a MULTISET, not a set: a live audit of wcfittingtest.db found 22
+    groups of rows sharing one ``(fit_id, flag, type_id)`` key (e.g. fit 404
+    has two "Cargo"/15463 rows with quantities 1 and 11; fit 492 has five
+    "HighSlot0"/14278 rows) — the table has no UNIQUE constraint, and the EFT
+    parser legitimately emits repeated Cargo/DroneBay lines for the same
+    item (only Lo/Med/Hi/RigSlot flags get a per-slot counter suffix; every
+    Cargo/DroneBay item shares the bare flag with no counter, and the same
+    module fitted into several slots, e.g. six "720mm Howitzer Artillery II"
+    turrets, repeats the same type_id across distinct rows too). Each
+    existing row for a key is consumed one at a time, in id order, as
+    matching incoming lines are processed; extra incoming lines beyond what
+    already exists become INSERTs, and existing rows beyond what the new fit
+    still needs become DELETEs (when ``clear_existing``) — never a same-key
+    row silently left both unmatched and unremoved.
+
+    This replaces a delete-then-reinsert that toggled
+    ``PRAGMA foreign_keys = OFF`` around the whole transaction. That pragma
+    is local connection state — it is not something pyturso's CDC log can
+    replay — so pushing the resulting delete+insert to Turso replayed the
+    INSERTs under the remote's own (enforced) foreign key checking and could
+    fail there even though the local write succeeded. Upserting in place
+    avoids the churn entirely: unchanged rows keep their AUTOINCREMENT id and
+    are never deleted/reinserted, so there is nothing that depends on FK
+    enforcement being relaxed.
 
     Args:
         fit_items: List of fit items where each item is [flag, quantity, type_id, fit_id, type_fk_id]
         fit_id: The fit ID these items belong to
-        clear_existing: If True, delete existing items for this fit_id before inserting
+        clear_existing: If True, delete rows for this fit_id whose
+            (flag, type_id) occurrence count exceeds what ``fit_items`` still
+            needs (i.e. items removed from the fit, including surplus
+            duplicates). If False, existing rows are only ever updated or
+            added to, never removed.
     """
     engine = _get_engine("fittings", remote)
 
+    normalized = []
+    for item in fit_items:
+        if isinstance(item, dict):
+            flag = item.get("flag")
+            quantity = item.get("quantity")
+            type_id = item.get("type_id")
+            type_fk_id = item.get("type_fk_id")
+            item_fit_id = fit_id
+        else:
+            # List/tuple form carries its own fit_id positionally. Bind it
+            # to a name distinct from the ``fit_id`` parameter — the
+            # SELECT/DELETE below must always stay pinned to the caller's
+            # fit_id, never silently redirected by an item's own value.
+            flag, quantity, type_id, item_fit_id, type_fk_id = item
+
+        if type_id is None:
+            logger.warning(f"Skipping item with missing type_id: {item}")
+            continue
+        normalized.append((flag, quantity, type_id, item_fit_id, type_fk_id))
+
+    update_stmt = text(
+        "UPDATE fittings_fittingitem SET quantity = :quantity, type_fk_id = :type_fk_id "
+        "WHERE id = :id"
+    )
+    insert_stmt = text(
+        "INSERT INTO fittings_fittingitem (flag, quantity, type_id, fit_id, type_fk_id) "
+        "VALUES (:flag, :quantity, :type_id, :fit_id, :type_fk_id)"
+    )
+
     with engine.connect() as conn:
-        # Disable foreign key constraints for this transaction
-        conn.execute(text("PRAGMA foreign_keys = OFF"))
+        existing_rows = conn.execute(
+            text(
+                "SELECT id, flag, type_id FROM fittings_fittingitem "
+                "WHERE fit_id = :fit_id ORDER BY id"
+            ),
+            {"fit_id": fit_id},
+        ).fetchall()
 
-        # Optionally clear existing items for this fit
-        if clear_existing:
-            delete_stmt = text(
-                "DELETE FROM fittings_fittingitem WHERE fit_id = :fit_id"
-            )
-            conn.execute(delete_stmt, {"fit_id": fit_id})
-            logger.info(f"Cleared existing items for fit_id {fit_id}")
+        # Multiset of surviving-candidate ids per (flag, type_id) key. Each
+        # incoming occurrence of a key pops (consumes) one id; ids left in
+        # the bucket after all incoming items are processed are surplus and
+        # get deleted (when clear_existing).
+        existing_by_key: dict[tuple, list[int]] = {}
+        for row in existing_rows:
+            existing_by_key.setdefault((row.flag, row.type_id), []).append(row.id)
 
-        # Insert new items
-        insert_stmt = text("""
-            INSERT INTO fittings_fittingitem (flag, quantity, type_id, fit_id, type_fk_id)
-            VALUES (:flag, :quantity, :type_id, :fit_id, :type_fk_id)
-        """)
-
-        for item in fit_items:
-            if isinstance(item, dict):
-                flag = item.get("flag")
-                quantity = item.get("quantity")
-                type_id = item.get("type_id")
-                type_fk_id = item.get("type_fk_id")
+        inserted = 0
+        updated = 0
+        for flag, quantity, type_id, item_fit_id, type_fk_id in normalized:
+            key = (flag, type_id)
+            bucket = existing_by_key.get(key)
+            if bucket:
+                existing_id = bucket.pop(0)
+                conn.execute(
+                    update_stmt,
+                    {"quantity": quantity, "type_fk_id": type_fk_id, "id": existing_id},
+                )
+                updated += 1
             else:
-                flag, quantity, type_id, fit_id, type_fk_id = item
+                conn.execute(
+                    insert_stmt,
+                    {
+                        "flag": flag,
+                        "quantity": quantity,
+                        "type_id": type_id,
+                        "fit_id": item_fit_id,
+                        "type_fk_id": type_fk_id,
+                    },
+                )
+                inserted += 1
 
-            if type_id is None:
-                logger.warning(f"Skipping item with missing type_id: {item}")
-                continue
-
-            conn.execute(
-                insert_stmt,
-                {
-                    "flag": flag,
-                    "quantity": quantity,
-                    "type_id": type_id,
-                    "fit_id": fit_id,
-                    "type_fk_id": type_fk_id,
-                },
-            )
+        removed = 0
+        if clear_existing:
+            stale_ids = [rid for bucket in existing_by_key.values() for rid in bucket]
+            if stale_ids:
+                conn.execute(
+                    text(
+                        "DELETE FROM fittings_fittingitem WHERE id IN :ids"
+                    ).bindparams(bindparam("ids", expanding=True)),
+                    {"ids": stale_ids},
+                )
+                removed = len(stale_ids)
 
         conn.commit()
 
-        # Re-enable foreign key constraints
-        conn.execute(text("PRAGMA foreign_keys = ON"))
-
-        logger.info(f"Inserted {len(fit_items)} items for fit_id {fit_id}")
+        logger.info(
+            f"Upserted items for fit_id {fit_id}: {inserted} inserted, "
+            f"{updated} updated, {removed} removed"
+        )
 
     engine.dispose()
 
@@ -711,6 +782,7 @@ def update_fit_workflow(
     target_alias: str = "wcmkt",
     update_targets: bool = False,
     metadata_override: Optional[Dict] = None,
+    touched_aliases: Optional[set] = None,
 ):
     """
     End-to-end update for a fit:
@@ -729,6 +801,14 @@ def update_fit_workflow(
         target_alias: Target database alias (wcmkt or wcmktnorth)
         update_targets: If True, update ship_targets table (default: False)
         metadata_override: Dict with metadata fields (overrides file if provided)
+        touched_aliases: Optional accumulator set. This workflow writes the
+            shared ``fittings`` replica and one market replica (``target_alias``)
+            per call. It is invoked once per market by its callers, so it must
+            NOT push here itself — the caller owns one set for the whole CLI
+            invocation, passes it into every workflow call, and pushes each
+            distinct alias once after all writes (across every market) are
+            done. On success (never on a dry run) this function adds
+            ``"fittings"`` and ``target_alias`` to the set.
     """
     # Get metadata from override dict or file
     if metadata_override:
@@ -836,42 +916,15 @@ def update_fit_workflow(
     type_ids.add(ship_type_id)
     add_missing_items_to_watchlist(
         list(type_ids), remote=remote, db_alias=target_alias)
+
+    if touched_aliases is not None:
+        touched_aliases.add("fittings")
+        touched_aliases.add(target_alias)
+
     logger.info(
         f"Completed fit update for fit_id={
             fit_id}, doctrine_ids={metadata.doctrine_ids} "
         f"(remote={remote}, update_targets={update_targets})"
-    )
-
-
-def update_existing_fit(
-    fit_id: int,
-    fit_file: str,
-    fit_metadata_file: str,
-    remote: bool = False,
-    clear_existing: bool = True,
-):
-    update_fit_workflow(
-        fit_id,
-        fit_file,
-        fit_metadata_file,
-        remote=remote,
-        clear_existing=clear_existing,
-    )
-
-
-def update_fit(
-    fit_id: int,
-    fit_file: str,
-    fit_metadata_file: str,
-    remote: bool = False,
-    clear_existing: bool = True,
-):
-    update_fit_workflow(
-        fit_id,
-        fit_file,
-        fit_metadata_file,
-        remote=remote,
-        clear_existing=clear_existing,
     )
 
 

@@ -52,38 +52,35 @@ def validate_required_credentials(
 
     Required credentials:
         - CLIENT_ID / SECRET_KEY / REFRESH_TOKEN: Eve Online ESI application
-        - TURSO_SDE_* / TURSO_FITTING_*: shared databases
-        - Per-market Turso URL/token env vars, derived from [markets.*] in
-          settings.toml. Scoped to ``market_aliases`` (e.g. ["primary"]) when
-          given, so a single-market run doesn't demand other markets'
-          credentials; None means every configured market. The shared test DB
-          is always optional (see validate_optional_credentials).
+        - Turso URL/token env vars for every database that settings.toml does
+          not mark ``optional`` — per-market ([markets.*]) plus the shared
+          databases ([shared.*]). Market credentials are scoped to
+          ``market_aliases`` (e.g. ["primary"]) when given, so a single-market
+          run doesn't demand other markets' credentials; None means every
+          configured market. Shared databases are always in scope.
 
     Returns:
         Tuple[bool, List[str], List[str]]: (is_valid, missing_credentials, present_credentials)
     """
     service = SettingsService()
     routing = service.database_routing()
-    testing_alias = (
-        service.settings_dict.get("shared", {}).get("testing", {}).get("database_alias")
-    )
 
     if market_aliases is None:
-        db_aliases = set(routing)
+        scoped_aliases = set(routing)
     else:
-        db_aliases = {service.market_db_alias(a) for a in market_aliases}
+        # Shared databases are needed by every run, so they stay in scope even
+        # when the caller narrows to one market.
+        scoped_aliases = {service.market_db_alias(a) for a in market_aliases}
+        scoped_aliases |= service.shared_db_aliases()
 
     required_credentials = [
         "CLIENT_ID",
         "SECRET_KEY",
         "REFRESH_TOKEN",
-        "TURSO_SDE_URL",
-        "TURSO_SDE_TOKEN",
-        "TURSO_FITTING_URL",
-        "TURSO_FITTING_TOKEN"]
+    ]
 
     for alias, cfg in routing.items():
-        if alias not in db_aliases or alias == testing_alias:
+        if alias not in scoped_aliases or cfg["optional"]:
             continue
         # env-var keys may be absent for a local-only market (cfg.get upstream)
         for env_var in (cfg["turso_url_env"], cfg["turso_token_env"]):
@@ -117,15 +114,19 @@ def validate_optional_credentials() -> Tuple[List[str], List[str]]:
     Check for optional credentials in the environment.
 
     Optional credentials:
-        - Turso database URLs and tokens
+        - Turso URL/token env vars of databases marked ``optional`` in
+          settings.toml (the test DB, buildcost)
         - Google Sheets credentials
 
     Returns:
         Tuple[List[str], List[str]]: (present_optional, missing_optional)
     """
     optional_credentials = [
-        "TURSO_WCMKTTEST_URL", 
-        "TURSO_WCMKTTEST_TOKEN", 
+        env_var
+        for cfg in SettingsService().database_routing().values() if cfg["optional"]
+        for env_var in (cfg["turso_url_env"], cfg["turso_token_env"]) if env_var
+    ]
+    optional_credentials += [
         "GOOGLE_SHEET_KEY",
         "GOOGLE_SHEETS_PRIVATE_KEY",
     ]

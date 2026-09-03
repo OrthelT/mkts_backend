@@ -55,7 +55,6 @@ from mkts_backend.utils.doctrine_update import (
     ensure_friendly_name_column,
     update_doctrine_friendly_name,
     populate_friendly_names_from_json,
-    sync_friendly_names_to_remote,
 )
 from mkts_backend.utils.parse_fits import (
     update_fit_workflow,
@@ -68,6 +67,7 @@ from mkts_backend.utils.parse_fits import (
     get_doctrine_ids_for_fit,
 )
 from mkts_backend.cli_tools.prompter import get_multiline_input
+from mkts_backend.cli_tools.push import push_or_log
 from mkts_backend.utils.db_utils import add_missing_items_to_watchlist
 
 logger = configure_logging(__name__)
@@ -99,6 +99,21 @@ def _configured_market_db_aliases(market_flag: Optional[str] = None) -> List[str
         if db_alias not in aliases:
             aliases.append(db_alias)
     return aliases
+
+
+def _market_name_for_db_alias(db_alias: str) -> str:
+    """Map a resolved DB alias back to its market name (primary, market3, …).
+
+    Config-driven so a new ``[markets.*]`` block is labelled correctly with no
+    code change. Falls back to the DB alias when it belongs to no market.
+    """
+    for market in MarketContext.list_available():
+        try:
+            if MarketContext.from_settings(market).database_alias == db_alias:
+                return market
+        except Exception:
+            continue
+    return db_alias
 
 
 def _discover_fits_across_markets(
@@ -542,6 +557,7 @@ def interactive_add_fit(
         eft_temp_path = eft_temp.name
         fit_file = eft_temp_path
 
+    touched_aliases: set = set()
     try:
         # Determine which databases to update
         if market_flag in ("both", "all"):
@@ -559,6 +575,7 @@ def interactive_add_fit(
                 clear_existing=True,
                 dry_run=False,
                 target_alias=alias,
+                touched_aliases=touched_aliases,
             )
 
             # Set market flag on this database
@@ -586,6 +603,10 @@ def interactive_add_fit(
                         f"[green]Set lead ship for doctrine {did}: "
                         f"{parse_result.ship_name}[/green]"
                     )
+
+        for touched_alias in sorted(touched_aliases):
+            if not push_or_log(touched_alias):
+                return False
 
         return True
 
@@ -753,7 +774,12 @@ def assign_doctrine_market(
     if result.get("step_failures"):
         summary += f", [red]{result['step_failures']} step failures[/red]"
     console.print(summary)
-    return result["updated"] > 0
+    return (
+        result["updated"] > 0
+        and not result.get("push_failed")
+        and not result.get("bucket_failures")
+        and not result.get("step_failures")
+    )
 
 
 def _flag_to_aliases(flag: str) -> set[str]:
@@ -1275,6 +1301,11 @@ def _execute_market_plan(
     deleted_fit_ids: set[int] = set()
     heal_worked: dict[int, bool] = {}
     plan_by_fit: dict[int, dict] = {}
+    # Aliases actually written (Phase 3 and/or Phase 4) and aliases whose
+    # bucket raised and rolled back. Populated across both write phases below;
+    # pushed once, after both phases, at the bottom of this function.
+    touched: set[str] = set()
+    failed: set[str] = set()
 
     # Phase 1: bucket every action by (is_remote, alias)
     for p in plans:
@@ -1387,10 +1418,12 @@ def _execute_market_plan(
                         continue
                     if p["action"] == "heal" and did_work:
                         heal_worked[id(p)] = True
+            touched.add(alias)
         except (OperationalError, DatabaseError, ConnectionError, TimeoutError) as e:
             console.print(
                 f"[yellow]Skipped {loc} (rolled back at fit {current_fit_id}): {e}[/yellow]"
             )
+            failed.add(alias)
         finally:
             engine.dispose()
 
@@ -1426,14 +1459,30 @@ def _execute_market_plan(
                                 console.print(
                                     f"  [dim]Cleaned up ship_targets for fit {fid} on {loc}[/dim]"
                                 )
+                touched.add(alias)
             except (OperationalError, DatabaseError, ConnectionError, TimeoutError) as e:
                 console.print(
                     f"[yellow]Orphan cleanup skipped for {loc} "
                     f"(rolled back at fit {current_fit_id}): {e}[/yellow]"
                 )
+                failed.add(alias)
             finally:
                 engine.dispose()
 
+    # Phase 5: push every alias touched by either phase above — once each,
+    # sorted, and only after both write phases have finished (the orphan
+    # cleanup pass in Phase 4 can add writes to an alias Phase 3 already
+    # processed). An alias with any failed bucket is excluded so a rolled-back
+    # bucket never masks a genuinely-pending push for that alias; its
+    # already-committed writes (from a different, successful bucket for the
+    # same alias) stay queued locally for a later command to push.
+    pushed_ok = True
+    for alias in sorted(touched - failed):
+        if not push_or_log(alias):
+            pushed_ok = False
+
+    counters["push_failed"] = not pushed_ok
+    counters["bucket_failures"] = len(failed)
     return counters
 
 
@@ -1595,7 +1644,12 @@ def unassign_doctrine_market(
     if result.get("step_failures"):
         summary += f", [red]{result['step_failures']} step failures[/red]"
     console.print(summary)
-    return result["updated"] > 0 or result["deleted"] > 0
+    return (
+        (result["updated"] > 0 or result["deleted"] > 0)
+        and not result.get("push_failed")
+        and not result.get("bucket_failures")
+        and not result.get("step_failures")
+    )
 
 
 def list_fits_command(db_alias: str = "wcmkt", remote: bool = False) -> None:
@@ -1713,6 +1767,8 @@ def create_doctrine_command(
             remote=remote,
         )
         if success:
+            if not push_or_log("fittings"):
+                return False
             console.print(
                 f"[green]Successfully created doctrine {
                     doctrine_id}: {name}[/green]"
@@ -2137,6 +2193,8 @@ def doctrine_add_fit_command(
 
     # Stage 3: one transaction per market DB — all fits for that DB in one batch.
     fit_alias_success: dict[int, int] = {df.fit_id: 0 for _, df, _ in prepared}
+    touched: set[str] = set()
+    failed: set[str] = set()
     for alias in target_aliases:
         db = DatabaseConfig(alias)
         engine = db.remote_engine if remote else db.engine
@@ -2159,14 +2217,23 @@ def doctrine_add_fit_command(
                     _report_lead_ship(adopted, doctrine_fit.fit_id, doctrine_fit.doctrine_id)
             for _, doctrine_fit, _ in prepared:
                 fit_alias_success[doctrine_fit.fit_id] += 1
+            touched.add(alias)
         except (OperationalError, DatabaseError, ConnectionError, TimeoutError) as e:
             console.print(
                 f"[yellow]Bucket {loc} failed "
                 f"(rolled back at fit {current_fit_id}): {e}[/yellow]"
             )
             logger.exception(f"Error provisioning {alias} for doctrine {doctrine_id}")
+            failed.add(alias)
         finally:
             engine.dispose()
+
+    # Push every touched alias once, after the write loop above, skipping any
+    # alias whose bucket raised (see _execute_market_plan for the same shape).
+    pushed_ok = True
+    for alias in sorted(touched - failed):
+        if not push_or_log(alias):
+            pushed_ok = False
 
     # Per-fit success reporting
     for _, doctrine_fit, fit_target in prepared:
@@ -2197,28 +2264,7 @@ def doctrine_add_fit_command(
     if fail_count > 0:
         console.print(f"[red]Failed to add {fail_count} fit(s)[/red]")
 
-    return success_count > 0
-
-    """
-    Display help for the update-fit command.
-    """
-    print("""
-    update-fit - Update the target quantity for a fit.
-    """)
-    print("""
-    USAGE:
-    mkts-backend update-fit --fit-id=<id> --target=<qty>
-    """)
-    print("""
-    OPTIONS:
-    --fit-id=<id>        Fit ID to update
-    --target=<qty>       Target quantity
-    """)
-    print("""
-    EXAMPLES:
-    mkts-backend update-fit --fit-id=123 --target=100
-    """)
-    return True
+    return success_count > 0 and pushed_ok and not failed
 
 
 def remove_fit_command(
@@ -2336,6 +2382,14 @@ def remove_fit_command(
             f"  [dim]ship_targets:[/dim] {'removed' if target_removed else 'not found'}"
         )
 
+        # Push the market-side writes (steps 1, 2, 3, 5); push the shared
+        # fittings db too, but only when a link actually changed (step 4).
+        if not push_or_log(db_alias):
+            return False
+
+        if links_removed > 0 and not push_or_log("fittings"):
+            return False
+
         console.print()
         console.print(
             f"[green]✓ Fit {fit_id} ({fit_info['fit_name']}) completely removed[/green]"
@@ -2411,6 +2465,8 @@ def update_lead_ship_command(
 
     successes = 0
     failures = 0
+    touched: set[str] = set()
+    failed: set[str] = set()
     for alias in target_aliases:
         db = DatabaseConfig(alias)
         engine = db.remote_engine if remote else db.engine
@@ -2429,17 +2485,27 @@ def update_lead_ship_command(
                 f"{fit_info['ship_name']} (fit {fit_id}) in {loc}[/green]"
             )
             successes += 1
+            touched.add(alias)
         except (OperationalError, DatabaseError, ConnectionError, TimeoutError) as e:
             console.print(f"[yellow]Skipped {loc}: {e}[/yellow]")
             failures += 1
+            failed.add(alias)
         except Exception as e:
             console.print(f"[red]✗ Error in {loc}: {e}[/red]")
             logger.exception("Error in update_lead_ship_command for %s", loc)
             failures += 1
+            failed.add(alias)
         finally:
             engine.dispose()
 
-    return successes > 0 and failures == 0
+    # Push every touched alias once, after the write loop above, skipping any
+    # alias whose bucket raised (see _execute_market_plan for the same shape).
+    pushed_ok = True
+    for alias in sorted(touched - failed):
+        if not push_or_log(alias):
+            pushed_ok = False
+
+    return successes > 0 and failures == 0 and pushed_ok
 
 
 def doctrine_remove_fit_command(
@@ -2667,6 +2733,7 @@ def doctrine_remove_fit_command(
     # Process all valid fits - REVERSE ORDER of add operations
     success_count = 0
     fail_count = 0
+    touched_aliases: set = set()
 
     for fit_info in valid_fits:
         fit_id = fit_info["fit_id"]
@@ -2684,6 +2751,8 @@ def doctrine_remove_fit_command(
             remove_doctrine_fits(doctrine_id, fit_id,
                                  remote=remote, db_alias=db_alias)
 
+            touched_aliases.add(db_alias)
+
             # Step 4: Remove from fittings_doctrine_fittings ONLY if the fit
             # is no longer in this doctrine on ANY market database.
             still_in_other_market = False
@@ -2698,7 +2767,9 @@ def doctrine_remove_fit_command(
                     break
 
             if not still_in_other_market:
-                remove_doctrine_link(doctrine_id, fit_id, remote=remote)
+                link_removed = remove_doctrine_link(doctrine_id, fit_id, remote=remote)
+                if link_removed:
+                    touched_aliases.add("fittings")
             else:
                 logger.info(
                     f"Fit {fit_id} still in doctrine {doctrine_id} on another market; "
@@ -2728,6 +2799,10 @@ def doctrine_remove_fit_command(
         )
     if fail_count > 0:
         console.print(f"[red]Failed to remove {fail_count} fit(s)[/red]")
+
+    for alias in sorted(touched_aliases):
+        if not push_or_log(alias):
+            return False
 
     return success_count > 0
 
@@ -2818,6 +2893,9 @@ def _update_target_single(
             remote=remote, db_alias=db_alias,
         )
 
+        if not push_or_log(db_alias):
+            return False
+
         console.print(
             f"[green]Updated target for fit {fit_id} from [yellow]{existing_target}[/yellow] "
             f"to [yellow]{target}[/yellow] for {db_alias} (remote: {remote})[/green]"
@@ -2835,26 +2913,31 @@ def update_friendly_name_command(
     remote: bool = False,
     db_alias: str = "wcmkt",
 ) -> bool:
-    """Update friendly_name for all fits in a doctrine (local + remote)."""
-    ensure_friendly_name_column(db_alias=db_alias, remote=False)
-    ok = update_doctrine_friendly_name(doctrine_id, friendly_name, db_alias=db_alias, remote=False)
-    if ok:
-        console.print(f"[green]Updated friendly_name for doctrine_id {doctrine_id} to '{friendly_name}' (local)[/green]")
-    else:
-        console.print(f"[red]No rows found for doctrine_id {doctrine_id}[/red]")
-        return False
+    """Update friendly_name for all fits in a doctrine across every configured market.
 
-    # Push to every configured market's remote
-    for target in _configured_market_db_aliases():
-        try:
-            ensure_friendly_name_column(db_alias=target, remote=True)
-            remote_ok = update_doctrine_friendly_name(doctrine_id, friendly_name, db_alias=target, remote=True)
-            if remote_ok:
-                console.print(f"[green]Updated friendly_name on remote ({target})[/green]")
-            else:
-                console.print(f"[yellow]No remote rows for doctrine_id {doctrine_id} on {target}[/yellow]")
-        except Exception as e:
-            console.print(f"[yellow]Remote update skipped for {target}: {e}[/yellow]")
+    ``db_alias`` and the configured market aliases are deduplicated into a
+    single target-alias loop (each alias is written and pushed exactly
+    once) — this used to write ``db_alias`` twice, once as "local" and
+    again as "remote" whenever it also appeared in the configured markets.
+    """
+    target_aliases = sorted({db_alias} | set(_configured_market_db_aliases()))
+
+    any_success = False
+    for alias in target_aliases:
+        ensure_friendly_name_column(db_alias=alias, remote=False)
+        ok = update_doctrine_friendly_name(doctrine_id, friendly_name, db_alias=alias, remote=False)
+        if not ok:
+            console.print(f"[yellow]No rows found for doctrine_id {doctrine_id} on {alias}[/yellow]")
+            continue
+
+        console.print(f"[green]Updated friendly_name for doctrine_id {doctrine_id} to '{friendly_name}' ({alias})[/green]")
+        if not push_or_log(alias):
+            return False
+        any_success = True
+
+    if not any_success:
+        console.print(f"[red]No rows found for doctrine_id {doctrine_id} on any configured market[/red]")
+        return False
 
     return True
 
@@ -2863,24 +2946,36 @@ def populate_friendly_names_command(
     json_path: str = "doctrine_names.json",
     db_alias: str = "wcmkt",
 ) -> bool:
-    """Bulk populate friendly_names from JSON — auto-syncs local + remote."""
+    """Bulk populate friendly_names from JSON across every configured market.
+
+    Runs ``populate_friendly_names_from_json`` once per distinct alias in
+    ``{db_alias} ∪ configured market aliases`` and pushes each alias that
+    actually updated a row. Previously this updated ``db_alias`` locally and
+    then re-synced via ``sync_friendly_names_to_remote`` (deleted — same
+    self-referential shape as ``sync_equiv_to_remote``); pushing only the
+    source alias here would silently stop propagating friendly names to the
+    other markets.
+    """
     import os
     if not os.path.exists(json_path):
         console.print(f"[red]JSON file not found: {json_path}[/red]")
         return False
 
-    # Local update
-    ensure_friendly_name_column(db_alias=db_alias, remote=False)
-    count = populate_friendly_names_from_json(json_path, db_alias=db_alias, remote=False)
-    console.print(f"[green]Updated {count} rows locally ({db_alias})[/green]")
+    target_aliases = sorted({db_alias} | set(_configured_market_db_aliases()))
 
-    # Sync local → every configured market's remote (doctrine_fits identical across)
-    for target in _configured_market_db_aliases():
-        ok = sync_friendly_names_to_remote(source_alias=db_alias, target_alias=target)
-        if ok:
-            console.print(f"[green]Synced friendly_names to remote ({target})[/green]")
-        else:
-            console.print(f"[yellow]Remote sync skipped for {target}[/yellow]")
+    any_success = False
+    for alias in target_aliases:
+        ensure_friendly_name_column(db_alias=alias, remote=False)
+        count = populate_friendly_names_from_json(json_path, db_alias=alias, remote=False)
+        console.print(f"[green]Updated {count} rows ({alias})[/green]")
+        if count <= 0:
+            continue
+        if not push_or_log(alias):
+            return False
+        any_success = True
+
+    if not any_success:
+        console.print("[yellow]No friendly_name rows updated on any configured market[/yellow]")
 
     return True
 
@@ -2977,7 +3072,12 @@ def fit_update_command(
         result = assign_market_command(
             fit_id, market_flag, remote=use_remote, db_alias=target_alias
         )
-        return bool(result.get("updated", 0))
+        return (
+            bool(result.get("updated", 0))
+            and not result.get("push_failed")
+            and not result.get("bucket_failures")
+            and not result.get("step_failures")
+        )
 
     elif subcommand == "unassign-market":
         if doctrine_id is not None:
@@ -2992,7 +3092,12 @@ def fit_update_command(
         result = unassign_market_command(
             fit_id, market_flag, remote=use_remote, db_alias=target_alias
         )
-        return bool(result.get("updated", 0) or result.get("deleted", 0))
+        return (
+            bool(result.get("updated", 0) or result.get("deleted", 0))
+            and not result.get("push_failed")
+            and not result.get("bucket_failures")
+            and not result.get("step_failures")
+        )
 
     elif subcommand == "add":
         eft_text = None
@@ -3026,6 +3131,7 @@ def fit_update_command(
                 else:
                     aliases = [target_alias]
 
+                touched_aliases: set = set()
                 for alias in aliases:
                     result = update_fit_workflow(
                         fit_id=metadata.fit_id,
@@ -3035,6 +3141,7 @@ def fit_update_command(
                         clear_existing=True,
                         dry_run=dry_run,
                         target_alias=alias,
+                        touched_aliases=touched_aliases,
                     )
 
                 if dry_run:
@@ -3045,6 +3152,9 @@ def fit_update_command(
                     )
                     console.print(f"Items: {len(result['items'])}")
                 else:
+                    for touched_alias in sorted(touched_aliases):
+                        if not push_or_log(touched_alias):
+                            return False
                     console.print(
                         f"[green]Successfully added fit {
                             metadata.fit_id}[/green]"
@@ -3127,6 +3237,7 @@ def fit_update_command(
                 aliases = [target_alias]
 
             result = None
+            touched_aliases: set = set()
             for alias in aliases:
                 result = update_fit_workflow(
                     fit_id=fit_id,
@@ -3137,6 +3248,7 @@ def fit_update_command(
                     dry_run=dry_run,
                     target_alias=alias,
                     metadata_override=meta_data_dict,
+                    touched_aliases=touched_aliases,
                 )
 
             if dry_run and result:
@@ -3145,10 +3257,13 @@ def fit_update_command(
                               result['ship_type_id']})")
                 console.print(f"Items: {len(result['items'])}")
             else:
+                for touched_alias in sorted(touched_aliases):
+                    if not push_or_log(touched_alias):
+                        return False
                 display_names = []
                 for a in aliases:
                     resolved = DatabaseConfig(a).alias
-                    label = "primary" if a == "wcmkt" else "deployment"
+                    label = _market_name_for_db_alias(resolved)
                     display_names.append(f"{resolved} ({label})")
                 console.print(f"[green]Successfully updated fit {
                               fit_id} on {', '.join(display_names)}[/green]")

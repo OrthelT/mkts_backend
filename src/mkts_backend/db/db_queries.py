@@ -25,7 +25,9 @@ def _read_market_df(
         return pd.read_sql_query(text(sql), conn, params=params)
 
 
-def get_market_history(type_id: int, market_ctx: Optional["MarketContext"] = None) -> pd.DataFrame:
+def get_market_history(
+    type_id: int, market_ctx: Optional["MarketContext"] = None
+) -> pd.DataFrame:
     return _read_market_df(
         "SELECT * FROM market_history WHERE type_id = :type_id",
         {"type_id": type_id},
@@ -33,7 +35,9 @@ def get_market_history(type_id: int, market_ctx: Optional["MarketContext"] = Non
     )
 
 
-def get_market_orders(type_id: int, market_ctx: Optional["MarketContext"] = None) -> pd.DataFrame:
+def get_market_orders(
+    type_id: int, market_ctx: Optional["MarketContext"] = None
+) -> pd.DataFrame:
     return _read_market_df(
         "SELECT * FROM market_orders WHERE type_id = :type_id",
         {"type_id": type_id},
@@ -41,7 +45,9 @@ def get_market_orders(type_id: int, market_ctx: Optional["MarketContext"] = None
     )
 
 
-def get_market_stats(type_id: int, market_ctx: Optional["MarketContext"] = None) -> pd.DataFrame:
+def get_market_stats(
+    type_id: int, market_ctx: Optional["MarketContext"] = None
+) -> pd.DataFrame:
     return _read_market_df(
         "SELECT * FROM marketstats WHERE type_id = :type_id",
         {"type_id": type_id},
@@ -49,11 +55,9 @@ def get_market_stats(type_id: int, market_ctx: Optional["MarketContext"] = None)
     )
 
 
-def get_remote_status(market_ctx: Optional["MarketContext"] = None):
-    return _get_db(market_ctx).get_status()
-
-
-def get_doctrine_stats(type_id: int, market_ctx: Optional["MarketContext"] = None) -> pd.DataFrame:
+def get_doctrine_stats(
+    type_id: int, market_ctx: Optional["MarketContext"] = None
+) -> pd.DataFrame:
     return _read_market_df(
         "SELECT * FROM doctrines WHERE type_id = :type_id",
         {"type_id": type_id},
@@ -88,7 +92,9 @@ def get_fit_ids(doctrine_id: int) -> list[int]:
     db = DatabaseConfig("fittings")
     with db.engine.connect() as conn:
         result = conn.execute(
-            text("SELECT fitting_id FROM fittings_doctrine_fittings WHERE doctrine_id = :doctrine_id"),
+            text(
+                "SELECT fitting_id FROM fittings_doctrine_fittings WHERE doctrine_id = :doctrine_id"
+            ),
             {"doctrine_id": doctrine_id},
         )
         return [row[0] for row in result]

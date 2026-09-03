@@ -68,7 +68,7 @@ class TestGlobalRegistry:
         reg = get_registry()
         expected = {
             "fit-check", "fit-update", "update-fit", "update-target",
-            "assets", "equiv", "sync", "validate", "parse-items",
+            "assets", "equiv", "sync", "parse-items",
             "update-builder-costs",
             "esi-auth", "add_watchlist", "list-fits", "needed", "module",
         }
@@ -100,5 +100,47 @@ class TestGlobalRegistry:
         for name in ["list-fits", "module", "needed"]:
             assert reg.resolve(name) is not None, f"{name} not in registry"
         # These used to be mkts-backend-only commands
-        for name in ["sync", "validate", "equiv", "assets"]:
+        for name in ["sync", "equiv", "assets"]:
             assert reg.resolve(name) is not None, f"{name} not in registry"
+
+
+class TestValidateRemoved:
+    """`validate` reported a false positive on every market DB that had ever
+    been written (pyturso leaves a trailing transaction marker, so
+    cdc_operations never returns to 0) and crashed on never-pushed replicas
+    (last_push_unix_time is None). It cannot be fixed against the public
+    stats() API: last_pushed_change_id_hint is not exposed there. The
+    guarantee it approximated is now enforced by push() failing the command.
+    """
+
+    def test_validate_is_not_registered(self):
+        from mkts_backend.cli_tools.command_registry import get_registry
+
+        assert get_registry().resolve("validate") is None
+
+    def test_validate_sync_is_gone(self):
+        from mkts_backend.config.db_config import DatabaseConfig
+
+        assert not hasattr(DatabaseConfig, "validate_sync")
+
+    def test_validate_env_still_works(self, capsys):
+        """The unrelated --validate-env flag must survive."""
+        from unittest.mock import patch
+        from mkts_backend.cli_tools.args_parser import parse_args
+
+        # Mock validate_all to simulate successful credential validation
+        with patch("mkts_backend.cli_tools.args_parser.validate_all") as mock_val:
+            mock_val.return_value = {
+                "is_valid": True,
+                "message": "Validation successful",
+                "present_required": ["CLIENT_ID", "SECRET_KEY"],
+                "present_optional": [],
+            }
+            with pytest.raises(SystemExit) as exc_info:
+                parse_args(["--validate-env"])
+            # Exit code 0 indicates success
+            assert exc_info.value.code == 0
+            # Verify output was produced
+            captured = capsys.readouterr()
+            assert captured.out  # Should have printed validation results
+

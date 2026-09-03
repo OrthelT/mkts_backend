@@ -1,91 +1,35 @@
 """
-Tests for module_equivalents remote sync behaviour.
+Regression coverage for the removal of ``sync_equiv_to_remote``.
 
-Regression coverage for the case where the local table already contains a
-group but the Turso remote has drifted: re-running ``equiv find --add`` must
-reconcile the remote instead of silently reporting "skipped".
+``sync_equiv_to_remote()`` read the local ``module_equivalents`` table, then
+deleted and reinserted that same local table through ``remote_engine`` (an
+alias of ``engine`` under pyturso) and never pushed. It was a fake stand-in
+for a push that now exists — see ``equiv_manager.py``'s market loops, which
+call ``push_or_log(alias)`` after each write
+(``tests/test_management_push.py::TestEquivPush``).
 """
-
-import pytest
-from sqlalchemy import create_engine, text
 
 from mkts_backend.db import equiv_handlers
 
 
-CREATE_EQUIV = """
-    CREATE TABLE IF NOT EXISTS module_equivalents (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        equiv_group_id INTEGER NOT NULL,
-        type_id INTEGER NOT NULL,
-        type_name VARCHAR(255) NOT NULL
-    )
-"""
+class TestSyncEquivToRemoteRemoved:
+    """sync_equiv_to_remote() read the local table, then deleted and
+    reinserted that same local table through remote_engine (an alias of
+    engine) and never pushed. push() replaces it."""
 
+    def test_function_is_gone(self):
+        assert not hasattr(equiv_handlers, "sync_equiv_to_remote")
 
-class FakeDB:
-    """Minimal DatabaseConfig stand-in with distinct local/remote engines."""
+    def test_add_equiv_group_no_longer_references_sync(self):
+        """Guard against a re-introduced call site: add_equiv_group's source
+        must not mention the deleted function by name."""
+        import inspect
 
-    def __init__(self, local_engine, remote_engine):
-        self.alias = "testmkt"
-        self.engine = local_engine
-        self.remote_engine = remote_engine
+        source = inspect.getsource(equiv_handlers.add_equiv_group)
+        assert "sync_equiv_to_remote" not in source
 
+    def test_remove_equiv_group_no_longer_references_sync(self):
+        import inspect
 
-@pytest.fixture
-def equiv_env(tmp_path, monkeypatch):
-    local = create_engine(f"sqlite:///{tmp_path/'local.db'}")
-    remote = create_engine(f"sqlite:///{tmp_path/'remote.db'}")
-    for eng in (local, remote):
-        with eng.begin() as conn:
-            conn.execute(text(CREATE_EQUIV))
-
-    db = FakeDB(local, remote)
-    monkeypatch.setattr(equiv_handlers, "_get_db", lambda market_ctx=None: db)
-    monkeypatch.setattr(
-        equiv_handlers, "resolve_type_name", lambda tid: f"Module {tid}"
-    )
-    return db
-
-
-def _rows(engine):
-    with engine.connect() as conn:
-        return conn.execute(
-            text("SELECT equiv_group_id, type_id FROM module_equivalents "
-                 "ORDER BY type_id")
-        ).fetchall()
-
-
-def test_add_equiv_group_writes_local_and_remote(equiv_env):
-    gid = equiv_handlers.add_equiv_group([100, 200])
-    assert gid == 1
-    assert _rows(equiv_env.engine) == _rows(equiv_env.remote_engine)
-
-
-def test_existing_group_still_reconciles_drifted_remote(equiv_env):
-    """The regression: local has the group, remote drifted, retry must repair."""
-    equiv_handlers.add_equiv_group([100, 200])
-
-    # Simulate remote drift (failed sync, remote reset, etc.)
-    with equiv_env.remote_engine.begin() as conn:
-        conn.execute(text("DELETE FROM module_equivalents"))
-    assert _rows(equiv_env.remote_engine) == []
-
-    # Re-running add for the same type IDs is a local no-op...
-    assert equiv_handlers.add_equiv_group([100, 200]) is None
-
-    # ...but it must NOT leave the remote broken.
-    assert _rows(equiv_env.remote_engine) == _rows(equiv_env.engine)
-
-
-def test_sync_failure_is_reported_not_swallowed(equiv_env, monkeypatch):
-    """A broken remote must surface as a failure, not a silent success."""
-    class BrokenDB:
-        alias = "testmkt"
-        engine = equiv_env.engine
-
-        @property
-        def remote_engine(self):
-            raise RuntimeError("Turso remote not configured")
-
-    monkeypatch.setattr(equiv_handlers, "_get_db", lambda market_ctx=None: BrokenDB())
-    assert equiv_handlers.sync_equiv_to_remote() is False
+        source = inspect.getsource(equiv_handlers.remove_equiv_group)
+        assert "sync_equiv_to_remote" not in source

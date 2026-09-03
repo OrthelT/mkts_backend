@@ -203,18 +203,6 @@ class SettingsService:
     # ---- [shared] (market-independent databases) ----
 
     @property
-    def db_sde_file(self) -> str:
-        return self._require("shared", "sde_file") # pyright: ignore[reportReturnType]
-
-    @property
-    def db_fittings_file(self) -> str:
-        return self._require("shared", "fittings_file") # pyright: ignore[reportReturnType]
-
-    @property
-    def db_buildcost_file(self) -> str:
-        return self._require("shared", "buildcost_file") # pyright: ignore[reportReturnType]
-
-    @property
     def shared_testing(self) -> dict:
         """The dev/test database block ([shared.testing])."""
         return dict(self._require("shared", "testing"))  # type: ignore[arg-type]
@@ -229,13 +217,23 @@ class SettingsService:
         """Database alias of the default market (markets.default)."""
         return self.market_db_alias(self.default_market_alias)
 
-    def database_routing(self) -> dict[str, dict]:
-        """``alias -> {file, turso_url_env, turso_token_env}`` for every market
-        plus the shared test DB.
+    def shared_db_aliases(self) -> set[str]:
+        """Database aliases of the market-independent databases ([shared.*])."""
+        return {
+            self._require("shared", key, "database_alias")
+            for key, cfg in self.settings.get("shared", {}).items()
+            if isinstance(cfg, dict)
+        }
 
-        Single source for DatabaseConfig's alias/path/turso maps, replacing the
-        old [db] duplication. Derived from [markets.*] + [shared.testing], so a
-        market can never disagree with itself across two config sections again.
+    def database_routing(self) -> dict[str, dict]:
+        """``alias -> {file, turso_url_env, turso_token_env, optional}`` for
+        every database: markets ([markets.*]) and market-independent ones
+        ([shared.*], including sde, fittings, buildcost and the test DB).
+
+        Single source for DatabaseConfig's alias/path/turso maps and for
+        credential validation, so no module names a TURSO_* env var directly.
+        ``optional`` is True when a run may proceed without that database's
+        credentials.
 
         A market missing ``database_alias``/``database_file`` raises ``KeyError``
         naming the offending section (via ``_require``). Two markets declaring the
@@ -246,41 +244,29 @@ class SettingsService:
         routing: dict[str, dict] = {}
         sources: dict[str, str] = {}
 
-        def _add(source: str, db_alias, db_file, url_env, token_env) -> None:
+        def _add(section: str, key: str, cfg: dict) -> None:
+            db_alias = self._require(section, key, "database_alias")
             if db_alias in routing:
                 raise ValueError(
                     f"settings.toml: duplicate database_alias '{db_alias}' "
-                    f"declared by both [{sources[db_alias]}] and [{source}]; "
-                    f"each market must have a unique database_alias or they will "
+                    f"declared by both [{sources[db_alias]}] and [{section}.{key}]; "
+                    f"each database must have a unique database_alias or they will "
                     f"silently route to the same database."
                 )
-            sources[db_alias] = source
+            sources[db_alias] = f"{section}.{key}"
             routing[db_alias] = {
-                "file": db_file,
-                "turso_url_env": url_env,
-                "turso_token_env": token_env,
+                "file": self._require(section, key, "database_file"),
+                "turso_url_env": cfg.get("turso_url_env"),
+                "turso_token_env": cfg.get("turso_token_env"),
+                "optional": bool(cfg.get("optional", False)),
             }
 
-        for alias, cfg in self.settings.get("markets", {}).items():
-            if alias == "default" or not isinstance(cfg, dict):
-                continue
-            _add(
-                f"markets.{alias}",
-                self._require("markets", alias, "database_alias"),
-                self._require("markets", alias, "database_file"),
-                cfg.get("turso_url_env"),
-                cfg.get("turso_token_env"),
-            )
-
-        if self.settings.get("shared", {}).get("testing"):
-            testing = self.settings["shared"]["testing"]
-            _add(
-                "shared.testing",
-                self._require("shared", "testing", "database_alias"),
-                self._require("shared", "testing", "database_file"),
-                testing.get("turso_url_env"),
-                testing.get("turso_token_env"),
-            )
+        for section in ("markets", "shared"):
+            for key, cfg in self.settings.get(section, {}).items():
+                # 'default' is the markets pointer; scalars are section-level keys.
+                if key == "default" or not isinstance(cfg, dict):
+                    continue
+                _add(section, key, cfg)
         return routing
 
 # ---- Domain helpers ----

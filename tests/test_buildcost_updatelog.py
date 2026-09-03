@@ -12,10 +12,8 @@ silently degrade the frontend freshness probe to "always skip sync".
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
-from unittest.mock import MagicMock
-
 import pytest
-from sqlalchemy import create_engine, text
+from sqlalchemy import text
 
 from mkts_backend.builder_costs.repository import (
     init_buildcost_tables,
@@ -25,30 +23,19 @@ from mkts_backend.db.build_cost_models import UpdateLog
 
 
 @pytest.fixture
-def buildcost_engine(tmp_path):
-    """File-backed SQLite engine standing in for buildcost.db's remote engine.
+def fake_db(fake_db_factory, tmp_path):
+    """FakeDatabaseConfig backed by a file-backed SQLite buildcost.db.
 
     File-backed (not ``:memory:``) so the test storage matches production
-    semantics — a real buildcost.db is a SQLite file on disk, not an
-    ephemeral in-memory DB.
+    semantics — a real buildcost.db is a SQLite file on disk.
     """
-    db_path = tmp_path / "buildcost_test.db"
-    engine = create_engine(f"sqlite:///{db_path}")
-    yield engine
-    engine.dispose()
+    return fake_db_factory(tmp_path / "buildcost_test.db", alias="buildcost")
 
 
 @pytest.fixture
-def fake_db(buildcost_engine):
-    """MagicMock standing in for a DatabaseConfig.
-
-    Only ``remote_engine`` is exercised by the helpers under test; using a
-    plain MagicMock avoids the full DatabaseConfig init path (Turso env vars,
-    settings parsing, etc.).
-    """
-    db = MagicMock()
-    db.remote_engine = buildcost_engine
-    return db
+def buildcost_engine(fake_db):
+    """The engine the helpers under test write through."""
+    return fake_db.engine
 
 
 class TestInitBuildcostTables:
@@ -164,12 +151,12 @@ class TestUpdateLogModel:
 
         buildcost_cols = set(UpdateLog.__table__.columns.keys())
         wcmktprod_cols = set(WcmktprodUpdateLog.__table__.columns.keys())
-        assert buildcost_cols == wcmktprod_cols == {"id", "table_name", "timestamp"}
+        assert buildcost_cols == wcmktprod_cols == {"table_name", "timestamp"}
 
     def test_column_types_match_wcmktprod(self):
         from mkts_backend.db.models import UpdateLog as WcmktprodUpdateLog
 
-        for col_name in ("id", "table_name", "timestamp"):
+        for col_name in ("table_name", "timestamp"):
             ours = UpdateLog.__table__.columns[col_name]
             theirs = WcmktprodUpdateLog.__table__.columns[col_name]
             assert type(ours.type) is type(theirs.type), (
@@ -179,19 +166,14 @@ class TestUpdateLogModel:
             )
 
     def test_constraints_pinned(self):
+        """``table_name`` is the primary key, so the schema — not the writer —
+        enforces one row per table_name. The surrogate ``id`` was dropped when
+        the five synced databases were unified on this shape."""
         cols = UpdateLog.__table__.columns
-        assert cols["id"].primary_key is True
-        assert cols["id"].autoincrement is True
+        assert cols["table_name"].primary_key is True
         assert cols["table_name"].nullable is False
         assert cols["timestamp"].nullable is False
 
-    def test_table_name_has_unique_constraint(self):
-        """Schema, not writer, enforces "one row per table_name"."""
-        from sqlalchemy import UniqueConstraint
-
-        unique_cols = {
-            tuple(c.name for c in constraint.columns)
-            for constraint in UpdateLog.__table__.constraints
-            if isinstance(constraint, UniqueConstraint)
-        }
-        assert ("table_name",) in unique_cols
+    def test_repr_does_not_raise(self):
+        """``__repr__`` referenced the dropped ``id`` column and raised."""
+        assert "buildcost" in repr(UpdateLog(table_name="buildcost"))

@@ -395,10 +395,9 @@ class TestUpdateHistoryFiltering:
             mock_sde.return_value = mock_sde_db
 
             with patch("mkts_backend.db.db_handlers.upsert_database", return_value=True):
-                with patch("mkts_backend.db.db_handlers.get_remote_status", return_value={"market_history": 100}):
-                    with patch("mkts_backend.db.db_handlers.get_table_length", return_value=100):
-                        result = update_history(results)
-                        assert result is True
+                with patch("mkts_backend.db.db_handlers.get_table_length", return_value=100):
+                    result = update_history(results)
+                    assert result is True
 
     def test_empty_results_returns_false(self):
         """Empty results list returns False."""

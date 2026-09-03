@@ -12,7 +12,7 @@ from rich.table import Table
 from rich import box
 
 from mkts_backend.cli_tools.arg_utils import ParsedArgs
-from mkts_backend.config.logging_config import configure_logging
+from mkts_backend.cli_tools.push import push_or_log
 from mkts_backend.config.market_context import MarketContext
 from mkts_backend.db.equiv_handlers import (
     list_equiv_groups,
@@ -24,7 +24,6 @@ from mkts_backend.db.equiv_handlers import (
     ensure_equiv_table,
 )
 
-logger = configure_logging(__name__)
 console = Console()
 
 
@@ -137,18 +136,22 @@ def _equiv_add_all(args: list[str], target_aliases: list[str]) -> bool:
 
     console.print(f"\n[bold]Target markets:[/bold] {', '.join(target_aliases)}")
 
-    success = True
+    ok = True
     for alias in target_aliases:
         market_ctx = MarketContext.from_settings(alias)
         ensure_equiv_table(market_ctx)
         new_group_id = add_equiv_group(type_ids, market_ctx)
         if new_group_id is None:
-            console.print(f"  [yellow]{alias}[/yellow]: already grouped - remote reconciled")
-            success = False
+            console.print(f"  [yellow]{alias}[/yellow]: already grouped")
+            ok = False
         else:
             console.print(f"  [green]{alias}[/green]: created group {new_group_id}")
 
-    return success
+        if not push_or_log(market_ctx.database_alias):
+            ok = False
+            continue
+
+    return ok
 
 
 def _equiv_remove_all(args: list[str], target_aliases: list[str]) -> bool:
@@ -166,6 +169,7 @@ def _equiv_remove_all(args: list[str], target_aliases: list[str]) -> bool:
 
     console.print(f"[bold]Target markets:[/bold] {', '.join(target_aliases)}")
 
+    ok = True
     for alias in target_aliases:
         market_ctx = MarketContext.from_settings(alias)
         count = remove_equiv_group(group_id, market_ctx)
@@ -174,7 +178,11 @@ def _equiv_remove_all(args: list[str], target_aliases: list[str]) -> bool:
         else:
             console.print(f"  [yellow]{alias}[/yellow]: no entries for group {group_id}")
 
-    return True
+        if not push_or_log(market_ctx.database_alias):
+            ok = False
+            continue
+
+    return ok
 
 
 def _equiv_find(args: list[str], target_aliases: list[str]) -> bool:
@@ -267,6 +275,7 @@ def _equiv_find(args: list[str], target_aliases: list[str]) -> bool:
     console.print(table)
 
     # Auto-add if --add flag
+    ok = True
     if do_add:
         equiv_type_ids = [r["typeID"] for r in results]
         console.print(f"\n[bold]Adding equivalence group to: {', '.join(target_aliases)}[/bold]")
@@ -275,11 +284,14 @@ def _equiv_find(args: list[str], target_aliases: list[str]) -> bool:
             ensure_equiv_table(market_ctx)
             new_group_id = add_equiv_group(equiv_type_ids, market_ctx)
             if new_group_id is None:
-                console.print(f"  [yellow]{alias}[/yellow]: already grouped - remote reconciled")
+                console.print(f"  [yellow]{alias}[/yellow]: already grouped")
             else:
                 console.print(f"  [green]{alias}[/green]: created group {new_group_id}")
 
-    return True
+            if not push_or_log(market_ctx.database_alias):
+                ok = False
+
+    return ok
 
 
 def _display_equiv_help():

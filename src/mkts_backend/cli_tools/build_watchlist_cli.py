@@ -53,7 +53,9 @@ def handle_build_watchlist(args: list[str]) -> bool:
         return True
 
     if not subcommand:
-        print("Error: build-watchlist requires a subcommand (add | remove | mirror | sync)")
+        print(
+            "Error: build-watchlist requires a subcommand (add | remove | mirror | sync)"
+        )
         display_build_watchlist_help()
         return False
 
@@ -88,7 +90,7 @@ def _handle_add(p: ParsedArgs) -> bool:
     result = add_to_build_watchlist(buildcost_db, sde_db, type_ids, force=force)
     _print_add_summary(result)
     if result.added > 0 and not p.has_flag("no-sync"):
-        _sync_buildcost_mirror(buildcost_db)
+        _push_buildcost_changes(buildcost_db)
     return True
 
 
@@ -105,18 +107,22 @@ def _handle_remove(p: ParsedArgs) -> bool:
     result = remove_from_build_watchlist(buildcost_db, type_ids)
     _print_remove_summary(result)
     if result.removed > 0 and not p.has_flag("no-sync"):
-        _sync_buildcost_mirror(buildcost_db)
+        _push_buildcost_changes(buildcost_db)
     return True
 
 
-def _sync_buildcost_mirror(buildcost_db: DatabaseConfig) -> None:
-    """Pull the buildcost local mirror after a remote write. Best-effort."""
+def _push_buildcost_changes(buildcost_db: DatabaseConfig) -> None:
+    """Push the local buildcost write up to Turso. Best-effort.
+
+    pyturso writes land locally first, so without this the change stays on
+    this machine until some later run pushes.
+    """
     try:
-        buildcost_db.sync()
-        print("Synced local buildcost mirror")
+        buildcost_db.push()
+        print("Pushed buildcost changes to Turso")
     except Exception as exc:
-        logger.warning(f"buildcost local sync failed (remote write succeeded): {exc}")
-        print(f"Warning: local buildcost sync failed: {exc}")
+        logger.warning(f"buildcost push failed (local write succeeded): {exc}")
+        print(f"Warning: buildcost push failed: {exc}")
 
 
 def _handle_mirror(p: ParsedArgs) -> bool:
@@ -142,7 +148,9 @@ def _handle_mirror(p: ParsedArgs) -> bool:
         # Reconciling against a stale mirror would silently miss recent
         # wcmktprod additions; abort so the user knows the run was a no-op.
         logger.error(f"Pre-sync of {primary_db.alias} failed: {exc}")
-        print(f"Error: could not sync {primary_db.alias} local mirror; aborting mirror.")
+        print(
+            f"Error: could not sync {primary_db.alias} local mirror; aborting mirror."
+        )
         return False
 
     try:
@@ -153,7 +161,7 @@ def _handle_mirror(p: ParsedArgs) -> bool:
     result = sync_from_market(buildcost_db, sde_db, primary_db)
     _print_mirror_summary(result)
     if result.added > 0 and not p.has_flag("no-sync"):
-        _sync_buildcost_mirror(buildcost_db)
+        _push_buildcost_changes(buildcost_db)
     return True
 
 
@@ -264,10 +272,7 @@ def _suggest(name: str, choices) -> str:
 def _print_add_summary(result: AddResult) -> None:
     print(f"build-watchlist add: {result.added} added")
     if result.skipped:
-        print(
-            f"  {len(result.skipped)} skipped (no blueprint): "
-            f"{result.skipped[:10]}"
-        )
+        print(f"  {len(result.skipped)} skipped (no blueprint): {result.skipped[:10]}")
     if result.invalid:
         print(f"  {len(result.invalid)} invalid (not in SDE): {result.invalid[:10]}")
 
@@ -287,7 +292,4 @@ def _print_mirror_summary(result: SyncResult) -> None:
         f"{result.already_present} already present, {result.added} added"
     )
     if result.skipped:
-        print(
-            f"  {len(result.skipped)} skipped (no blueprint): "
-            f"{result.skipped[:10]}"
-        )
+        print(f"  {len(result.skipped)} skipped (no blueprint): {result.skipped[:10]}")

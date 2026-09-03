@@ -6,7 +6,6 @@ from mkts_backend.db.models import MarketStats, MarketHistory
 from mkts_backend.config.db_config import DatabaseConfig
 from sqlalchemy.orm import Session
 from sqlalchemy import select, func
-from mkts_backend.db.db_queries import get_remote_status
 
 if TYPE_CHECKING:
     from mkts_backend.config.market_context import MarketContext
@@ -38,15 +37,19 @@ def calculate_5_percentile_price(market_ctx: Optional["MarketContext"] = None) -
     engine = db.engine
     with engine.connect() as conn:
         df = pd.read_sql_query(query, conn)
-    conn.close()
     logger.info(f"5 percentile price queried: {df.shape[0]} items")
-    engine.dispose()
     df = df.groupby("type_id")["price"].quantile(0.05).reset_index()
     df["price"] = df["price"].round(2)
     df.columns = ["type_id", "5_perc_price"]
     return df
 
 def calculate_market_stats(market_ctx: Optional["MarketContext"] = None) -> pd.DataFrame:
+    # market_history.type_id is VARCHAR while watchlist.type_id is INTEGER.
+    # The CAST keeps both join keys the same affinity: turso re-executes a
+    # joined subquery per outer row when key affinities differ (minutes vs
+    # 0.1s here). See docs/turso-subquery-materialization.md.
+    # total_volume_remain * 1.0 forces float division — both operands are
+    # integers, so days_remaining would otherwise be silently truncated.
     query = """
     SELECT
     w.type_id,
@@ -60,7 +63,7 @@ def calculate_market_stats(market_ctx: Optional["MarketContext"] = None) -> pd.D
     h.avg_price,
     h.avg_volume,
     ROUND(CASE
-    WHEN h.avg_volume > 0 THEN o.total_volume_remain / h.avg_volume
+    WHEN h.avg_volume > 0 THEN o.total_volume_remain * 1.0 / h.avg_volume
     WHEN h.avg_volume IS NULL OR h.avg_volume = 0 THEN 30
     ELSE 0
     END, 2) as days_remaining
@@ -79,7 +82,7 @@ def calculate_market_stats(market_ctx: Optional["MarketContext"] = None) -> pd.D
     ON w.type_id = o.type_id
     LEFT JOIN (
     SELECT
-        type_id,
+        CAST(type_id AS INTEGER) as type_id,
         AVG(average) as avg_price,
         SUM(volume)/30 as avg_volume
     FROM market_history
@@ -92,7 +95,6 @@ def calculate_market_stats(market_ctx: Optional["MarketContext"] = None) -> pd.D
     with engine.connect() as conn:
         df = pd.read_sql_query(query, conn)
         logger.info(f"Market stats queried: {df.shape[0]} items")
-    engine.dispose()
 
     logger.info("Calculating 5 percentile price")
     df2 = calculate_5_percentile_price(market_ctx)

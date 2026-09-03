@@ -131,50 +131,54 @@ class TestBuildWatchlistRouting:
         assert "no item flags" in captured.out
 
 
-class TestBuildWatchlistAutoSync:
-    """Verify build-watchlist add|remove pulls the local mirror after the write."""
+class TestBuildWatchlistPush:
+    """Verify build-watchlist add|remove pushes the local write up to Turso."""
 
     @patch("mkts_backend.cli_tools.build_watchlist_cli.add_to_build_watchlist")
     @patch("mkts_backend.cli_tools.build_watchlist_cli.DatabaseConfig")
-    def test_add_triggers_sync_when_rows_written(self, mock_db, mock_add):
+    def test_add_pushes_when_rows_written(self, mock_db, mock_add, fake_db_factory, tmp_path):
         from mkts_backend.builder_costs.watchlist_sync import AddResult
 
+        db = fake_db_factory(tmp_path / "buildcost.db", alias="buildcost")
+        mock_db.return_value = db
         mock_add.return_value = AddResult(added=2)
         _run_cli(["build-watchlist", "add", "--type_id=34,35"])
 
-        # buildcost DatabaseConfig is the first call ("buildcost"); sync() on it.
-        buildcost_instance = mock_db.return_value
-        buildcost_instance.sync.assert_called()
+        assert db.pushes == 1
 
     @patch("mkts_backend.cli_tools.build_watchlist_cli.add_to_build_watchlist")
     @patch("mkts_backend.cli_tools.build_watchlist_cli.DatabaseConfig")
-    def test_add_skips_sync_when_nothing_added(self, mock_db, mock_add):
+    def test_add_skips_push_when_nothing_added(self, mock_db, mock_add, fake_db_factory, tmp_path):
         from mkts_backend.builder_costs.watchlist_sync import AddResult
 
+        db = fake_db_factory(tmp_path / "buildcost.db", alias="buildcost")
+        mock_db.return_value = db
         mock_add.return_value = AddResult(added=0, skipped=[36])
         _run_cli(["build-watchlist", "add", "--type_id=36"])
 
-        buildcost_instance = mock_db.return_value
-        buildcost_instance.sync.assert_not_called()
+        assert db.pushes == 0
 
     @patch("mkts_backend.cli_tools.build_watchlist_cli.add_to_build_watchlist")
     @patch("mkts_backend.cli_tools.build_watchlist_cli.DatabaseConfig")
-    def test_no_sync_flag_skips_sync(self, mock_db, mock_add):
+    def test_no_sync_flag_skips_push(self, mock_db, mock_add, fake_db_factory, tmp_path):
         from mkts_backend.builder_costs.watchlist_sync import AddResult
 
+        db = fake_db_factory(tmp_path / "buildcost.db", alias="buildcost")
+        mock_db.return_value = db
         mock_add.return_value = AddResult(added=2)
         _run_cli(["build-watchlist", "add", "--type_id=34,35", "--no-sync"])
 
-        buildcost_instance = mock_db.return_value
-        buildcost_instance.sync.assert_not_called()
+        assert db.pushes == 0
 
     @patch("mkts_backend.cli_tools.build_watchlist_cli.remove_from_build_watchlist")
     @patch("mkts_backend.cli_tools.build_watchlist_cli.DatabaseConfig")
-    def test_remove_triggers_sync_when_rows_removed(self, mock_db, mock_remove):
+    def test_remove_pushes_when_rows_removed(self, mock_db, mock_remove, fake_db_factory, tmp_path):
         from mkts_backend.builder_costs.watchlist_sync import RemoveResult
 
+        db = fake_db_factory(tmp_path / "buildcost.db", alias="buildcost")
+        mock_db.return_value = db
         mock_remove.return_value = RemoveResult(removed=1)
         _run_cli(["build-watchlist", "remove", "--type_id=34"])
 
-        buildcost_instance = mock_db.return_value
-        buildcost_instance.sync.assert_called()
+        assert db.pushes == 1
+

@@ -186,3 +186,26 @@ class TestEarlyReturnsSkipLog:
         assert patched_runner["log"].call_count == 0
         assert result.success is False
         assert result.log_stamped is False
+
+
+class TestSchemaInitOrdering:
+    """Task 12: ``init_buildcost_tables`` used to run *before*
+    ``verify_db_exists()``, so a missing replica could get its schema
+    created locally before the replica itself was bootstrapped from Turso.
+    The replicas must be verified/pulled first.
+    """
+
+    def test_runner_verifies_replica_before_schema_init(self, patched_runner):
+        order = MagicMock()
+        order.attach_mock(patched_runner["db_cls"].return_value.verify_db_exists, "verify")
+        order.attach_mock(patched_runner["init"], "init")
+
+        result = run()
+
+        call_names = [name for name, _, _ in order.mock_calls]
+        assert "verify" in call_names and "init" in call_names
+        assert call_names.index("verify") < call_names.index("init"), (
+            "init_buildcost_tables ran before verify_db_exists — a missing "
+            "replica could get schema DDL created locally before bootstrap"
+        )
+        assert result.success is True

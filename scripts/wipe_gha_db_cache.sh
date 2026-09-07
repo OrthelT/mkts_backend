@@ -32,8 +32,8 @@ wipe_leg() {
   local leg="$1"
   local pattern
 
-  # Market DBs live under <prefix>-mkt-<market>-<date>; the shared SDE+fitting
-  # bundle under <prefix>-shared-<date> (see market-data-collection.yml).
+  # Market DBs live under <prefix>-mkt-<market>-<run_id>; the shared SDE+fitting
+  # bundle under <prefix>-shared-<run_id> (see market-data-collection.yml).
   # The builder-cost cache is a separate key family with no leg infix at all
   # (see builder-costs-collection.yml) — it never shares PREFIX_BASE.
   if [[ "$leg" == "buildercost" ]]; then
@@ -47,7 +47,8 @@ wipe_leg() {
   local ids
   echo "Wiping caches matching ${pattern}* on ${REF}..."
   # gh paginates internally up to --limit; 5000 is well above any realistic cap
-  # (daily key bucketing × 7-day GHA retention × 5 legs ≈ 35 entries max).
+  # (per-run keys × hourly schedule, bounded by the repo's 10 GB cache quota
+  # evicting LRU long before 7-day retention — a few hundred entries at most).
   # Loop guards against races where new caches arrive mid-deletion.
   while ids=$(gh cache list --limit 5000 --ref "$REF" --key "$pattern" \
                 --json id --jq '.[].id') && [[ -n "$ids" ]]; do

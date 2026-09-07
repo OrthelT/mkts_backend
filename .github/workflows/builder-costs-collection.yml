@@ -20,13 +20,14 @@ jobs:
       - run: uv sync
       - run: uv pip install -e .
       - run: mkdir -p logs data databackup
-      # Bucketed by UTC date, not run_id: GitHub caches are immutable, so a
-      # per-run key can never hit on restore and would write a new entry every
-      # run. A daily key reuses the same entry within a day (restore-keys
-      # prefix still warm-starts from the most recent).
-      - name: Compute cache date
-        id: cachedate
-        run: echo "date=$(date -u +%Y-%m-%d)" >> "$GITHUB_OUTPUT"
+      # Keyed per run, never bucketed. GitHub caches are immutable, so a
+      # repeating key is written only by the first run that uses it and every
+      # later run restores that same snapshot. A rolled-back pyturso replica
+      # silently drops its writes: push() sends only CDC rows above the change
+      # id the remote recorded for this replica's client id, and a restored
+      # snapshot's pending changes all sit at or below it. `restore-keys`
+      # prefix-matches the most recent entry, so run_id still warm-starts from
+      # the previous run.
       # Resolve database filenames from settings.toml via `mkts-backend
       # --db-path` — the single source for these names, not this YAML. Must
       # run after `uv sync` (and the editable install), since it invokes
@@ -60,7 +61,7 @@ jobs:
             ${{ steps.dbfile.outputs.sde }}*
             ${{ steps.dbfile.outputs.primary }}*
             ${{ steps.dbfile.outputs.buildcost }}*
-          key: builder-cost-dbs-v4-${{ steps.cachedate.outputs.date }}
+          key: builder-cost-dbs-v4-${{ github.run_id }}
           restore-keys: |
             builder-cost-dbs-v4-
       - name: Run builder costs collection
@@ -80,7 +81,7 @@ jobs:
             ${{ steps.dbfile.outputs.sde }}*
             ${{ steps.dbfile.outputs.primary }}*
             ${{ steps.dbfile.outputs.buildcost }}*
-          key: builder-cost-dbs-v4-${{ steps.cachedate.outputs.date }}
+          key: builder-cost-dbs-v4-${{ github.run_id }}
       - name: Upload logs
         if: always()
         uses: actions/upload-artifact@v7

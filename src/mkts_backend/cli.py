@@ -443,6 +443,16 @@ def run_market_update(history: bool = False, market_alias: str = "all") -> bool:
         if db.needs_init():
             logger.info(f"Initializing market database: {db.alias}")
             db.verify_db_exists()
+        else:
+            # Must happen before the first write of the run (the Jita upsert
+            # below). push() sends only CDC rows above the change id the remote
+            # recorded for this replica's client id, so a replica restored from
+            # a snapshot older than its own last push has every pending change
+            # at or below that watermark: the push finds nothing, reports
+            # success, and the run's writes are lost. Pulling re-bases the
+            # replica first. See tests/test_pull_before_write.py.
+            logger.info(f"Pulling market database before writing: {db.alias}")
+            db.pull()
 
     jita_ok = process_jita_prices(all_contexts)
     if not jita_ok:

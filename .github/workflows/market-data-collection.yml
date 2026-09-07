@@ -80,11 +80,16 @@ jobs:
         mkdir -p data
         mkdir -p databackup
 
-    # Cache keys are bucketed by UTC date, not run_id: GitHub caches are immutable,
-    # so a per-run key writes a brand-new entry every hour. A daily key reuses the
-    # same entry within a day (restore-keys prefix still warm-starts from the most
-    # recent), so each entry is recreated at most once per day. The DBs stay fresh
-    # because the pyturso sync engine pulls incrementally on every run regardless.
+    # Cache keys MUST be unique per run. GitHub caches are immutable, so a key
+    # that repeats (a date bucket, say) is written only by the first run that
+    # uses it and every later run restores that same snapshot. A rolled-back
+    # pyturso replica silently drops its writes: push() sends only CDC rows
+    # above the change id the remote recorded for this replica's client id, and
+    # a restored snapshot's pending changes all sit at or below it, so push
+    # reports success and transfers nothing. `restore-keys` prefix-matches the
+    # most recent entry, so keying on run_id still warm-starts from the
+    # previous run. The pipeline also pulls before its first write, which
+    # repairs a rolled-back replica; these two defences are independent.
     #
     # Each DB is cached as `<file>.db*`: the pyturso sync engine keeps its state in
     # sidecar files (-info, -changes, -wal, -wal-revert) that must travel with the
@@ -94,12 +99,9 @@ jobs:
     # Single-writer cache layout (no concurrency guard needed): every cache key has
     # exactly ONE matrix leg that writes it, so two legs can never race to reserve
     # the same key.
-    #   * Each market DB is cached only by its own leg -> turso-dbs-v4-mkt-<market>-<date>
+    #   * Each market DB is cached only by its own leg -> turso-dbs-v4-mkt-<market>-<run_id>
     #   * The shared SDE + fitting DBs are cached only by the primary leg and
-    #     restored read-only by the others             -> turso-dbs-v4-shared-<date>
-    - name: Compute cache date
-      id: cachedate
-      run: echo "date=$(date -u +%Y-%m-%d)" >> "$GITHUB_OUTPUT"
+    #     restored read-only by the others             -> turso-dbs-v4-shared-<run_id>
 
     # Map the matrix market alias to its market-specific DB file, and resolve
     # the shared DB filenames, via `mkts-backend --db-path` — the single source
@@ -139,7 +141,7 @@ jobs:
         path: |
           ${{ steps.dbfile.outputs.sde }}*
           ${{ steps.dbfile.outputs.fittings }}*
-        key: turso-dbs-v4-shared-${{ steps.cachedate.outputs.date }}
+        key: turso-dbs-v4-shared-${{ github.run_id }}
         restore-keys: |
           turso-dbs-v4-shared-
 
@@ -149,7 +151,7 @@ jobs:
       id: db-cache
       with:
         path: ${{ steps.dbfile.outputs.db }}*
-        key: turso-dbs-v4-mkt-${{ matrix.market }}-${{ steps.cachedate.outputs.date }}
+        key: turso-dbs-v4-mkt-${{ matrix.market }}-${{ github.run_id }}
         restore-keys: |
           turso-dbs-v4-mkt-${{ matrix.market }}-
 
@@ -231,14 +233,14 @@ jobs:
         uv run mkts-backend update-markets --market=${{ matrix.market }} $HISTORY_FLAG
       timeout-minutes: 15
 
-    # Save this leg's own market DB. Immutable daily key: only the first successful
-    # run per market per day actually writes; later runs no-op on the existing entry.
+    # Save this leg's own market DB under this run's own key, so the next run
+    # restores THIS run's post-push state rather than an older snapshot.
     - name: Save market database cache
       uses: actions/cache/save@v5
       if: success()
       with:
         path: ${{ steps.dbfile.outputs.db }}*
-        key: turso-dbs-v4-mkt-${{ matrix.market }}-${{ steps.cachedate.outputs.date }}
+        key: turso-dbs-v4-mkt-${{ matrix.market }}-${{ github.run_id }}
 
     # Save the shared SDE + fitting DBs from the primary leg ONLY, so this key has a
     # single writer and the deployment/market3 legs never race to reserve it.
@@ -249,7 +251,7 @@ jobs:
         path: |
           ${{ steps.dbfile.outputs.sde }}*
           ${{ steps.dbfile.outputs.fittings }}*
-        key: turso-dbs-v4-shared-${{ steps.cachedate.outputs.date }}
+        key: turso-dbs-v4-shared-${{ github.run_id }}
 
     - name: Upload logs as artifacts
       uses: actions/upload-artifact@v7

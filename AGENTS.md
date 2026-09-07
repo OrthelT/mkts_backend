@@ -282,6 +282,18 @@ builder-costs workflow, but **`fittings` has no scheduled push** — a stranded
 fittings write converges only on the next manual fit command that pushes that
 alias.
 
+**Never restore a replica older than its own last push.** `push()` asks the
+remote for the last change id recorded against this replica's `client_unique_id`
+and sends only local CDC rows above it. A replica rolled back to an earlier
+snapshot — a reused GitHub Actions cache key, a `cp` of an old bundle — has every
+pending change at or below that watermark, so `push()` transfers nothing, logs a
+sub-second sync time, and reports success. **Pull before writing**: a `pull()`
+re-bases the replica and restores correct push behaviour (writes already made
+from the rolled-back replica are lost for good). `run_market_update()` pulls each
+market replica and `init_databases()` pulls the shared ones, both before the
+run's first write; CI cache keys are per-run so the rollback cannot happen in the
+first place.
+
 **Known pyturso constraints:**
 - `delete`+`insert` on a table with a secondary `UNIQUE` constraint churns primary
   keys and makes the next `push()` fail with `UNIQUE constraint failed`. Upsert in
@@ -905,12 +917,12 @@ To track multiple markets simultaneously:
 ### GitHub Actions Cache Issues
 
 **Problem**: Scheduled `Market Data Collection` runs fail because a cached DB (e.g., `wcmktnorth2test.db`) has drifted out of sync with Turso cloud, or carries libsql-era `-info` metadata that pyturso rejects.
-**Solution**: Wipe the cached DB bundle for the affected leg. Caches are immutable bundles keyed per leg per UTC date, so individual files cannot be removed — the whole entry must go, after which the next run cold-starts and re-pulls from Turso. (The date bucket means at most one new cache per leg per day; restore-keys prefix-matches the most recent.)
+**Solution**: Wipe the cached DB bundle for the affected leg. Caches are immutable bundles keyed per leg per run, so individual files cannot be removed — the whole entry must go, after which the next run cold-starts and re-pulls from Turso. (Each run writes its own entry; `restore-keys` prefix-matches the most recent, so the chain warm-starts from the previous run.)
 
 Three key families, across `.github/workflows/market-data-collection.yml` and `.github/workflows/builder-costs-collection.yml`:
-- `turso-dbs-v4-mkt-<primary|deployment|market3>-<YYYY-MM-DD>` — one market DB, written only by its own matrix leg
-- `turso-dbs-v4-shared-<YYYY-MM-DD>` — the SDE + fitting DBs, written only by the primary leg
-- `builder-cost-dbs-v4-<YYYY-MM-DD>` — the buildcost DB, from `builder-costs-collection.yml`
+- `turso-dbs-v4-mkt-<primary|deployment|market3>-<run_id>` — one market DB, written only by its own matrix leg
+- `turso-dbs-v4-shared-<run_id>` — the SDE + fitting DBs, written only by the primary leg
+- `builder-cost-dbs-v4-<run_id>` — the buildcost DB, from `builder-costs-collection.yml`
 
 ```bash
 # Requires `gh` authenticated against the repo

@@ -183,7 +183,14 @@ def init_databases(aliases: str | list[str] | None = None) -> None:
                 logger.info(f"initializing database {alias}")
                 db.sync()
             else:
-                logger.info(f"Database {alias} verified")
+                # verify_db_exists() above only proves the replica is on disk
+                # and internally consistent, not that it is current. Doctrine
+                # stats read the shared fittings replica, and fittings has no
+                # scheduled push, so a run that skips this pull computes
+                # doctrines from whatever snapshot the runner happened to
+                # restore.
+                logger.info(f"Pulling database {alias}")
+                db.pull()
         except Exception as e:
             logger.warning(f"Error initializing database {alias}: {e}")
 

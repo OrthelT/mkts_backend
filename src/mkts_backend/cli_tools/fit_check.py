@@ -22,11 +22,8 @@ from mkts_backend.utils.eft_parser import (
     parse_eft_string,
     FitParseResult,
 )
-from mkts_backend.utils.jita import (
-    JITA_CACHE_TTL,
-    fetch_jita_prices,
-    get_overpriced_items,
-)
+from mkts_backend.utils.jita import fetch_jita_prices, get_overpriced_items
+from mkts_backend.config.settings_service import SettingsService
 from mkts_backend.db.db_queries import get_update_age, read_jita_prices
 from mkts_backend.cli_tools.rich_display import (
     console,
@@ -620,7 +617,7 @@ def _get_jita_prices(
     one fit's handful of items here would delete the other ~810 rows.
     """
     age = get_update_age("jita_prices", market_ctx)
-    if not refresh and age is not None and age < JITA_CACHE_TTL:
+    if not refresh and age is not None and age < SettingsService().jita_cache_ttl:
         cached = read_jita_prices(market_ctx, type_ids)
         missing = [t for t in type_ids if t not in cached]
         return cached | (fetch_jita_prices(missing) if missing else {})

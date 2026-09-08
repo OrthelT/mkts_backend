@@ -17,6 +17,7 @@ import logging
 import os
 import sys
 import tomllib
+from datetime import timedelta
 from pathlib import Path
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Optional
@@ -142,6 +143,17 @@ class SettingsService:
     @property
     def esi_compatibility_date(self) -> str:
         return self.settings["esi"]["compatibility_date"]
+
+    # ---- [jita] ----
+
+    @property
+    def jita_cache_ttl(self) -> timedelta:
+        """How long ``jita_prices`` stays reusable before callers re-fetch.
+
+        Read at access time, not import time, so a test that swaps the TOML
+        and calls ``clear_cache()`` sees the new value.
+        """
+        return timedelta(hours=float(self._require("jita", "cache_ttl_hours")))  # type: ignore[arg-type]
 
     # ---- [auth] ----
 

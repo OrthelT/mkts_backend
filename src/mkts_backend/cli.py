@@ -34,7 +34,6 @@ from mkts_backend.config.settings_service import SettingsService
 from mkts_backend.cli_tools.args_parser import parse_args
 from mkts_backend.config.gsheets_config import GoogleSheetConfig
 from mkts_backend.config.market_context import MarketContext
-from mkts_backend.utils.jita import JITA_CACHE_TTL
 
 # Check if terminal output (progress prints) should be suppressed.
 QUIET = os.environ.get("MKTS_QUIET", "0") == "1"
@@ -279,7 +278,7 @@ def process_jita_prices(
         return False
 
     age = get_update_age("jita_prices", market_contexts[0])
-    if not refresh and age is not None and age < JITA_CACHE_TTL:
+    if not refresh and age is not None and age < SettingsService().jita_cache_ttl:
         logger.info(f"Jita prices updated {age} ago, skipping fetch")
         return True
 

@@ -216,6 +216,7 @@ s.environment              # "production" or "development"
 s.log_level                # "INFO" / "DEBUG" / ...
 s.esi_user_agent           # User-Agent string for ESI requests
 s.wipe_replace_tables      # ["marketstats", "doctrines", "jita_prices", "builder_costs"]
+s.jita_cache_ttl           # timedelta — [jita] cache_ttl_hours
 s.database_routing()       # {alias: {file, turso_url_env, turso_token_env, optional}}
                            #   for every [markets.*] and [shared.*] block
 s.settings_dict            # Read-only view, for keys without a typed accessor
@@ -242,6 +243,7 @@ Behavior:
 | `[wipe_replace]` | `tables` — list of tables fully wiped/re-inserted on each upsert run (vs. incrementally upserted). Useful for resetting deployment history when switching regions. |
 | `[google_sheets]` | Sheets integration toggle + legacy URLs |
 | `[buildcost]` | `add_structure` CLI source sheet |
+| `[jita]` | `cache_ttl_hours` — how long `jita_prices` stays reusable before the pipeline and `fitcheck` re-fetch |
 | `[characters.<key>]` | Character definitions for asset checks |
 | `[corporations.<key>]` | Corporation definitions for asset checks |
 
@@ -456,17 +458,24 @@ destroying the rest — see the wipe branch in `db/db_handlers.py`. It would als
 strand an unpushed write in a production replica. The read path is read-only by
 design.
 
-**TTL choice:** the pipeline refreshes `jita_prices` every 4 hours, so a strict
-1-hour TTL means fitcheck live-fetches for most of that window. That is
-deliberate — fresher prices over a higher hit rate. `JITA_CACHE_TTL` lives in
-`utils/jita.py`.
+**Configuring the TTL:** `[jita] cache_ttl_hours` in `settings.toml` (currently
+`1`), read through `SettingsService().jita_cache_ttl`. It is required — a missing
+key raises a `KeyError` naming the section rather than falling back to a silent
+default. Read at access time, so a change takes effect on the next run with no
+code edit. Fractional hours are allowed (`0.5` = 30 minutes).
+
+The pipeline refreshes `jita_prices` every 4 hours, so a 1-hour TTL means
+fitcheck live-fetches for most of that window. That is deliberate — fresher
+prices over a higher hit rate. Raising the TTL toward 4 hours trades freshness
+for cache hits.
 
 ### Related Files
 
 - `src/mkts_backend/db/db_queries.py` — `get_update_age()`, `read_jita_prices()`
 - `src/mkts_backend/cli.py` — `process_jita_prices()`: pipeline TTL guard
 - `src/mkts_backend/cli_tools/fit_check.py` — `_get_jita_prices()`: read-through cache
-- `src/mkts_backend/utils/jita.py` — `JITA_CACHE_TTL`, `fetch_jita_price_data()`
+- `src/mkts_backend/utils/jita.py` — `fetch_jita_price_data()`: the shared fetcher
+- `src/mkts_backend/config/settings.toml` — `[jita] cache_ttl_hours`: the TTL
 
 ## Additional Features
 

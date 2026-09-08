@@ -7,9 +7,11 @@ shares one fetcher with ``fetch_jita_price_data``.
 """
 
 from datetime import datetime, timedelta, timezone
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, PropertyMock, patch
 
 from sqlalchemy import text
+
+from mkts_backend.config.settings_service import SettingsService
 
 from mkts_backend.db.db_queries import get_update_age, read_jita_prices
 
@@ -382,3 +384,84 @@ class TestFetchJitaPricesDelegates:
             assert jita.fetch_jita_prices([]) == {}
 
         mock_fetch.assert_not_called()
+
+
+class TestTtlComesFromSettings:
+    """Both guards read [jita] cache_ttl_hours, not a hard-coded hour."""
+
+    @staticmethod
+    def _ttl(hours):
+        return patch.object(
+            SettingsService,
+            "jita_cache_ttl",
+            new_callable=PropertyMock,
+            return_value=timedelta(hours=hours),
+        )
+
+    def test_pipeline_honours_a_widened_ttl(self):
+        from mkts_backend import cli
+
+        with (
+            self._ttl(6),
+            patch.object(cli, "get_update_age", return_value=timedelta(hours=3)),
+            patch("mkts_backend.utils.jita.fetch_jita_price_data") as mock_fetch,
+            patch.object(cli, "upsert_database") as mock_upsert,
+        ):
+            ctx = MagicMock()
+            ctx.alias = "primary"
+            assert cli.process_jita_prices([ctx]) is True
+
+        mock_fetch.assert_not_called()
+        mock_upsert.assert_not_called()
+
+    def test_pipeline_honours_a_narrowed_ttl(self):
+        from mkts_backend import cli
+
+        with (
+            self._ttl(0.25),
+            patch.object(cli, "get_update_age", return_value=timedelta(minutes=30)),
+            patch(
+                "mkts_backend.utils.jita.fetch_jita_price_data",
+                return_value=[{"type_id": 34, "sell_price": 5.5, "buy_price": 4.0}],
+            ) as mock_fetch,
+            patch.object(cli, "upsert_database", return_value=True),
+            patch.object(cli, "log_update"),
+            patch.object(cli, "_ensure_jita_prices_table"),
+            patch("mkts_backend.db.db_queries.get_watchlist_ids", return_value=[34]),
+        ):
+            ctx = MagicMock()
+            ctx.alias = "primary"
+            assert cli.process_jita_prices([ctx]) is True
+
+        mock_fetch.assert_called_once()
+
+    def test_fitcheck_honours_a_widened_ttl(self):
+        from mkts_backend.cli_tools import fit_check
+
+        with (
+            self._ttl(6),
+            patch.object(fit_check, "get_update_age", return_value=timedelta(hours=3)),
+            patch.object(fit_check, "read_jita_prices", return_value={34: 5.5}),
+            patch.object(fit_check, "fetch_jita_prices") as mock_fetch,
+        ):
+            assert fit_check._get_jita_prices([34], None) == {34: 5.5}
+
+        mock_fetch.assert_not_called()
+
+    def test_fitcheck_honours_a_narrowed_ttl(self):
+        from mkts_backend.cli_tools import fit_check
+
+        with (
+            self._ttl(0.25),
+            patch.object(
+                fit_check, "get_update_age", return_value=timedelta(minutes=30)
+            ),
+            patch.object(fit_check, "read_jita_prices") as mock_read,
+            patch.object(
+                fit_check, "fetch_jita_prices", return_value={34: 6.0}
+            ) as mock_fetch,
+        ):
+            assert fit_check._get_jita_prices([34], None) == {34: 6.0}
+
+        mock_read.assert_not_called()
+        mock_fetch.assert_called_once_with([34])

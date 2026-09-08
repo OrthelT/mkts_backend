@@ -4,8 +4,6 @@ Jita price utilities for fetching and working with Jita market prices.
 Uses the Fuzzwork Market API for efficient bulk price lookups.
 """
 
-from datetime import timedelta
-
 import requests
 from typing import Dict, List, Optional
 
@@ -18,12 +16,6 @@ FUZZWORK_API_URL = "https://market.fuzzwork.co.uk/aggregates/"
 
 # The Forge region ID (Jita's region)
 JITA_REGION_ID = 10000002
-
-# How long a jita_prices table stays usable before callers re-fetch. The
-# pipeline refreshes it every 4 hours, so fitcheck falls back to a live
-# fetch for most of that window — deliberately trading hit rate for
-# freshness.
-JITA_CACHE_TTL = timedelta(hours=1)
 
 
 class JitaPrice:

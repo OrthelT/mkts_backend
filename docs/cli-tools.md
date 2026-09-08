@@ -34,6 +34,9 @@ uv run fitcheck --fit=42 --output=markdown
 
 # Combine options
 uv run fitcheck --file=fit.txt --market=deployment --target=100 --output=csv
+
+# Force live Jita prices (bypass the 1-hour jita_prices cache)
+uv run fitcheck --fit=42 --refresh
 ```
 
 **Subcommand: needed** - Show all items needed to reach ship targets:

@@ -112,6 +112,7 @@ def _register_all(reg: CommandRegistry) -> None:
         file_path = p.get_string("file", "fit-file")
         paste_mode = p.has_flag("paste")
         no_jita = p.has_flag("no-jita")
+        refresh = p.has_flag("refresh")
 
         try:
             fit_id = p.get_int("fit-id", "fit_id", "fit", "id")
@@ -152,6 +153,7 @@ def _register_all(reg: CommandRegistry) -> None:
             target=target,
             output_format=output_format,
             show_jita=not no_jita,
+            refresh=refresh,
         )
 
     reg.register(

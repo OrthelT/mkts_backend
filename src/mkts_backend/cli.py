@@ -5,7 +5,7 @@ import os
 from typing import Optional, cast
 
 from mkts_backend.config.logging_config import configure_logging
-from mkts_backend.db.db_queries import get_table_length
+from mkts_backend.db.db_queries import get_table_length, get_update_age
 from mkts_backend.db.db_handlers import (
     upsert_database,
     update_history,
@@ -34,6 +34,7 @@ from mkts_backend.config.settings_service import SettingsService
 from mkts_backend.cli_tools.args_parser import parse_args
 from mkts_backend.config.gsheets_config import GoogleSheetConfig
 from mkts_backend.config.market_context import MarketContext
+from mkts_backend.utils.jita import JITA_CACHE_TTL
 
 # Check if terminal output (progress prints) should be suppressed.
 QUIET = os.environ.get("MKTS_QUIET", "0") == "1"
@@ -254,12 +255,33 @@ def _ensure_jita_prices_table(market_ctx: MarketContext) -> None:
     JitaPrices.__table__.create(db.engine, checkfirst=True) # pyright: ignore[reportAttributeAccessIssue]
 
 
-def process_jita_prices(market_contexts: list[MarketContext]) -> bool:
-    """Fetch Jita prices once, write to all market databases."""
+def process_jita_prices(
+    market_contexts: list[MarketContext], refresh: bool = False
+) -> bool:
+    """Fetch Jita prices once, write to all market databases.
+
+    Skips both the fetch and the writes while ``jita_prices`` is under an hour
+    old, so a manual pipeline re-run within the hour costs nothing. Freshness
+    comes from the first market's ``updatelog`` row — ``log_update`` writes the
+    same timestamp for every market in one loop, so one row speaks for all.
+
+    A market DB added or wiped mid-hour is therefore not backfilled until the
+    TTL expires; it self-heals on the next run. ``refresh=True`` bypasses the
+    check (used by tests and internal callers; there is no CLI flag for it).
+    """
     import pandas as pd
     from sqlalchemy.exc import SQLAlchemyError
     from mkts_backend.utils.jita import fetch_jita_price_data
     from mkts_backend.db.db_queries import get_watchlist_ids
+
+    if not market_contexts:
+        logger.warning("No market contexts supplied for Jita price fetch")
+        return False
+
+    age = get_update_age("jita_prices", market_contexts[0])
+    if not refresh and age is not None and age < JITA_CACHE_TTL:
+        logger.info(f"Jita prices updated {age} ago, skipping fetch")
+        return True
 
     # Union watchlist type_ids from all market databases
     all_type_ids = set()

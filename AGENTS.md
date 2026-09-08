@@ -426,6 +426,48 @@ process_market_orders (cli.py)
 - `src/mkts_backend/config/esi_config.py` — `ESIConfig.headers`: base request headers
 - `src/mkts_backend/config/settings.toml` — `[esi] user_agent`: configurable User-Agent string
 
+## Jita Price Caching (1-hour TTL)
+
+Both Jita price paths — the pipeline and `fitcheck` — reuse the `jita_prices`
+table while it is under an hour old, instead of calling Fuzzwork again.
+
+Freshness comes from the `updatelog` row for `jita_prices`, written by
+`log_update()` at the end of every pipeline run. `get_update_age()`
+(`db/db_queries.py`) returns that age, or `None` when the row or the table is
+missing — which callers treat as "no cache, fetch".
+
+**Pipeline** (`cli.py` `process_jita_prices()`): skips the fetch *and* the
+per-market writes while fresh, so a manual re-run within the hour is free. It
+reads the first market's `updatelog` row; `log_update` writes the same timestamp
+for every market in one loop, so one row speaks for all. A market DB added or
+wiped mid-hour is not backfilled until the TTL expires — it self-heals on the
+next run. The `refresh=True` parameter bypasses the check and exists for tests
+and internal callers; there is no CLI flag for it.
+
+**fitcheck** (`cli_tools/fit_check.py` `_get_jita_prices()`): reads the table
+while fresh, then live-fetches only the type_ids the table lacks — it covers
+watchlist items only, so a fit can contain items it misses. `--refresh` forces a
+full live fetch.
+
+**fitcheck must never write `jita_prices`.** The table is in
+`wipe_replace_tables` (`settings.toml`), so any partial write would
+`DELETE FROM jita_prices` and reinsert only that fit's handful of items,
+destroying the rest — see the wipe branch in `db/db_handlers.py`. It would also
+strand an unpushed write in a production replica. The read path is read-only by
+design.
+
+**TTL choice:** the pipeline refreshes `jita_prices` every 4 hours, so a strict
+1-hour TTL means fitcheck live-fetches for most of that window. That is
+deliberate — fresher prices over a higher hit rate. `JITA_CACHE_TTL` lives in
+`utils/jita.py`.
+
+### Related Files
+
+- `src/mkts_backend/db/db_queries.py` — `get_update_age()`, `read_jita_prices()`
+- `src/mkts_backend/cli.py` — `process_jita_prices()`: pipeline TTL guard
+- `src/mkts_backend/cli_tools/fit_check.py` — `_get_jita_prices()`: read-through cache
+- `src/mkts_backend/utils/jita.py` — `JITA_CACHE_TTL`, `fetch_jita_price_data()`
+
 ## Additional Features
 
 - **Multi-Market Support:** Configure and process multiple markets independently via `--market` flag
@@ -442,6 +484,7 @@ process_market_orders (cli.py)
 - **Module Equivalents:** Aggregate stock across interchangeable faction modules; managed via `equiv` CLI commands
 - **Friendly Names:** Per-doctrine display names stored in `doctrine_fits.friendly_name`; managed via `fit-update update-friendly-name`
 - **Asset Cache:** ESI character asset data cached in local-only `cli_cache.db` (1-hour TTL); used by `assets` and `fitcheck needed --assets` commands; bypass with `--refresh` flag
+- **Jita Price Cache:** `jita_prices` reused for 1 hour by both the pipeline and `fitcheck`, keyed on the `updatelog` timestamp; bypass with `fitcheck --refresh`
 
 ## CLI Tools
 This project includes an extensive set of CLI tools.

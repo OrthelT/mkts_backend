@@ -1158,7 +1158,7 @@ SUBCOMMANDS:
         --target=<pct>       Show only fits below this target % (e.g. --target=0.5)
         --market=<alias>     Market to check (default: primary)
         --assets             Show per-character packaged asset columns
-        --refresh            Bypass the asset and Jita price caches and re-fetch
+        --refresh            Bypass asset cache and re-fetch from ESI
 
     list-fits            List all tracked doctrine fits
         --market=<alias>     Market database to query (default: primary)

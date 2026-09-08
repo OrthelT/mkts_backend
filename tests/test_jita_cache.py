@@ -163,10 +163,13 @@ class TestProcessJitaPricesTTL:
     """The pipeline skips the fetch AND the per-market writes while fresh."""
 
     @staticmethod
-    def _contexts():
-        ctx = MagicMock()
-        ctx.alias = "primary"
-        return [ctx]
+    def _contexts(*aliases):
+        contexts = []
+        for alias in aliases or ("primary",):
+            ctx = MagicMock()
+            ctx.alias = alias
+            contexts.append(ctx)
+        return contexts
 
     def test_fresh_table_skips_fetch_and_writes(self):
         from mkts_backend import cli
@@ -222,8 +225,40 @@ class TestProcessJitaPricesTTL:
 
         mock_fetch.assert_called_once()
 
+    def test_stale_market_is_written_while_a_fresh_one_is_skipped(self):
+        """A market whose write failed last run is retried on its own row.
+
+        Regression guard: the guard once read only ``market_contexts[0]``, so a
+        fresh primary suppressed the retry for every later market.
+        """
+        from mkts_backend import cli
+
+        primary, deployment = self._contexts("primary", "deployment")
+        ages = {"primary": timedelta(minutes=30), "deployment": None}
+
+        with (
+            patch.object(
+                cli, "get_update_age", side_effect=lambda _t, ctx: ages[ctx.alias]
+            ),
+            patch(
+                "mkts_backend.utils.jita.fetch_jita_price_data",
+                return_value=[{"type_id": 34, "sell_price": 5.5, "buy_price": 4.0}],
+            ) as mock_fetch,
+            patch.object(cli, "upsert_database", return_value=True) as mock_upsert,
+            patch.object(cli, "log_update") as mock_log,
+            patch.object(cli, "_ensure_jita_prices_table"),
+            patch("mkts_backend.db.db_queries.get_watchlist_ids", return_value=[34]),
+        ):
+            assert cli.process_jita_prices([primary, deployment]) is True
+
+        mock_fetch.assert_called_once()
+        assert [c.kwargs["market_ctx"] for c in mock_upsert.call_args_list] == [
+            deployment
+        ]
+        assert [c.kwargs["market_ctx"] for c in mock_log.call_args_list] == [deployment]
+
     def test_no_market_contexts_returns_false(self):
-        """The TTL guard reads market_contexts[0]; an empty list must not raise."""
+        """The TTL guard iterates market_contexts; an empty list must not raise."""
         from mkts_backend import cli
 
         with patch("mkts_backend.utils.jita.fetch_jita_price_data") as mock_fetch:

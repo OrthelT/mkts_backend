@@ -438,13 +438,13 @@ Freshness comes from the `updatelog` row for `jita_prices`, written by
 (`db/db_queries.py`) returns that age, or `None` when the row or the table is
 missing — which callers treat as "no cache, fetch".
 
-**Pipeline** (`cli.py` `process_jita_prices()`): skips the fetch *and* the
-per-market writes while fresh, so a manual re-run within the hour is free. It
-reads the first market's `updatelog` row; `log_update` writes the same timestamp
-for every market in one loop, so one row speaks for all. A market DB added or
-wiped mid-hour is not backfilled until the TTL expires — it self-heals on the
-next run. The `refresh=True` parameter bypasses the check and exists for tests
-and internal callers; there is no CLI flag for it.
+**Pipeline** (`cli.py` `process_jita_prices()`): checks each market's own
+`updatelog` row and writes only the markets that are stale, skipping the fetch
+entirely when every requested market is fresh. So a manual re-run within the
+hour is free, while a market whose write failed on the previous run — or one
+added or wiped since — is refilled on the next run rather than waiting out the
+TTL behind a fresh sibling. The `refresh=True` parameter bypasses the check and
+exists for tests and internal callers; there is no CLI flag for it.
 
 **fitcheck** (`cli_tools/fit_check.py` `_get_jita_prices()`): reads the table
 while fresh, then live-fetches only the type_ids the table lacks — it covers

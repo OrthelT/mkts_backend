@@ -212,6 +212,7 @@ OPTIONS:
     --target=<N>         Override target quantity (default: from doctrine_fits)
     --output=<format>    Export format: csv, multibuy, or markdown
     --no-jita            Hide Jita price comparison columns
+    --refresh            Bypass the cached Jita prices and re-fetch live
     --help               Show this help message
 
     Note: One of --file, --paste, or --fit-id is required.

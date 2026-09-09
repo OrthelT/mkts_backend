@@ -25,11 +25,12 @@ from mkts_backend.builder_costs.repository import (
     init_buildcost_tables,
     log_buildcost_update,
     read_build_watchlist,
-    read_jita_prices,
     upsert_builder_costs,
 )
 from mkts_backend.config.db_config import DatabaseConfig
 from mkts_backend.config.logging_config import configure_logging
+from mkts_backend.config.market_context import MarketContext
+from mkts_backend.db.db_queries import read_jita_prices
 from mkts_backend.esi.async_everref import run_async_fetch_builder_costs
 
 logger = configure_logging(__name__)
@@ -79,7 +80,7 @@ def run() -> RunResult:
         for item in items
     }
 
-    jita_prices = read_jita_prices(primary_db)
+    jita_prices = read_jita_prices(market_ctx=MarketContext.from_settings("primary"))
 
     summary = run_async_fetch_builder_costs(
         type_ids,

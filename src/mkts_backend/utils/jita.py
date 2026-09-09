@@ -42,65 +42,29 @@ class JitaPrice:
 
 def fetch_jita_prices(type_ids: List[int]) -> Dict[int, Optional[float]]:
     """
-    Fetch Jita sell prices for a list of type IDs using Fuzzwork Market API.
+    Fetch Jita sell prices for a list of type IDs.
 
-    Uses the sell percentile (5th percentile of sell orders) as the reference price,
-    which represents a reasonable buy price in Jita.
+    Projects the sell price out of :func:`fetch_jita_price_data`, so both
+    callers share one fetcher — and therefore the same batching and Janice
+    fallback.
 
     Args:
         type_ids: List of type IDs to fetch prices for
 
     Returns:
-        Dict mapping type_id to sell_percentile price (or None if not found)
+        Dict mapping every requested type_id to its sell price, or None where
+        no usable (positive) sell price came back.
     """
     if not type_ids:
         return {}
 
-    results = {}
-
-    # Fuzzwork API accepts comma-separated type IDs
-    type_ids_str = ",".join(str(tid) for tid in type_ids)
-
-    headers = {
-        'Accept': 'application/json',
+    fetched = {
+        row["type_id"]: row["sell_price"] for row in fetch_jita_price_data(type_ids)
     }
-
-    try:
-        params = {
-            'region': JITA_REGION_ID,
-            'types': type_ids_str,
-        }
-
-        response = requests.get(FUZZWORK_API_URL, headers=headers, params=params, timeout=30)
-        response.raise_for_status()
-
-        data = response.json()
-
-        for type_id_str, price_data in data.items():
-            type_id = int(type_id_str)
-            try:
-                # Use sell percentile (5th percentile) as the reference Jita price
-                sell_percentile = float(price_data['sell']['percentile'])
-                # Only use valid prices (non-zero)
-                if sell_percentile > 0:
-                    results[type_id] = sell_percentile
-                else:
-                    results[type_id] = None
-            except (KeyError, ValueError, TypeError):
-                results[type_id] = None
-
-    except requests.exceptions.RequestException as e:
-        logger.warning(f"Failed to fetch Jita prices: {e}")
-        # Return None for all type_ids on failure
-        for type_id in type_ids:
-            results[type_id] = None
-
-    # Fill in any missing type_ids with None
-    for type_id in type_ids:
-        if type_id not in results:
-            results[type_id] = None
-
-    return results
+    return {
+        type_id: (price if (price := fetched.get(type_id)) and price > 0 else None)
+        for type_id in type_ids
+    }
 
 
 def fetch_jita_price_data(type_ids: List[int]) -> List[dict]:

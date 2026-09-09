@@ -1,6 +1,7 @@
 """Tests for the centralized settings service."""
 
 import tomllib
+from datetime import timedelta
 
 import pytest
 
@@ -224,3 +225,29 @@ def test_get_all_characters_correct_section_overrides_typo(monkeypatch):
     assert chars["foo"].char_id == 2
     assert chars["foo"].name == "New"
     assert "bar" in chars
+
+
+class TestJitaCacheTtl:
+    """[jita] cache_ttl_hours drives how long jita_prices stays reusable."""
+
+    @staticmethod
+    def _toml(tmp_path, body: str):
+        path = tmp_path / "jita.toml"
+        path.write_text(body)
+        return SettingsService(settings_path=path)
+
+    def test_reads_configured_hours(self, tmp_path):
+        s = self._toml(tmp_path, "[jita]\ncache_ttl_hours = 3\n")
+        assert s.jita_cache_ttl == timedelta(hours=3)
+
+    def test_accepts_a_fractional_hour(self, tmp_path):
+        s = self._toml(tmp_path, "[jita]\ncache_ttl_hours = 0.5\n")
+        assert s.jita_cache_ttl == timedelta(minutes=30)
+
+    def test_missing_section_names_the_offending_key(self, tmp_path):
+        s = self._toml(tmp_path, "[app]\nname = 'x'\n")
+        with pytest.raises(KeyError, match="jita"):
+            s.jita_cache_ttl
+
+    def test_shipped_settings_declare_a_positive_ttl(self):
+        assert SettingsService().jita_cache_ttl > timedelta(0)

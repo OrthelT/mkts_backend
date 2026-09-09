@@ -9,7 +9,6 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-import pandas as pd
 from sqlalchemy import text
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.exc import SQLAlchemyError
@@ -71,31 +70,6 @@ def init_buildcost_tables(db: DatabaseConfig) -> None:
             "Confirmed buildcost.db schema for build_watchlist, builder_costs, "
             "updatelog (already present, no push needed)"
         )
-
-
-def read_jita_prices(market_db: DatabaseConfig) -> dict[int, float]:
-    """Return ``{type_id: sell_price}`` from the given market DB local mirror."""
-    try:
-        with market_db.engine.connect() as conn:
-            df = pd.read_sql_query(
-                text("SELECT type_id, sell_price FROM jita_prices"),
-                conn,
-            )
-    except SQLAlchemyError as exc:
-        logger.warning(f"Could not read jita_prices from {market_db.alias}: {exc}")
-        return {}
-
-    if df.empty:
-        logger.info(
-            f"No jita_prices rows in {market_db.alias}; high-value gating disabled"
-        )
-        return {}
-
-    return {
-        int(row.type_id): float(row.sell_price)
-        for row in df.itertuples(index=False)
-        if pd.notna(row.sell_price)
-    }
 
 
 def read_build_watchlist(db: DatabaseConfig) -> list[dict]:

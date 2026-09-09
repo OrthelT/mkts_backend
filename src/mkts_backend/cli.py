@@ -5,7 +5,7 @@ import os
 from typing import Optional, cast
 
 from mkts_backend.config.logging_config import configure_logging
-from mkts_backend.db.db_queries import get_table_length
+from mkts_backend.db.db_queries import get_table_length, get_update_age
 from mkts_backend.db.db_handlers import (
     upsert_database,
     update_history,
@@ -254,12 +254,44 @@ def _ensure_jita_prices_table(market_ctx: MarketContext) -> None:
     JitaPrices.__table__.create(db.engine, checkfirst=True) # pyright: ignore[reportAttributeAccessIssue]
 
 
-def process_jita_prices(market_contexts: list[MarketContext]) -> bool:
-    """Fetch Jita prices once, write to all market databases."""
+def process_jita_prices(
+    market_contexts: list[MarketContext], refresh: bool = False
+) -> bool:
+    """Fetch Jita prices once, write to every market that needs them.
+
+    Freshness is checked per market against its own ``updatelog`` row: a market
+    whose ``jita_prices`` is under the TTL is left alone, and the fetch is
+    skipped entirely when every requested market is fresh. So a manual re-run
+    within the hour costs nothing, while a market whose write failed on the
+    previous run — or one added or wiped since — is still refilled, because its
+    ``updatelog`` row is missing or stale. ``refresh=True`` bypasses the check
+    (used by tests and internal callers; there is no CLI flag for it).
+    """
     import pandas as pd
     from sqlalchemy.exc import SQLAlchemyError
     from mkts_backend.utils.jita import fetch_jita_price_data
     from mkts_backend.db.db_queries import get_watchlist_ids
+
+    if not market_contexts:
+        logger.warning("No market contexts supplied for Jita price fetch")
+        return False
+
+    if refresh:
+        stale_contexts = list(market_contexts)
+    else:
+        ttl = SettingsService().jita_cache_ttl
+        stale_contexts = []
+        for ctx in market_contexts:
+            age = get_update_age("jita_prices", ctx)
+            if age is None or age >= ttl:
+                stale_contexts.append(ctx)
+            else:
+                logger.info(
+                    f"Jita prices for {ctx.alias} updated {age} ago, skipping"
+                )
+        if not stale_contexts:
+            logger.info("Jita prices fresh for every market, skipping fetch")
+            return True
 
     # Union watchlist type_ids from all market databases
     all_type_ids = set()
@@ -284,7 +316,7 @@ def process_jita_prices(market_contexts: list[MarketContext]) -> bool:
     df = pd.DataFrame(price_data)
 
     any_success = False
-    for ctx in market_contexts:
+    for ctx in stale_contexts:
         try:
             # Ensure table exists locally (first run won't have it)
             _ensure_jita_prices_table(ctx)

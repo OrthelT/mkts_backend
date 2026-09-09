@@ -5,6 +5,12 @@
 user_agent = "wcmkts_backend/0.1.3, orthel.toralen@gmail.com, (https://github.com/OrthelT/wcmkts_backend)"
 compatibility_date = "2026-06-09"
 
+[jita]
+# How long the jita_prices table stays reusable before the pipeline and
+# fitcheck re-fetch from Fuzzwork. The pipeline refreshes jita_prices every
+# 4 hours, so a TTL below that trades fitcheck cache hits for fresher prices.
+cache_ttl_hours = 1
+
 [auth]
 # esi_client_id, esi_secret_key, and refresh token should be set in .env file for local development.
 # Use secure credential storage (github secrets) in production.

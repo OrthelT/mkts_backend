@@ -23,6 +23,8 @@ from mkts_backend.utils.eft_parser import (
     FitParseResult,
 )
 from mkts_backend.utils.jita import fetch_jita_prices, get_overpriced_items
+from mkts_backend.config.settings_service import SettingsService
+from mkts_backend.db.db_queries import get_update_age, read_jita_prices
 from mkts_backend.cli_tools.rich_display import (
     console,
     create_fit_status_table,
@@ -597,10 +599,36 @@ def _get_type_name_from_sde(type_id: int) -> str:
         return result[0] if result else f"Unknown (ID: {type_id})"
 
 
+
+def _get_jita_prices(
+    type_ids: List[int],
+    market_ctx: Optional[MarketContext] = None,
+    refresh: bool = False,
+) -> Dict[int, Optional[float]]:
+    """Return Jita sell prices for ``type_ids``, reading the cache when fresh.
+
+    While the market DB's ``jita_prices`` table is under an hour old this reads
+    it instead of hitting Fuzzwork, then fetches only the ids the table lacks
+    (it covers watchlist items only, so a fit can contain items it misses).
+    Falls back to a full live fetch when the table is stale, absent, or when
+    ``refresh`` is set.
+
+    Read-only, always: ``jita_prices`` is a wipe-and-replace table, so writing
+    one fit's handful of items here would delete the other ~810 rows.
+    """
+    age = get_update_age("jita_prices", market_ctx)
+    if not refresh and age is not None and age < SettingsService().jita_cache_ttl:
+        cached = read_jita_prices(market_ctx, type_ids)
+        missing = [t for t in type_ids if t not in cached]
+        return cached | (fetch_jita_prices(missing) if missing else {})
+    return fetch_jita_prices(type_ids)
+
+
 def get_fit_market_status(
     parse_result: FitParseResult,
     market_ctx: Optional[MarketContext] = None,
     target: Optional[int] = None,
+    refresh: bool = False,
 ) -> FitCheckResult:
     """
     Get market status for all items in a parsed fit.
@@ -609,6 +637,7 @@ def get_fit_market_status(
         parse_result: Parsed EFT fit result
         market_ctx: Market context for database selection
         target: Optional target quantity override. If None, looks up from doctrine_fits.
+        refresh: Bypass the cached jita_prices table and fetch live
 
     Returns:
         FitCheckResult with market data and export utilities
@@ -642,8 +671,8 @@ def get_fit_market_status(
     # Get marketstats data
     marketstats_data = _get_marketstats_data(type_ids, market_ctx)
 
-    # Fetch Jita prices for all items
-    jita_prices = fetch_jita_prices(type_ids)
+    # Jita prices: cached table while fresh, live fetch otherwise
+    jita_prices = _get_jita_prices(type_ids, market_ctx, refresh=refresh)
 
     # Build result list
     market_data = []
@@ -736,6 +765,7 @@ def get_fit_market_status_by_id(
     fit_id: int,
     market_ctx: Optional[MarketContext] = None,
     target: Optional[int] = None,
+    refresh: bool = False,
 ) -> Optional[FitCheckResult]:
     """
     Get market status for a fit using pre-calculated data from the doctrines table.
@@ -747,6 +777,7 @@ def get_fit_market_status_by_id(
         fit_id: The fit_id to look up in doctrine_fits/doctrines tables
         market_ctx: Market context for database selection
         target: Optional target quantity override. If None, uses value from doctrine_fits.
+        refresh: Bypass the cached jita_prices table and fetch live
 
     Returns:
         FitCheckResult with market data from doctrines table, or None if fit not found
@@ -766,9 +797,9 @@ def get_fit_market_status_by_id(
     if not market_data:
         return None
 
-    # Fetch Jita prices for comparison
+    # Jita prices: cached table while fresh, live fetch otherwise
     type_ids = [item["type_id"] for item in market_data]
-    jita_prices = fetch_jita_prices(type_ids)
+    jita_prices = _get_jita_prices(type_ids, market_ctx, refresh=refresh)
 
     # Populate Jita prices in market data
     for item in market_data:
@@ -812,6 +843,7 @@ def display_fit_status_by_id(
     target: Optional[int] = None,
     output_format: Optional[str] = None,
     show_jita: bool = True,
+    refresh: bool = False,
 ) -> Optional[FitCheckResult]:
     """
     Display market status for a fit by fit_id using pre-calculated doctrines data.
@@ -828,7 +860,7 @@ def display_fit_status_by_id(
         FitCheckResult object with market data, or None if fit not found
     """
     # Get market data from doctrines table
-    result = get_fit_market_status_by_id(fit_id, market_ctx, target)
+    result = get_fit_market_status_by_id(fit_id, market_ctx, target, refresh=refresh)
 
     if not result:
         console.print(f"[red]Error: No fit found with fit_id={fit_id}[/red]")
@@ -922,6 +954,7 @@ def display_fit_status(
     target: Optional[int] = None,
     output_format: Optional[str] = None,
     show_jita: bool = True,
+    refresh: bool = False,
 ) -> FitCheckResult:
     """
     Display market status for a parsed fit using Rich formatting.
@@ -938,7 +971,7 @@ def display_fit_status(
         FitCheckResult object with market data
     """
     # Get market data with target lookup
-    result = get_fit_market_status(parse_result, market_ctx, target)
+    result = get_fit_market_status(parse_result, market_ctx, target, refresh=refresh)
 
     # Create table first to measure its width
     table = create_fit_status_table(
@@ -1151,6 +1184,7 @@ OPTIONS:
     --output=<format>    Export format: csv, multibuy, or markdown
     --no-jita            Hide Jita price comparison columns
     --no-legend          Hide the legend
+    --refresh            Bypass the cached Jita prices and re-fetch live
     --help, -h           Show this help message
 
 EXAMPLES:
@@ -1204,6 +1238,7 @@ def fit_check_command(
     target: Optional[int] = None,
     output_format: Optional[str] = None,
     show_jita: bool = True,
+    refresh: bool = False,
 ) -> bool:
     """
     Execute the fit-check command.
@@ -1217,6 +1252,7 @@ def fit_check_command(
         target: Optional target quantity override
         output_format: Export format - 'csv', 'multibuy', or 'markdown' (optional)
         show_jita: Whether to show Jita price comparison columns
+        refresh: Bypass the cached jita_prices table and fetch live
 
     Returns:
         True if successful, False otherwise
@@ -1239,6 +1275,7 @@ def fit_check_command(
             target=target,
             output_format=output_format,
             show_jita=show_jita,
+            refresh=refresh,
         )
         return result is not None
 
@@ -1282,6 +1319,7 @@ def fit_check_command(
         target=target,
         output_format=output_format,
         show_jita=show_jita,
+        refresh=refresh,
     )
 
     return True

@@ -284,7 +284,8 @@ class TestGetFitMarketStatus:
             with patch('mkts_backend.cli_tools.fit_check._get_target_for_fit') as mock_target:
                 with patch('mkts_backend.cli_tools.fit_check._is_ship') as mock_is_ship:
                     with patch('mkts_backend.cli_tools.fit_check.get_equiv_stock') as mock_equiv:
-                        with patch('mkts_backend.cli_tools.fit_check.fetch_jita_prices') as mock_jita:
+                        with patch('mkts_backend.cli_tools.fit_check.get_update_age', return_value=None), \
+                             patch('mkts_backend.cli_tools.fit_check.fetch_jita_prices') as mock_jita:
                             mock_target.return_value = None
                             mock_stats.return_value = {
                                 100: {"type_name": "Test Module", "price": 1000000, "avg_price": 1100000, "total_volume_remain": 100},
@@ -329,7 +330,8 @@ class TestGetFitMarketStatus:
             with patch('mkts_backend.cli_tools.fit_check._get_target_for_fit') as mock_target:
                 with patch('mkts_backend.cli_tools.fit_check._is_ship') as mock_is_ship:
                     with patch('mkts_backend.cli_tools.fit_check.get_equiv_stock') as mock_equiv:
-                        with patch('mkts_backend.cli_tools.fit_check.fetch_jita_prices') as mock_jita:
+                        with patch('mkts_backend.cli_tools.fit_check.get_update_age', return_value=None), \
+                             patch('mkts_backend.cli_tools.fit_check.fetch_jita_prices') as mock_jita:
                             mock_target.return_value = None
                             mock_stats.return_value = {
                                 100: {"type_name": "Test Module", "price": 1000000, "avg_price": 1100000, "total_volume_remain": 100},
@@ -637,7 +639,8 @@ class TestFitCheckByFitId:
 
         with patch('mkts_backend.cli_tools.fit_check.DatabaseConfig') as mock_db_config:
             with patch('mkts_backend.cli_tools.fit_check.MarketContext') as mock_ctx:
-                with patch('mkts_backend.cli_tools.fit_check.fetch_jita_prices') as mock_jita:
+                with patch('mkts_backend.cli_tools.fit_check.get_update_age', return_value=None), \
+                     patch('mkts_backend.cli_tools.fit_check.fetch_jita_prices') as mock_jita:
                     mock_instance = MagicMock()
                     mock_db_config.return_value = mock_instance
 

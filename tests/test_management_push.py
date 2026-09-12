@@ -421,6 +421,20 @@ def _create_fittings_schema(conn) -> None:
         "CREATE TABLE fittings_doctrine_fittings (id INTEGER PRIMARY KEY, "
         "doctrine_id INTEGER, fitting_id INTEGER)"
     ))
+    # The three parent tables ensure_fittings_types fills from the SDE before
+    # any fit row is written. Start them empty: the workflow must populate them.
+    conn.execute(text(
+        "CREATE TABLE fittings_itemcategory (category_id INTEGER PRIMARY KEY, "
+        "name TEXT NOT NULL, published INTEGER NOT NULL)"
+    ))
+    conn.execute(text(
+        "CREATE TABLE fittings_itemgroup (group_id INTEGER PRIMARY KEY, "
+        "name TEXT NOT NULL, published INTEGER NOT NULL, category_id INTEGER NOT NULL)"
+    ))
+    conn.execute(text(
+        "CREATE TABLE fittings_type (type_name TEXT NOT NULL, type_id INTEGER PRIMARY KEY, "
+        "published INTEGER NOT NULL, volume REAL, group_id INTEGER)"
+    ))
 
 
 def _create_fittings_market_schema(conn) -> None:
@@ -460,11 +474,24 @@ def _create_fittings_sde_schema(conn) -> None:
         "groupID INTEGER, groupName TEXT, categoryID INTEGER, categoryName TEXT, "
         "volume REAL)"
     ))
+    conn.execute(text(
+        "CREATE TABLE sdetypes (typeID INTEGER PRIMARY KEY, typeName TEXT, "
+        "groupID INTEGER, groupName TEXT, categoryID INTEGER, categoryName TEXT, "
+        "volume REAL, metaGroupID INTEGER, metaGroupName TEXT, published INTEGER, "
+        "repackagedVolume REAL)"
+    ))
     for type_name, type_id in _FITTINGS_EFT_TYPE_MAP.items():
         conn.execute(
             text(
                 "INSERT INTO inv_info VALUES "
                 "(:id, :name, 18, 'Group', 6, 'Category', 1.0)"
+            ),
+            {"id": type_id, "name": type_name},
+        )
+        conn.execute(
+            text(
+                "INSERT INTO sdetypes VALUES "
+                "(:id, :name, 18, 'Group', 6, 'Category', 1.0, 1, 'Tech I', 1, NULL)"
             ),
             {"id": type_id, "name": type_name},
         )
@@ -593,6 +620,11 @@ class TestFittingsPush:
             assert conn.execute(
                 text("SELECT count(*) FROM fittings_fitting WHERE id = 99001")
             ).scalar() == 1
+            # Every type the fit references must exist in fittings_type before
+            # push, or Turso cloud rejects the item rows (FK enforced remotely).
+            assert {
+                r[0] for r in conn.execute(text("SELECT type_id FROM fittings_type"))
+            } == set(_FITTINGS_EFT_TYPE_MAP.values())
         with dbs["wcmktnewkeeptest"].engine.connect() as conn:
             assert conn.execute(
                 text("SELECT count(*) FROM doctrine_fits WHERE fit_id = 99001")

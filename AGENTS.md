@@ -303,6 +303,16 @@ first place.
 - CDC replays DDL from `sqlite_schema` text but row inserts from the live local
   schema, and `ALTER … RENAME` emits no CDC at all. Migrate by
   drop → create-with-final-name → reinsert; never create-copy-drop-rename.
+- **A push that fails a constraint is not rolled back.** The local replica runs
+  with `PRAGMA foreign_keys` OFF, Turso cloud runs with it ON. When a replayed
+  INSERT fails there (e.g. `FOREIGN KEY constraint failed`), SQLite aborts only
+  that statement; the rest of the batch, including the client watermark in
+  `turso_sync_last_change_id`, still commits. `push()` raises, but the next
+  push sends nothing and "succeeds", so the rejected rows never reach the
+  remote. Write parent rows before children — `ensure_fittings_types()`
+  (`utils/parse_fits.py`) does this for `fittings_type` before any fit row is
+  written. Repair a rejected row by delete + re-insert locally (fresh CDC
+  INSERT), then push.
 
 ## Data Processing Flow
 

@@ -579,6 +579,94 @@ def insert_fit_items_to_db(
     engine.dispose()
 
 
+def ensure_fittings_types(type_ids, remote: bool = False) -> List[int]:
+    """Copy any of ``type_ids`` missing from ``fittings_type`` in from the SDE.
+
+    ``fittings_fittingitem.type_fk_id`` and ``fittings_fitting.ship_type_id``
+    both reference ``fittings_type.type_id``, and ``fittings_type`` is a
+    snapshot from the fittings app that nothing else in this repo maintains.
+    The local turso replica does not enforce foreign keys, so a fit item whose
+    type is absent writes locally without error — but Turso cloud does enforce
+    them when ``push()`` replays the row, and the push fails there with the
+    rest of the batch already committed and the watermark advanced, so the
+    row is never retried. Call this before writing fit rows so the parents
+    exist first.
+
+    Each missing type is inserted together with its item group and category
+    (also foreign keys) when those are missing. ``fittings_type``'s other
+    columns stay NULL; the SDE snapshot does not carry them.
+
+    Returns:
+        The type ids that were inserted, ascending.
+
+    Raises:
+        ValueError: if any requested type id is not in the SDE. Nothing is
+            written in that case.
+    """
+    wanted = sorted({int(t) for t in type_ids})
+    if not wanted:
+        return []
+
+    ids_param = bindparam("ids", expanding=True)
+    fittings_engine = _get_engine("fittings", remote)
+    with fittings_engine.connect() as conn:
+        present = {
+            row[0]
+            for row in conn.execute(
+                text("SELECT type_id FROM fittings_type WHERE type_id IN :ids").bindparams(ids_param),
+                {"ids": wanted},
+            )
+        }
+    missing = [t for t in wanted if t not in present]
+    if not missing:
+        return []
+
+    sde_engine = _get_engine("sde", False)
+    with sde_engine.connect() as conn:
+        sde_rows = conn.execute(
+            text(
+                "SELECT typeID, typeName, groupID, groupName, categoryID, categoryName, "
+                "volume, published FROM sdetypes WHERE typeID IN :ids"
+            ).bindparams(ids_param),
+            {"ids": missing},
+        ).fetchall()
+    unknown = set(missing) - {row.typeID for row in sde_rows}
+    if unknown:
+        raise ValueError(f"type ids not in SDE sdetypes: {sorted(unknown)}")
+
+    with fittings_engine.begin() as conn:
+        for row in sde_rows:
+            conn.execute(
+                text(
+                    "INSERT OR IGNORE INTO fittings_itemcategory (category_id, name, published) "
+                    "VALUES (:category_id, :name, 1)"
+                ),
+                {"category_id": row.categoryID, "name": row.categoryName},
+            )
+            conn.execute(
+                text(
+                    "INSERT OR IGNORE INTO fittings_itemgroup (group_id, name, published, category_id) "
+                    "VALUES (:group_id, :name, 1, :category_id)"
+                ),
+                {"group_id": row.groupID, "name": row.groupName, "category_id": row.categoryID},
+            )
+            conn.execute(
+                text(
+                    "INSERT INTO fittings_type (type_name, type_id, published, volume, group_id) "
+                    "VALUES (:type_name, :type_id, :published, :volume, :group_id)"
+                ),
+                {
+                    "type_name": row.typeName,
+                    "type_id": row.typeID,
+                    "published": 1 if row.published is None else int(row.published),
+                    "volume": row.volume,
+                    "group_id": row.groupID,
+                },
+            )
+    logger.info(f"Added {len(missing)} types to fittings_type from SDE: {missing}")
+    return missing
+
+
 def parse_fit_metadata(fit_metadata_file: str) -> FitMetadata:
     with open(fit_metadata_file, "r", encoding="utf-8") as f:
         metadata = json.load(f)
@@ -847,6 +935,11 @@ def update_fit_workflow(
             }
     finally:
         sde_engine.dispose()
+
+    # Parents first: Turso cloud enforces the fittings_type foreign keys on push.
+    ensure_fittings_types(
+        [ship_type_id, *(item["type_id"] for item in parse_result.items)], remote=remote
+    )
 
     # Upsert core fitting data
     upsert_fittings_fitting(metadata, ship_type_id, remote=remote)

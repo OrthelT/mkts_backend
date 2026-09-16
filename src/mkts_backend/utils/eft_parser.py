@@ -10,11 +10,11 @@ from collections import defaultdict
 from dataclasses import dataclass
 from typing import Dict, Generator, List, Optional
 
+from sqlalchemy import text
 from sqlalchemy.engine import Engine
 
 from mkts_backend.config.logging_config import configure_logging
 from mkts_backend.config import DatabaseConfig
-from mkts_backend.utils import TypeInfo
 
 logger = configure_logging(__name__)
 
@@ -67,11 +67,15 @@ def lookup_type_id(type_name: str, conn=None) -> Optional[int]:
     Returns:
         The type ID if found, None otherwise
     """
-    try:
-        type_id =  TypeInfo(type_name).type_id
-        return type_id
-    except ValueError:
-        return None
+    if conn is None:
+        with _sde_db.engine.connect() as new_conn:
+            return lookup_type_id(type_name, new_conn)
+
+    row = conn.execute(
+        text("SELECT typeID FROM sdetypes WHERE typeName = :type_name"),
+        {"type_name": type_name},
+    ).fetchone()
+    return row[0] if row is not None else None
 
 def resolve_ship_type_id(ship_name: str, conn=None) -> Optional[int]:
     """

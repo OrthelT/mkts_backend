@@ -18,6 +18,7 @@ from mkts_backend.utils.doctrine_update import (
 )
 from mkts_backend.utils.db_utils import add_missing_items_to_watchlist
 from mkts_backend.utils.get_type_info import TypeInfo
+from mkts_backend.utils.eft_parser import lookup_type_id
 
 logger = configure_logging(__name__)
 
@@ -128,12 +129,10 @@ def slot_yielder() -> Generator[str, None, None]:
         yield "Cargo"
 
 def _lookup_type_id(type_name: str, conn) -> Optional[int]:
-    type_id =TypeInfo(type_name).type_id
-    return type_id if type_id else None
+    return lookup_type_id(type_name, conn)
 
 def _resolve_ship_type_id(ship_name: str, conn) -> Optional[int]:
-    ship_id = TypeInfo(ship_name).type_id
-    return ship_id if ship_id else None
+    return lookup_type_id(ship_name, conn)
 
 def parse_eft_fit_file(fit_file: str, fit_id: int, sde_engine) -> FitParseResult:
     """

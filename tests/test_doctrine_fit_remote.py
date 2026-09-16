@@ -37,16 +37,20 @@ CREATE_DOCTRINE = """
     )
 """
 
-CREATE_INV_INFO = """
-    CREATE TABLE IF NOT EXISTS inv_info (
+CREATE_SDE_TYPES = """
+    CREATE TABLE IF NOT EXISTS sdetypes (
         typeID INT PRIMARY KEY,
         typeName TEXT,
         groupID INT,
-        volume REAL,
-        groupName TEXT,
+         groupName TEXT,
         categoryID INT,
-        categoryName TEXT
-    )
+        categoryName TEXT,
+        volume REAL,
+        metaGroupID INT,
+        metaGroupName TEXT, 
+        published BOOL, 
+        repackagedVolume REAL
+        )
 """
 
 
@@ -82,9 +86,9 @@ def fittings_env(tmp_path, monkeypatch):
         )
 
     with sde.begin() as conn:
-        conn.execute(text(CREATE_INV_INFO))
+        conn.execute(text(CREATE_SDE_TYPES))
         conn.execute(
-            text("INSERT INTO inv_info (typeID, typeName) VALUES (29340, 'Oneiros')")
+            text("INSERT INTO sdetypes (typeID, typeName) VALUES (29340, 'Oneiros')")
         )
 
     dbs = {

@@ -1,13 +1,11 @@
 import re
 import json
 from dataclasses import dataclass, field
-from typing import Any, Generator, Optional, Tuple, List, Dict
+from typing import Any, Generator, Optional, List, Dict
 from collections import defaultdict
 from datetime import datetime, timezone
 
-from sqlalchemy import create_engine, text, bindparam
-
-import pandas as pd
+from sqlalchemy import text, bindparam
 
 from mkts_backend.config.logging_config import configure_logging
 from mkts_backend.config import DatabaseConfig
@@ -19,6 +17,7 @@ from mkts_backend.utils.doctrine_update import (
     refresh_doctrines_for_fit,
 )
 from mkts_backend.utils.db_utils import add_missing_items_to_watchlist
+from mkts_backend.utils.get_type_info import TypeInfo
 
 logger = configure_logging(__name__)
 
@@ -27,11 +26,9 @@ _wcmkt_db = DatabaseConfig("wcmkt")
 _sde_db = DatabaseConfig("sde")
 _fittings_db = DatabaseConfig("fittings")
 
-
 def _get_engine(db_alias: str, remote: bool = False):
     cfg = DatabaseConfig(db_alias)
     return cfg.remote_engine if remote else cfg.engine
-
 
 @dataclass
 class FittingItem:
@@ -66,12 +63,12 @@ class FittingItem:
                 self.fit_name = f"Default {self.ship_type_name} fit"
 
     def get_type_id(self) -> int:
-        engine = _sde_db.engine
-        query = text("SELECT typeID FROM inv_info WHERE typeName = :type_name")
-        with engine.connect() as conn:
-            result = conn.execute(
-                query, {"type_name": self.type_name}).fetchone()
-            return result[0] if result else -1
+        try:
+            type_id = TypeInfo(self.type_name).type_id
+            return type_id
+        except Exception as e:
+            logger.error(f"an error occurred: {e}")
+            return -1
 
     def get_fitting_details(self) -> dict:
         engine = _fittings_db.engine
@@ -79,7 +76,6 @@ class FittingItem:
         with engine.connect() as conn:
             row = conn.execute(query, {"fit_id": self.fit_id}).fetchone()
             return dict(row._mapping) if row else {}
-
 
 @dataclass
 class FitMetadata:
@@ -113,7 +109,6 @@ class FitMetadata:
             raise ValueError("doctrine_id list is empty after normalization")
         return ids
 
-
 @dataclass
 class FitParseResult:
     items: List[Dict]
@@ -121,11 +116,9 @@ class FitParseResult:
     fit_name: str
     missing_types: List[str]
 
-
 def convert_fit_date(date: str) -> datetime:
     dt = datetime.strptime("15 Jan 2025 19:12:04", "%d %b %Y %H:%M:%S")
     return dt
-
 
 def slot_yielder() -> Generator[str, None, None]:
     corrected_order = ["LoSlot", "MedSlot", "HiSlot", "RigSlot", "DroneBay"]
@@ -134,22 +127,13 @@ def slot_yielder() -> Generator[str, None, None]:
     while True:
         yield "Cargo"
 
-
 def _lookup_type_id(type_name: str, conn) -> Optional[int]:
-    result = conn.execute(
-        text("SELECT typeID FROM inv_info WHERE typeName = :type_name"),
-        {"type_name": type_name},
-    ).fetchone()
-    return result[0] if result else None
-
+    type_id =TypeInfo(type_name).type_id
+    return type_id if type_id else None
 
 def _resolve_ship_type_id(ship_name: str, conn) -> Optional[int]:
-    result = conn.execute(
-        text("SELECT typeID FROM inv_info WHERE typeName = :type_name"),
-        {"type_name": ship_name},
-    ).fetchone()
-    return result[0] if result else None
-
+    ship_id = TypeInfo(ship_name).type_id
+    return ship_id if ship_id else None
 
 def parse_eft_fit_file(fit_file: str, fit_id: int, sde_engine) -> FitParseResult:
     """
@@ -806,7 +790,6 @@ def remove_doctrine_link(doctrine_id: int, fit_id: int, remote: bool = False) ->
         )
         return False
 
-
 def remove_all_doctrine_links_for_fit(fit_id: int, remote: bool = False) -> int:
     """
     Remove ALL fittings_doctrine_fittings rows for a fit across all doctrines.
@@ -1074,18 +1057,9 @@ def display_fit_market_status(
                     )
                     market_data.append(stats_dict)
                 else:
+                    
                     # Item not in market stats - get type name from SDE
-                    type_name_query = text(
-                        "SELECT typeName FROM inv_info WHERE typeID = :type_id"
-                    )
-                    type_name_result = sde_conn.execute(
-                        type_name_query, {"type_id": type_id}
-                    ).fetchone()
-                    type_name = (
-                        type_name_result[0]
-                        if type_name_result
-                        else f"Unknown (ID: {type_id})"
-                    )
+                    type_name = TypeInfo(type_id).type_name                   
 
                     market_data.append(
                         {

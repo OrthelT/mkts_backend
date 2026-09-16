@@ -1,16 +1,13 @@
-from dataclasses import dataclass, field
-
+from dataclasses import dataclass
 from typing import Union
-from numpy._core.multiarray import RAISE
-from numpy.strings import isdigit, isnumeric
-from sqlalchemy.orm import query
+from numpy.strings import isnumeric
 from mkts_backend.config.db_config import DatabaseConfig
-from sqlalchemy import false, text
+from sqlalchemy import  text
 from mkts_backend.config.logging_config import configure_logging
 
 logger = configure_logging(__name__)
 
-@dataclass(init=false)
+@dataclass(init=False)
 class TypeInfo:
     type_id: int
     type_name: str
@@ -37,10 +34,11 @@ class TypeInfo:
         db = DatabaseConfig("sde")
         stmt = text("""
             SELECT typeID
-            FROM inv_info
+            FROM sdetypes
             WHERE typeName = :type_name
             LIMIT 1
         """)
+        
         with db.engine.connect() as conn:
             row = conn.execute(stmt, {"type_name": type_name}).mappings().first()
 
@@ -59,13 +57,14 @@ class TypeInfo:
                 categoryID,
                 groupID,
                 volume
-            FROM inv_info
+            FROM sdetypes
             WHERE typeID = :type_id
             LIMIT 1
         """)
+
         with db.engine.connect() as conn:
             row = conn.execute(stmt, {"type_id": self.type_id}).mappings().first()
-
+  
         if row is None:
             raise ValueError(f"type_id not found: {self.type_id}")
 
@@ -75,7 +74,6 @@ class TypeInfo:
         self.category_id = row["categoryID"]
         self.group_id = row["groupID"]
         self.volume = row["volume"]
-
     def to_dict(self):
         type_dict = {
             "type_id": self.type_id,

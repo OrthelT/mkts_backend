@@ -120,11 +120,11 @@ class DoctrineFit:
         # SDE is a read-only local mirror; there is no remote variant to consult.
         engine = DatabaseConfig("sde").engine
         with engine.connect() as conn:
-            stmt = text("SELECT * FROM inv_info WHERE typeID = :type_id")
+            stmt = text("SELECT * FROM sdetypes WHERE typeID = :type_id")
             result = conn.execute(stmt, {"type_id": self.ship_type_id})
             row = result.fetchone()
             if row is None:
-                raise ValueError(f"Ship type_id {self.ship_type_id} not found in inv_info")
+                raise ValueError(f"Ship type_id {self.ship_type_id} not found in sdetypes")
             name = row[1]
             return name.strip()
 
@@ -1044,13 +1044,13 @@ def add_doctrine_type_info_to_watchlist(doctrine_id: int):
         print(f"Continuing to add {len(missing_fit_items)} missing items to watchlist")
 
     for item in missing_fit_items:
-        stmt4 = text("SELECT * FROM inv_info WHERE typeID = :item")
+        stmt4 = text("SELECT * FROM sdetypes WHERE typeID = :item")
         db = DatabaseConfig("sde")
         engine = db.engine
         with engine.connect() as conn:
             result = conn.execute(stmt4, {"item": item})
             for row in result:
-                type_info = TypeInfo(type_id=item)
+                type_info = TypeInfo(item)
                 missing_type_info.append(type_info)
 
     for type_info in missing_type_info:

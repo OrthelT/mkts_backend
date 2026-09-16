@@ -6,7 +6,7 @@ from mkts_backend.config.logging_config import configure_logging
 from mkts_backend.db.models import Watchlist, UpdateLog
 from datetime import datetime, timezone, timedelta
 from sqlalchemy.orm import Session
-
+from mkts_backend.utils.get_type_info import get_type_from_list
 
 logger = configure_logging(__name__)
 
@@ -102,7 +102,7 @@ def add_missing_items_to_watchlist(missing_items: list[int], remote: bool = Fals
 def get_type_info(type_ids: list[int], remote: bool = False):
     engine = sde_db.remote_engine if remote else sde_db.engine
     with engine.connect() as conn:
-        stmt = text("SELECT * FROM inv_info WHERE typeID IN :type_ids").bindparams(bindparam('type_ids', expanding=True))
+        stmt = text("SELECT * FROM sdetypes WHERE typeID IN :type_ids").bindparams(bindparam('type_ids', expanding=True))
         res = conn.execute(stmt, {"type_ids": type_ids})
         df = pd.DataFrame(res.fetchall())
         df.columns = res.keys()
@@ -113,7 +113,7 @@ def update_watchlist_tables(missing_items: list[int]):
     engine = sde_db.engine
     with engine.connect() as conn:
         from sqlalchemy import bindparam
-        stmt = text("SELECT * FROM inv_info WHERE typeID IN :missing").bindparams(bindparam('missing', expanding=True))
+        stmt = text("SELECT * FROM sdetypes WHERE typeID IN :missing").bindparams(bindparam('missing', expanding=True))
         df = pd.read_sql_query(stmt, conn)
 
     inv_cols = ['typeID', 'typeName', 'groupID', 'groupName', 'categoryID', 'categoryName']

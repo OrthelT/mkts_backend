@@ -68,20 +68,14 @@ def lookup_type_id(type_name: str, conn=None) -> Optional[int]:
         The type ID if found, None otherwise
     """
     if conn is None:
-        engine = _sde_db.engine
-        with engine.connect() as new_conn:
-            result = new_conn.execute(
-                text("SELECT typeID FROM inv_info WHERE typeName = :type_name"),
-                {"type_name": type_name},
-            ).fetchone()
-            return result[0] if result else None
-    else:
-        result = conn.execute(
-            text("SELECT typeID FROM inv_info WHERE typeName = :type_name"),
-            {"type_name": type_name},
-        ).fetchone()
-        return result[0] if result else None
+        with _sde_db.engine.connect() as new_conn:
+            return lookup_type_id(type_name, new_conn)
 
+    row = conn.execute(
+        text("SELECT typeID FROM sdetypes WHERE typeName = :type_name"),
+        {"type_name": type_name},
+    ).fetchone()
+    return row[0] if row is not None else None
 
 def resolve_ship_type_id(ship_name: str, conn=None) -> Optional[int]:
     """

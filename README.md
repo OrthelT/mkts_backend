@@ -354,7 +354,6 @@ uv run mkts-backend add-watchlist <type_id1> <type_id2> ...
 ## Architecture
 
 ### Core Components
-
 - **`mkts_backend/cli.py`**: CLI entrypoint (`mkts-backend`) orchestrating jobs
 - **`mkts_backend/db/`**: ORM models, handlers, and query utilities
 - **`mkts_backend/esi/`**: ESI auth, requests, and async history clients
@@ -363,7 +362,6 @@ uv run mkts-backend add-watchlist <type_id1> <type_id2> ...
 - **`mkts_backend/config/`**: DB, ESI, Google Sheets, and logging config
 
 ### Data Flow
-
 1. **Authentication**: Authenticate with Eve SSO using required scopes
 2. **Market Orders**: Fetch current market orders for configured structure
 3. **Historical Data**: Optionally fetch historical data for watchlist items
@@ -375,7 +373,6 @@ uv run mkts-backend add-watchlist <type_id1> <type_id2> ...
 ## Configuration
 
 ### Key Settings
-
 Configuration is managed through `settings.toml` with support for multiple markets:
 
 **Primary Market (`markets.primary`)**:
@@ -399,7 +396,6 @@ Configuration is managed through `settings.toml` with support for multiple marke
 **Watchlist**: DB table with ~850 common items and all WinterCo Doctrine ships and fittings.
 
 ### Google Sheets Integration (optional)
-
 1. Enable/Disable in 'settings.toml'.
 2. Create a Google Service Account
 3. Download the service account key file
@@ -409,7 +405,6 @@ Configuration is managed through `settings.toml` with support for multiple marke
 ## Database Schema
 
 ### Primary Tables
-
 - **`marketorders`**: Current market orders from ESI API
 - **`market_history`**: Historical market data for trend analysis
 - **`marketstats`**: Calculated market statistics and metrics
@@ -418,7 +413,6 @@ Configuration is managed through `settings.toml` with support for multiple marke
 - **`watchlist`**: Items being tracked for market analysis
 
 ### Support Tables
-
 - **`ship_targets`**: Ship production targets and goals
 - **`doctrine_map`**: Mapping between doctrines and fittings
 - **`doctrine_fits`**: Doctrine fitting configurations with target quantities
@@ -432,14 +426,12 @@ Configuration is managed through `settings.toml` with support for multiple marke
 ## API Integration
 
 ### Eve Online ESI API
-
 - **Market Orders**: Real-time market data from structures
 - **Market History**: Historical price and volume data
 - **Universe Names**: Item name resolution
 - **OAuth Flow**: Secure authentication for protected endpoints
 
 ### Google Sheets API
-
 - **Service Account**: Authentication using service account credentials
 - **Batch Updates**: Efficient bulk data updates
 - **Configurable Modes**: Append or replace data options
@@ -447,7 +439,6 @@ Configuration is managed through `settings.toml` with support for multiple marke
 ## Development
 
 ### Dependencies
-
 The project uses modern Python dependencies managed with uv:
 
 - **SQLAlchemy**: ORM and database operations
@@ -458,7 +449,6 @@ The project uses modern Python dependencies managed with uv:
 - **prompt-toolkit**: Multiline input prompts for paste mode
 
 ### Logging
-
 Comprehensive logging is configured with rotating file handlers:
 
 - **Log Files**: `logs/mkts-backend.log`
@@ -466,17 +456,19 @@ Comprehensive logging is configured with rotating file handlers:
 - **Levels**: INFO for file, ERROR for console
 
 ## Contributing
-
 1. Fork the repository
 2. Create a feature branch
 3. Make your changes
 4. Add tests if applicable
 5. Submit a pull request
 
-## License
+## Change Log 
 
+### Version 0.2.0
+- migrate to pyturso db library and deprecate libsql
+
+## License
 This project is developed as a learning project for Eve Online market analysis. Contact orthel_toralen on Discord with questions.
 
 ## Disclaimer
-
 This tool is designed for educational and analysis purposes. All Eve Online data is provided by CCP Games through their ESI API. Eve Online is a trademark of CCP Games.

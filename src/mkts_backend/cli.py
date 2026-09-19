@@ -449,6 +449,8 @@ def run_market_update(history: bool = False, market_alias: str = "all") -> bool:
                 f"Missing required credentials: {', '.join(validation_result['missing_required'])}"
             )
             logger.error("Please check your .env file or environment variables.")
+            if set(validation_result["missing_required"]) & {"CLIENT_ID", "SECRET_KEY", "REFRESH_TOKEN"}:
+                logger.error("Set up ESI authentication with: mkts-backend esi-auth")
         sys.exit(1)
     logger.info("Environment validation passed")
 

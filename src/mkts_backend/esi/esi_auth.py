@@ -1,280 +1,206 @@
-import os
+"""ESI tokens and browser authorization, shared by collection and the auth TUI."""
 import json
+import os
+from pathlib import Path
+import re
+import secrets
+import tempfile
 import time
-import threading
 import webbrowser
 from http.server import HTTPServer, BaseHTTPRequestHandler
+from urllib.parse import parse_qs, urlsplit
+
 from dotenv import load_dotenv
 from requests_oauthlib import OAuth2Session
-from mkts_backend.config.logging_config import configure_logging
+
 
 load_dotenv()
-logger = configure_logging(__name__)
-
-CLIENT_ID = os.getenv("CLIENT_ID")
-SECRET_KEY = os.getenv("SECRET_KEY")
-REFRESH_TOKEN = os.getenv("REFRESH_TOKEN")
 AUTH_URL = "https://login.eveonline.com/v2/oauth/authorize"
 TOKEN_URL = "https://login.eveonline.com/v2/oauth/token"
-CALLBACK_URI = "http://localhost:8000/callback"
-TOKEN_FILE = "token.json"
-
-
-def load_cached_token() -> dict | None:
-    if os.path.exists(TOKEN_FILE):
-        with open(TOKEN_FILE, "r") as f:
-            return json.load(f)
-    return None
-
-
-def save_token(token: dict):
-    with open(TOKEN_FILE, "w") as f:
-        json.dump(token, f)
-
-
-def get_oauth_session(token: dict | None, scope):
-    extra = {"client_id": CLIENT_ID, "client_secret": SECRET_KEY}
-    return OAuth2Session(
-        CLIENT_ID,
-        token=token,
-        redirect_uri=CALLBACK_URI,
-        scope=scope,
-        auto_refresh_url=TOKEN_URL,
-        auto_refresh_kwargs=extra,
-        token_updater=save_token,
-    )
-
-
-def get_token(requested_scope):
-    if not CLIENT_ID:
-        raise ValueError("CLIENT_ID environment variable is not set")
-    if not SECRET_KEY:
-        raise ValueError("SECRET_KEY environment variable is not set")
-    if not REFRESH_TOKEN:
-        raise ValueError("REFRESH_TOKEN environment variable is not set")
-
-    token = load_cached_token()
-    if not token:
-        logger.info("No token.json → refreshing from GitHub secret")
-        try:
-            logger.info(f"Attempting to refresh token with CLIENT_ID: {CLIENT_ID[:8]}...")
-            logger.info(f"Refresh token length: {len(REFRESH_TOKEN) if REFRESH_TOKEN else 'None'}")
-            logger.info(f"Requested scope: {requested_scope}")
-
-            token = OAuth2Session(CLIENT_ID, scope=requested_scope).refresh_token(
-                TOKEN_URL,
-                refresh_token=REFRESH_TOKEN,
-                client_id=CLIENT_ID,
-                client_secret=SECRET_KEY,
-            )
-            save_token(token)
-            logger.info("Token refreshed successfully")
-            return token
-        except Exception as e:
-            logger.error(f"Failed to refresh token: {e}")
-            logger.error(f"CLIENT_ID: {CLIENT_ID}")
-            logger.error(
-                f"REFRESH_TOKEN length: {len(REFRESH_TOKEN) if REFRESH_TOKEN else 'None'}"
-            )
-            raise
-    else:
-        oauth = get_oauth_session(token, requested_scope)
-
-        if token["expires_at"] < time.time():
-            logger.info("Token expired → refreshing")
-            try:
-                oauth.refresh_token(TOKEN_URL, refresh_token=token["refresh_token"])
-                new_token = oauth.token
-                save_token(new_token)
-                return new_token
-            except Exception as e:
-                logger.error(f"Failed to refresh cached token: {e}")
-                raise
-        else:
-            return token
-
-
-def get_token_for_character(char_key: str, refresh_token: str, scope):
-    """
-    Get an OAuth token for a specific character.
-
-    Uses a per-character token cache file (token_<char_key>.json) and the
-    shared CLIENT_ID / SECRET_KEY credentials.
-
-    Args:
-        char_key: Character key (e.g. "dennis") — used for cache filename
-        refresh_token: The character's ESI refresh token
-        scope: OAuth scope(s) to request
-
-    Returns:
-        OAuth token dict
-
-    Raises:
-        ValueError: If CLIENT_ID or SECRET_KEY is missing
-        Exception: If token refresh fails
-    """
-    if not CLIENT_ID:
-        raise ValueError("CLIENT_ID environment variable is not set")
-    if not SECRET_KEY:
-        raise ValueError("SECRET_KEY environment variable is not set")
-
-    token_file = f"token_{char_key}.json"
-
-    # Try loading cached token
-    token = None
-    if os.path.exists(token_file):
-        with open(token_file, "r") as f:
-            token = json.load(f)
-
-    def _save(t):
-        with open(token_file, "w") as f:
-            json.dump(t, f)
-
-    if token and token.get("expires_at", 0) > time.time():
-        return token
-
-    # Refresh using the character's refresh token
-    logger.info(f"Refreshing token for character '{char_key}'")
-    rt = token.get("refresh_token", refresh_token) if token else refresh_token
-    if not rt:
-        raise ValueError(
-            f"No refresh token for '{char_key}' — "
-            f"run: mkts-backend esi-auth --char={char_key}"
-        )
-    token = OAuth2Session(CLIENT_ID, scope=scope).refresh_token(
-        TOKEN_URL,
-        refresh_token=rt,
-        client_id=CLIENT_ID,
-        client_secret=SECRET_KEY,
-    )
-    _save(token)
-    return token
-
-
 REQUIRED_SCOPES = [
     "esi-universe.read_structures.v1",
     "esi-assets.read_assets.v1",
     "esi-markets.structure_markets.v1",
     "esi-assets.read_corporation_assets.v1",
 ]
+MARKET_SCOPES = ["esi-markets.structure_markets.v1"]
 
 
-SUCCESS_HTML = b"""<!DOCTYPE html>
-<html><head><title>mkts-backend</title>
-<style>
-  body { font-family: system-ui, sans-serif; display: flex; justify-content: center;
-         align-items: center; height: 100vh; margin: 0; background: #1a1a2e; color: #eee; }
-  .card { text-align: center; padding: 3em; border-radius: 12px;
-          background: #16213e; box-shadow: 0 4px 20px rgba(0,0,0,0.3); }
-  h1 { color: #4ecca3; margin-bottom: 0.5em; }
-  p { color: #aaa; }
-</style></head>
-<body><div class="card">
-  <h1>Authorization Successful!</h1>
-  <p>You can close this tab and return to the terminal.</p>
-</div></body></html>"""
+def _settings():
+    # config.__init__ imports ESIConfig, which imports this module.
+    from mkts_backend.config.settings_service import SettingsService
+    return SettingsService()
 
 
-class _OAuthCallbackHandler(BaseHTTPRequestHandler):
-    """HTTP handler that captures a single OAuth redirect and serves a success page."""
-
-    redirect_url: str | None = None
-
-    def do_GET(self):
-        _OAuthCallbackHandler.redirect_url = f"http://localhost:8000{self.path}"
-        self.send_response(200)
-        self.send_header("Content-Type", "text/html")
-        self.end_headers()
-        self.wfile.write(SUCCESS_HTML)
-
-    def log_message(self, format, *args):
-        logger.debug(f"OAuth callback: {format % args}")
+def token_path(char_key: str | None = None) -> Path:
+    if char_key is not None:
+        if not re.fullmatch(r"[A-Za-z0-9_-]+", char_key):
+            raise ValueError("Character keys must contain only letters, numbers, underscores or hyphens")
+        return Path(f"token_{char_key}.json")
+    return Path(_settings().auth_token_file.removeprefix("file:"))
 
 
-def _wait_for_callback(port: int = 8000, timeout: int = 120) -> str | None:
-    """Start a one-shot HTTP server and wait for the OAuth callback.
-
-    Returns the full redirect URL, or None on timeout.
-    """
-    _OAuthCallbackHandler.redirect_url = None
-
+def load_cached_token(path: Path | None = None) -> dict | None:
     try:
-        server = HTTPServer(("localhost", port), _OAuthCallbackHandler)
-    except OSError as e:
-        logger.warning(f"Could not start callback server: {e}")
+        token = json.loads((path or token_path()).read_text())
+        return token if isinstance(token, dict) else None
+    except (FileNotFoundError, json.JSONDecodeError):
         return None
 
-    server.timeout = timeout
 
-    thread = threading.Thread(target=server.handle_request, daemon=True)
-    thread.start()
-    thread.join(timeout=timeout)
+def save_token(token: dict, path: Path | None = None):
+    """Replace the cache atomically, with owner-only permissions."""
+    path = path or token_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temporary = tempfile.mkstemp(dir=path.parent, prefix=".esi-token-")
+    try:
+        with os.fdopen(fd, "w") as stream:
+            json.dump(token, stream)
+        os.replace(temporary, path)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
 
-    server.server_close()
-    return _OAuthCallbackHandler.redirect_url
+
+def _credentials() -> tuple[str, str]:
+    client_id, secret = os.getenv("CLIENT_ID"), os.getenv("SECRET_KEY")
+    if not client_id or not secret:
+        raise ValueError("ESI credentials missing. Run: mkts-backend esi-auth")
+    return client_id, secret
 
 
-def authorize_character(char_key: str, scopes: list[str] | None = None):
-    """
-    Run an interactive OAuth authorization flow for a character.
-
-    Opens the ESI authorize URL in the user's browser, runs a threaded
-    callback server on localhost:8000 to capture the redirect (with 120s
-    timeout), and falls back to manual URL pasting if the server fails.
-
-    Saves tokens to token_<char_key>.json.
-
-    Args:
-        char_key: Character key (e.g. "dennis") — used for cache filename
-        scopes: OAuth scopes to request (defaults to REQUIRED_SCOPES)
-    """
-    if not CLIENT_ID:
-        raise ValueError("CLIENT_ID environment variable is not set")
-    if not SECRET_KEY:
-        raise ValueError("SECRET_KEY environment variable is not set")
-
-    scopes = scopes or REQUIRED_SCOPES
-
-    # Allow http://localhost callback — oauthlib enforces HTTPS by default
-    os.environ["OAUTHLIB_INSECURE_TRANSPORT"] = "1"
-
-    oauth = OAuth2Session(CLIENT_ID, redirect_uri=CALLBACK_URI, scope=scopes)
-    auth_url, state = oauth.authorization_url(AUTH_URL)
-
-    print(f"\nAuthorizing character '{char_key}' with scopes:")
-    for s in scopes:
-        print(f"  - {s}")
-    print(f"\nOpening browser to authorize...")
-    print(f"If the browser doesn't open, visit:\n  {auth_url}\n")
-    webbrowser.open(auth_url)
-
-    # Try automatic callback capture via threaded server
-    print("Waiting for authorization (timeout: 120s)...")
-    redirect_url = _wait_for_callback(port=8000, timeout=120)
-
-    if not redirect_url:
-        print("\nAutomatic capture failed or timed out.")
-        redirect_url = input("Paste the full redirect URL here: ").strip()
-        if not redirect_url:
-            print("No URL provided. Aborting.")
-            return
-
-    # Exchange via authorization_response (lets OAuth2Session handle code + state)
-    token = oauth.fetch_token(
-        TOKEN_URL,
-        authorization_response=redirect_url,
-        client_secret=SECRET_KEY,
+def get_oauth_session(token: dict | None, scope):
+    client_id, secret = _credentials()
+    session = OAuth2Session(
+        client_id, token=token, scope=scope,
+        redirect_uri=_settings().auth_callback_url,
+        auto_refresh_url=TOKEN_URL,
+        auto_refresh_kwargs={"client_id": client_id, "client_secret": secret},
+        token_updater=save_token,
     )
-
-    token_file = f"token_{char_key}.json"
-    with open(token_file, "w") as f:
-        json.dump(token, f)
-
-    print(f"\nToken saved to {token_file}")
-    print(f"Scopes granted: {token.get('scope', 'unknown')}")
-    print(f"Character '{char_key}' is now authorized.")
+    session.headers["User-Agent"] = _settings().esi_user_agent
+    return session
 
 
-if __name__ == "__main__":
-    pass
+def _get_token(path: Path, refresh_token: str | None, scope, command: str):
+    client_id, secret = _credentials()
+    token = load_cached_token(path)
+    if token and token.get("access_token") and token.get("expires_at", 0) > time.time():
+        return token
+    refresh_token = (token or {}).get("refresh_token") or refresh_token
+    if not refresh_token:
+        raise ValueError(f"No ESI refresh token. Run: {command}")
+    session = get_oauth_session(token, scope)
+    token = session.refresh_token(
+        TOKEN_URL, refresh_token=refresh_token,
+        client_id=client_id, client_secret=secret, timeout=30,
+    )
+    save_token(token, path)
+    return token
 
+
+def get_token(requested_scope):
+    # A cached token can bootstrap collection without an environment refresh token.
+    return _get_token(token_path(), os.getenv("REFRESH_TOKEN"), requested_scope,
+                      "mkts-backend esi-auth --market-data")
+
+
+def get_token_for_character(char_key: str, refresh_token: str, scope):
+    return _get_token(token_path(char_key), refresh_token, scope,
+                      f"mkts-backend esi-auth --char={char_key}")
+
+
+def _callback_code(url: str, callback: str, state: str) -> str:
+    actual, expected = urlsplit(url), urlsplit(callback)
+    if (actual.scheme, actual.netloc, actual.path) != (expected.scheme, expected.netloc, expected.path):
+        raise ValueError("The redirect URL does not match the configured callback")
+    params = parse_qs(actual.query)
+    states = params.get("state", [])
+    if len(states) != 1 or not secrets.compare_digest(states[0], state):
+        raise ValueError("OAuth state mismatch; restart authorization")
+    if "error" in params:
+        raise ValueError("EVE authorization was denied; restart authorization")
+    codes = params.get("code", [])
+    if len(codes) != 1:
+        raise ValueError("The callback did not contain an authorization code")
+    return codes[0]
+
+
+def _capture_callback(auth_url: str, callback: str, state: str, timeout: float = 120) -> str:
+    """Bind before opening the browser; ignore unrelated requests and bad state."""
+    parsed = urlsplit(callback)
+    if (parsed.scheme != "http" or parsed.hostname not in {"localhost", "127.0.0.1"}
+            or parsed.username or parsed.password or parsed.query or parsed.fragment):
+        raise ValueError("Automatic authorization requires an http loopback callback URL")
+    result = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            url = f"{parsed.scheme}://{parsed.netloc}{self.path}"
+            try:
+                _callback_code(url, callback, state)
+            except ValueError:
+                # A genuine denial ends the wait; other requests must not consume it.
+                query = parse_qs(urlsplit(url).query)
+                if (urlsplit(url).path == parsed.path and query.get("state") == [state]
+                        and "error" in query):
+                    result.append(url)
+                self.send_response(400)
+                body = b"Authorization not completed. Return to the terminal."
+            else:
+                result.append(url)
+                self.send_response(200)
+                body = b"Authorization received. Return to the terminal to finish."
+            self.send_header("Content-Type", "text/plain; charset=utf-8")
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, format, *args):
+            pass  # Callback URLs contain authorization codes.
+
+    try:
+        server = HTTPServer((parsed.hostname, parsed.port or 80), Handler)
+    except OSError:
+        server = None
+    print(f"Open this URL if the browser does not open:\n{auth_url}")
+    try:
+        try:
+            opened = webbrowser.open(auth_url)
+        except webbrowser.Error:
+            opened = False
+        if server and opened:
+            print("Waiting for browser authorization (up to 120 seconds)...")
+            deadline = time.monotonic() + timeout
+            while not result and time.monotonic() < deadline:
+                server.timeout = min(0.5, max(0, deadline - time.monotonic()))
+                server.handle_request()
+    finally:
+        if server:
+            server.server_close()
+    if result:
+        return result[0]
+    print("Automatic capture unavailable. Complete login using the URL above.")
+    return input("Paste the full redirect URL: ").strip()
+
+
+def authorize_character(char_key: str | None = None, scopes: list[str] | None = None):
+    """Authorize market data access (None) or a configured character. Return the token."""
+    from mkts_backend.config.settings_service import get_all_characters
+
+    if char_key is not None and char_key not in {c.key for c in get_all_characters()}:
+        raise ValueError(f"Unknown configured character: {char_key}")
+    path = token_path(char_key)
+    _, secret = _credentials()
+    scopes = scopes or (REQUIRED_SCOPES if char_key else MARKET_SCOPES)
+    oauth = get_oauth_session(None, scopes)
+    callback = _settings().auth_callback_url
+    auth_url, state = oauth.authorization_url(AUTH_URL)
+    redirect = _capture_callback(auth_url, callback, state)
+    # Validate locally then pass only the code to the HTTPS token endpoint.
+    # No process-wide OAUTHLIB_INSECURE_TRANSPORT override is necessary.
+    code = _callback_code(redirect, callback, state)
+    token = oauth.fetch_token(TOKEN_URL, code=code, client_secret=secret, timeout=30)
+    if not token.get("refresh_token"):
+        raise ValueError("EVE did not return a refresh token; authorize again")
+    save_token(token, path)
+    return token

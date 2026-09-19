@@ -16,6 +16,7 @@ _VALID_ENVIRONMENTS = ("production", "development")
 
 # Subcommands that have their own --help handling
 _SUBCOMMANDS_WITH_HELP = {
+    "esi-auth",
     "fit-check",
     "fit-update",
     "update-fit",

@@ -235,7 +235,7 @@ for all markets (the current equiv handler does not expand `--market=all`).
 | `mkts-backend build-watchlist` | Manage manufacturing items; requires a subcommand |
 | `mkts-backend add-structure --dry-run` | Preview structure imports from the configured Google Sheet |
 | `mkts-backend parse-items --input="structure_data.txt" --output="market_prices.csv"` | Convert copied structure data into a priced CSV |
-| `mkts-backend esi-auth` | Choose a configured character and authorize EVE access |
+| `mkts-backend esi-auth` | Manage ESI application credentials and authorize market data access or characters |
 | `mkts-backend --check_tables --market=primary` | Inspect database tables |
 | `mkts-backend --list-db-paths` | Print configured database filenames |
 | `mkts-backend --validate-env` | Check required credential presence, not remote connectivity |

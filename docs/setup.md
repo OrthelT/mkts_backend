@@ -71,7 +71,12 @@ turso db list
 turso tokens create <database_name>
 
 ```
-## EVE authorization
+Once you have your Turso credentials set up run this to install the databases. 
+```bash
+uv run mkts-backend sync
+
+```
+### EVE Developer Credentials
 Market collection requires an EVE developer application's `CLIENT_ID` and
 `SECRET_KEY`, plus an authorized character's `REFRESH_TOKEN`. The character must
 have access to the market structure. The structure-market scope is

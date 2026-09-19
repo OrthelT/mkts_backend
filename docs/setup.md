@@ -1,10 +1,9 @@
 # Setup and troubleshooting
 
-This page is for the person preparing the installation. Everyday users can start
+This page is for the person preparing the installation. Users can start
 with the [README](../README.md) once their credentials and databases are ready.
 
 ## Existing installation
-
 Run `uv sync` from the repository folder to install the locked dependencies.
 Python 3.12 or newer is required. Copy `.env.example` to `.env` only if you do not
 already have a configured `.env`, then supply credentials for the databases you
@@ -40,16 +39,67 @@ markets. It also requires `CLIENT_ID`, `SECRET_KEY`, and `REFRESH_TOKEN`; a
 lookup-only installation may work without those collection credentials.
 This check does not authenticate against EVE or Turso.
 
-## EVE authorization
+# Setting Up `.env` file 
+The `.env`` file is where you will save all your credentials. Never share this file or commit it to
+a public git repository. A file called `.env.example` is included. Copy it to a new file called  `.env` and populate it with your own credentials. 
 
+Rename `.env.example` to `.env` then fill in your credentials. 
+
+## Turso Database Setup
+You'll need to configure database credentials. Setup a [Turso](https://turso.tech/) account if you don't already have one. 
+
+### Install the Turso cli
+Linux/Windows (WSL)
+```bash
+curl -sSfL https://get.tur.so/install.sh | bash
+```
+macOS 
+```bash 
+`brew install tursodatabase/tap/turso 
+  ```
+First time log-in. From the bash command prompt:
+```bash
+turso auth login 
+```
+
+### Get Database Credentials 
+Get database urls and authorization tokens to paste into your .env file.
+```bash
+# list available databases and their urls
+turso db list
+# Create db tokens
+turso tokens create <database_name>
+
+```
+## EVE authorization
 Market collection requires an EVE developer application's `CLIENT_ID` and
 `SECRET_KEY`, plus an authorized character's `REFRESH_TOKEN`. The character must
 have access to the market structure. The structure-market scope is
 `esi-markets.structure_markets.v1`.
 
-The current OAuth code uses the callback `http://localhost:8000/callback`.
-Register that callback on the EVE application. For configured asset characters:
+You can configure your application at the [Eve Developer page](https://developers.eveonline.com/)
+- The current OAuth code uses the callback `http://localhost:8000/callback`. Register that callback for the EVE application.
+- Set the following scopes: `esi-markets.structure_markets.v1`, `esi-assets.read_assets.v1`
+- Paste these into your .env file `CLIENT_ID` AND `SECRET_KEY` fields. 
 
+# Advanced Configuration Options 
+## Google Sheets (optional)
+For Sheets exports or structure imports, supply service-account credentials via
+`GOOGLE_APPLICATION_CREDENTIALS` (path to a JSON file),
+`GOOGLE_SERVICE_ACCOUNT_FILE` (local filename), or `GOOGLE_SHEET_KEY` (literal
+JSON). The file credentials take precedence over literal JSON.
+
+Enable the Sheets/Drive APIs for the account's project and share the intended
+spreadsheet with the service-account email. Give edit access for exports, or
+read access when only importing structures. Configure the sheet URL and worksheet
+names in settings. Ordinary fit checks do not need Google credentials.
+
+## Setting up characters to include in asset searches 
+You can display character assets when checking for items needed on the market with: 
+```bash 
+uv run mkts-backend needed --assets
+```
+You will need esi authorization for these characters, which are configured in settings.toml. Change the character keys to your own characters and then run 
 ```bash
 uv run mkts-backend esi-auth
 ```
@@ -62,20 +112,7 @@ character's `token_env` names the environment variable for its refresh token. Fo
 market character's refresh token; the collector uses its separate `token.json`
 cache. Per-character asset credentials follow the settings entries.
 
-## Google Sheets (optional)
-
-For Sheets exports or structure imports, supply service-account credentials via
-`GOOGLE_APPLICATION_CREDENTIALS` (path to a JSON file),
-`GOOGLE_SERVICE_ACCOUNT_FILE` (local filename), or `GOOGLE_SHEET_KEY` (literal
-JSON). The file credentials take precedence over literal JSON.
-
-Enable the Sheets/Drive APIs for the account's project and share the intended
-spreadsheet with the service-account email. Give edit access for exports, or
-read access when only importing structures. Configure the sheet URL and worksheet
-names in settings. Ordinary fit checks do not need Google credentials.
-
 ## Creating a new market
-
 This is a maintainer task. Create its Turso database and add a complete
 `[markets.<alias>]` block, including unique `database_alias`, `database_file`,
 `turso_url_env`, `turso_token_env`, structure/region/system IDs, name, and
@@ -92,7 +129,6 @@ Then run `update-markets --market=<new-alias> --history` to populate market data
 Do not treat the seeding script as a routine refresh command.
 
 ## Troubleshooting
-
 | Message or symptom | What to do |
 |---|---|
 | `uv` not found | Install uv, reopen the terminal, and run from the project folder. |

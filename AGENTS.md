@@ -108,8 +108,11 @@ credential-free local-only operation.
 Google credential file variables are `GOOGLE_APPLICATION_CREDENTIALS` and
 `GOOGLE_SERVICE_ACCOUNT_FILE`; literal JSON uses `GOOGLE_SHEET_KEY`.
 The Actions workflow uses its own `GOOGLE_SA_JSON` secret and creates a file.
-Auth currently uses constants in `esi/esi_auth.py` for the callback and token
-file; do not assume the similarly named settings properties are wired through.
+Auth reads callback and market data token-file settings through `SettingsService`.
+`esi-auth` opens a Rich management menu; `--market-data` and `--char=<key>`
+authorize directly, while `--status` is read-only and headless-safe. Setup saves
+credentials and target refresh tokens to the project `.env`; caches are relative
+to CWD. Collection never launches interactive authorization.
 
 ## CLI contracts and current limitations
 

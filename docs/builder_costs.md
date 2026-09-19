@@ -1,102 +1,76 @@
-# Builder Costs Feature
+# Builder costs
 
-## Overview
+Manufacturing estimates live in the shared `buildcost` database. Its
+`build_watchlist` is independent of the market watchlists. The collector reads
+that list, SDE manufacturing metadata, and primary-market Jita prices, then
+fetches estimates from EverRef.
 
-The builder costs feature fetches manufacturing cost estimates from Everef for manufacturable watchlist items and stores the results in the backend databases. It is exposed through the `update-builder-costs` command and is intended to support both manual runs and scheduled collection.
+## Refresh estimates
 
-The dataset is market-independent, so the command writes the same results to every configured market database.
-
-## What It Collects
-
-For each eligible watchlist item, the pipeline stores:
-
-- `type_id`
-- `total_cost_per_unit`
-- `time_per_unit`
-- `me`
-- `runs`
-- `fetched_at`
-
-These values are persisted in the `builder_costs` table.
-
-## Command Usage
+With buildcost, SDE, and primary-market database credentials configured:
 
 ```bash
-# Fetch builder costs for all configured markets
+uv run mkts-backend sync --market=primary
 uv run mkts-backend update-builder-costs
-
-# Alias forms also work
-uv run mkts-backend builder-costs
-uv run mkts-backend ubc
 ```
 
-The command does not take item filters. It inspects the configured market databases, reads their watchlists, and fetches cost data for the eligible items automatically.
+This updates `builder_costs` in **buildcost.db**, not every market database.
+`--market` does not narrow the manufacturing dataset. The command has no per-item
+filter; it processes eligible items from `build_watchlist`.
 
-## Data Sources
+## Choose items to track
 
-The pipeline combines three inputs:
+```bash
+# Add buildable EVE type IDs
+uv run mkts-backend build-watchlist add --type-id=587,24690
 
-- Watchlist rows from each configured market database
-- Jita prices from the first available `jita_prices` table
-- SDE metadata from `sdelite.db` to determine which items are manufacturable
+# Add names using the multiline editor (Esc, then Enter submits)
+uv run mkts-backend build-watchlist add --paste
 
-The Everef API is then queried asynchronously with controlled concurrency and rate limiting.
+# Import IDs from a CSV with a type_id or type_ids column
+uv run mkts-backend build-watchlist add --file="build-items.csv"
 
-## Item Selection Rules
+# Remove an item from the manufacturing watchlist
+uv run mkts-backend build-watchlist remove --type-id=587
 
-Not every watchlist item is fetched. The async fetch layer filters items using:
+# Add missing buildable items from the primary market's watchlist
+uv run mkts-backend build-watchlist mirror
 
-- Meta group checks for manufacturable items
-- Category allow-lists
-- Exclusion lists for known unsupported groups and item names
-- Jita price-aware parameter selection for some T2 modules
-
-This keeps collection focused on items that can realistically be modeled as builder costs.
-
-## Database Schema
-
-```sql
-CREATE TABLE builder_costs (
-    type_id INTEGER PRIMARY KEY,
-    total_cost_per_unit FLOAT NOT NULL,
-    time_per_unit FLOAT NOT NULL,
-    me INTEGER NOT NULL,
-    runs INTEGER NOT NULL,
-    fetched_at DATETIME NOT NULL
-);
+# Download existing shared builder data without reconciling watchlists
+uv run mkts-backend build-watchlist sync
 ```
 
-The table is treated as a wipe-and-replace dataset, so a fresh fetch replaces the previous contents.
+`mirror` adds missing items; it does not replace the list or remove custom items.
+`add` skips items without a manufacturing blueprint unless `--force` is supplied.
+Forcing an item onto the list does not guarantee it is eligible for an estimate.
+Successful changes normally push to Turso; report any push warning to the maintainer.
+`--no-sync` is a legacy flag: repository helpers still push writes, so it does
+not provide a local-only editing mode.
 
-## Collection Flow
+Adding items through `add-watchlist` also attempts to mirror buildable items into
+this list. Removing a builder item does not remove it from a market watchlist.
 
-1. Initialize and verify all configured market databases.
-2. Sync the databases locally so the current watchlist and Jita price data are available.
-3. Merge watchlist items across markets.
-4. Read the first available `jita_prices` table.
-5. Load SDE metadata from `sdelite.db`. Items without a manufacturing blueprint
-   (`industryActivityProducts.activityID = 1`) are filtered out here so we
-   don't waste rate-limited Everef requests on meta-T1 NPC drops and other
-   non-buildable items.
-6. Fetch builder costs asynchronously from Everef.
-7. Create `builder_costs` if needed.
-8. Replace the table contents in each market database.
-9. Write an update log entry for each successful market write.
+## Import manufacturing structures
 
-## Implementation Notes
+```bash
+uv run mkts-backend add-structure --dry-run
+uv run mkts-backend add-structure
+```
 
-- CLI routing is registered in `src/mkts_backend/cli_tools/command_registry.py`.
-- Argument parsing recognizes `update-builder-costs` as a help-aware subcommand.
-- The database model lives in `src/mkts_backend/db/models.py` as `BuilderCosts`.
-- Upsert behavior is handled through the generic database layer in `src/mkts_backend/db/db_handlers.py`.
-- Async Everef fetch logic lives in `src/mkts_backend/esi/async_everref.py`.
-- The main orchestration entry point is `process_builder_costs()` in `src/mkts_backend/cli.py`.
+The import reads the Google Sheet configured in `[buildcost]`, shows new/changed
+rows, and asks before saving. `--sheet-url` and `--worksheet` override the source;
+`--file="structures.csv"` uses a local CSV. `--yes` bypasses confirmation.
+Rows are upserted into shared `structures` data and pushed to Turso. Market
+selection does not change the destination.
 
-## Scheduled Run
+## Refresh behavior
 
-The new GitHub Actions workflow `builder-costs-collection.yml` runs this command on a 6-hour schedule and also supports manual dispatch. It restores cached SQLite databases, runs the collection job, then saves the updated databases and logs.
+The collector upserts successful estimates, including per-unit cost, time, ME,
+runs, and fetch timestamp. It preserves previous estimates for fetch failures;
+a partial fetch produces a failing CLI exit status so scheduled jobs expose the
+problem. Rows no longer on the build watchlist are pruned during a refresh that
+writes results. An empty list aborts; a run with no eligible items makes no changes.
 
-## Related Docs
-
-- [docs/cli-tools.md](cli-tools.md): Full CLI reference.
-- [docs/doctrine_cli_tools.md](doctrine_cli_tools.md): Broader doctrine tooling notes.
+The daily workflow runs at 06:45 UTC. See [GitHub Actions](GITHUB_ACTIONS_SETUP.md)
+for setup. The implementation is in `src/mkts_backend/builder_costs/` and
+`src/mkts_backend/esi/async_everref.py`.

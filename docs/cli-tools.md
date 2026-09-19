@@ -1,146 +1,191 @@
+# CLI guide
 
-# CLI Tools Documentation
+Run commands from the project folder. Start with the [README](../README.md) if this
+is your first session. Replace example IDs and filenames with your own.
 
+## Choosing a market
 
-## fitcheck Command
-
-The fitcheck command displays market availability and pricing for ship fittings from EFT-formatted files or from pre-calculated doctrine data.
-
-**Basic Fit Checking:**
 ```bash
-# Check fit availability against primary market from EFT file
-uv run fitcheck --file=path/to/fit.txt
-
-# Check fit by ID from doctrine_fits/doctrines tables (pre-calculated data)
-uv run fitcheck --fit=42
-
-# Check fit against specific market
-uv run fitcheck --fit=42 --market=deployment
-
-# Check against specific market with EFT file
-uv run fitcheck --file=fit.txt --market=deployment
-
-# Override target quantity
-uv run fitcheck --file=fit.txt --target=50
-
-# Export to CSV
-uv run fitcheck --fit=42 --output=csv
-
-# Show multibuy format for restocking
-uv run fitcheck --file=fit.txt --output=multibuy
-
-# Export markdown for Discord
-uv run fitcheck --fit=42 --output=markdown
-
-# Combine options
-uv run fitcheck --file=fit.txt --market=deployment --target=100 --output=csv
-
-# Force live Jita prices (bypass the 1-hour jita_prices cache)
-uv run fitcheck --fit=42 --refresh
+uv run mkts-backend --list-markets
 ```
 
-**Subcommand: needed** - Show all items needed to reach ship targets:
+* TIP["mkts can be used as an alias for mkts-backend."]
+
+
+Use `--market=primary`, `--market=deployment`, or `--market=market3` after the
+command. Checking one fit, listing fits, and `needed` take one market at a time.
+`module` also supports `--market=all` for a comparison.
+
+Commands will usually default to either all market or the primary market if `--market` is not specified.
+
+
+Most lookups default to `primary`. `mkts-backend update-markets` and
+`mkts-backend sync` default to all markets. The older `--both` selector now means
+all configured markets, including the third market; use `all` instead.
+
+The examples use `fitcheck` for reports and `mkts-backend` for management.
+`mkts` is an alias for `mkts-backend`. Although the entry points share commands,
+their help and default-market handling differ; use the forms shown here.
+
+## Downloading current data
+
 ```bash
-# Show all items needed across all fits
-uv run fitcheck needed
+# Every market plus shared item, fitting, and optional builder-cost data
+uv run mkts-backend sync
 
-# Show needed items for a specific ship
-uv run fitcheck needed --ship=Maelstrom
+# One market plus shared databases
+uv run mkts-backend sync --market=deployment
 
-# Show needed items for fits below 50% of target
-uv run fitcheck needed --target=0.5
-
-# Filter by fit ID
-uv run fitcheck needed --fit=550
-
-# Check deployment market
-uv run fitcheck needed --market=deployment
-
-# Show per-character assets (cached for 1 hour)
-uv run fitcheck needed --assets
-
-# Force re-fetch assets from ESI (bypass cache)
-uv run fitcheck needed --assets --refresh
+# Only that market's database
+uv run mkts-backend sync --market=deployment --markets-only
 ```
 
-The `needed` subcommand displays a comprehensive overview of items needed for restocking across all tracked fits. Results are grouped by fit with Rich sub-tables showing:
-- Item name and type ID
-- Current stock levels
-- Fits available on market
-- Target percentage achieved
-- Quantity needed to reach target
+`sync` downloads saved data from Turso. It does not run EVE market collection or
+upload local edits. `--no-buildcost` skips builder-cost data; `--include-testing`
+also downloads the configured development database.
 
-**Subcommand: module** - Show which fits use a given module:
+## Checking fits and making shopping lists
+
 ```bash
-# Check module usage by type ID
-uv run fitcheck module --id=11269
-
-# Check module usage by name (exact or partial match)
-uv run fitcheck module --name="Multispectrum Energized Membrane II"
-
-# Check all markets simultaneously for comparison
-uv run fitcheck module --id=11269 --market=all
+uv run fitcheck list-fits --market=primary
+uv run fitcheck --fit=42 --market=primary
+uv run fitcheck --file="my-fit.txt" --market=deployment
+uv run fitcheck --fit=42 --market=primary --target=50 --output=multibuy
+uv run fitcheck --fit=42 --market=primary --output=csv
+uv run fitcheck --fit=42 --market=primary --output=markdown
 ```
 
-The `module` subcommand helps identify which doctrine fits use a specific module and shows their market status. Useful for:
-- Planning bulk purchases of common modules
-- Identifying fits affected by module shortages
-- Comparing module availability across markets
+A **fit ID** identifies one ship loadout. A **doctrine ID** identifies a group of
+fits. Use `list-fits` to find a fit ID; it is not an EVE item/type ID.
 
-**Subcommand: list-fits** - List all tracked doctrine fits:
+File input must contain EFT text, beginning with a line such as
+`[Hurricane Fleet Issue, Fit name]`. File checks use saved market statistics,
+falling back to saved orders for items outside the watchlist. Fit-ID checks use
+the latest calculated doctrine data. Neither mode requests fresh structure orders.
+
+`--target=N` overrides the report's target without changing the saved target.
+Multibuy and Markdown exports require a target and items below that target.
+CSV exports are saved to a filename reported by the command.
+
+`--paste` also accepts EFT input. For fit checks, finish with Ctrl+D on an empty
+line on Linux/macOS (or two consecutive blank lines). To avoid terminal-specific
+paste controls, save the EFT text to a file and use `--file`.
+
+Jita comparison prices reuse a cache for the configured TTL (currently one hour).
+`--refresh` fetches fresh Jita prices; it does not refresh local market stock.
+`--no-jita` hides the Jita comparison columns.
+
+## Restocking across fits
+
 ```bash
-# List all fits in primary market
-uv run fitcheck list-fits
-
-# List fits in deployment market
-uv run fitcheck list-fits --market=deployment
+uv run fitcheck needed --market=primary
+uv run fitcheck needed --ship=Maelstrom --market=primary
+uv run fitcheck needed --fit=42 --market=deployment
+uv run fitcheck needed --target=0.5 --market=primary
+uv run fitcheck needed --assets --market=primary
+uv run fitcheck needed --assets --refresh --market=primary
 ```
 
-## update-fit Command
+Here `--target=0.5` filters for fits below **50% of their saved target**; it is not
+a new target quantity. `--ship` and `--fit` accept comma-separated values.
+`--assets` adds configured characters' asset information. For `needed`,
+`--refresh` bypasses the asset cache only.
 
-The update-fit command processes EFT fit files (or pasted EFT text) and updates doctrine tables across multiple databases. It supports file-based input, paste mode (multiline prompt), and interactive metadata input, with flexible market targeting.
+## Finding modules and assets
 
-**Basic Usage:**
 ```bash
-# Update fit with metadata file (traditional workflow)
-uv run mkts-backend update-fit --fit-file=fits/hfi.txt --meta-file=fits/hfi_meta.json
-
-# Update fit by ID with interactive prompts
-uv run mkts-backend update-fit --fit-file=fits/hfi.txt --fit-id=313 --interactive
-
-# Update fit for deployment market
-uv run mkts-backend update-fit --fit-file=fits/hfi.txt --fit-id=313 --interactive --deployment
-
-# Update fit for all markets
-uv run mkts-backend update-fit --fit-file=fits/hfi.txt --meta-file=meta.json --all
-
-# Update fit with ship_targets table update
-uv run mkts-backend update-fit --fit-file=fits/hfi.txt --fit-id=313 --interactive --update-targets
-
-# Preview changes without saving (dry run)
-uv run mkts-backend update-fit --fit-file=fits/hfi.txt --fit-id=313 --interactive --dry-run
-
-# Paste EFT text directly (opens multiline prompt instead of reading a file)
-uv run mkts-backend fit-update add --paste --interactive
-uv run mkts-backend fit-update update --fit-id=313 --paste
+uv run fitcheck module --id=11269 --market=primary
+uv run fitcheck module --name="Multispectrum Energized Membrane II" --market=all
+uv run mkts-backend assets --name="Damage Control"
+uv run mkts-backend assets --id=11379 --refresh
 ```
 
-**Command Options:**
-- `--fit-file=<path>`: Path to EFT fit file (optional when using --paste)
-- `--fit-id=<id>`: Fit ID to update (required if no --meta-file)
-- `--meta-file=<path>`: Path to metadata JSON file (optional with --fit-id)
-- `--paste`: Open a multiline prompt to paste EFT fit text directly (uses prompt_toolkit)
-- `--interactive`: Prompt for metadata interactively (when no --meta-file)
-- `--market=<alias>`: Target market (primary, deployment, market3, all)
-- `--primary`: Shorthand for --market=primary
-- `--deployment`: Shorthand for --market=deployment
-- `--all`: Update all configured markets
-- `--update-targets`: Update ship_targets table (default: skip)
-- `--remote`: legacy flag, kept for compatibility; `remote_engine` is now an alias for the local `sqlite+turso_sync` engine (see "Turso sync model" in `AGENTS.md`), so this no longer selects a different database — writes always land locally and are pushed to Turso automatically
-- `--no-clear`: Keep existing items (default: clear and replace)
-- `--dry-run`: Preview changes without saving
+`module` shows fits that use an item. `assets` searches configured characters'
+assets, cached locally for one hour. Asset access requires authorization for
+those characters; see [setup](setup.md#eve-authorization).
 
-**Metadata File Format (JSON):**
+## Managing fits and doctrines
+
+These commands change shared fitting/market data and normally upload changes to
+Turso. Download current data with `sync` before editing. Read the prompts and the
+market scope below before confirming changes.
+
+Use `fit-update` for the interactive workflows:
+
+```bash
+uv run mkts-backend fit-update list-fits --market=primary
+uv run mkts-backend fit-update list-doctrines --market=primary
+uv run mkts-backend fit-update add --paste --interactive --market=primary
+uv run mkts-backend fit-update update --fit-id=313 --file="my-fit.txt" --market=primary --dry-run
+uv run mkts-backend fit-update update --fit-id=313 --file="my-fit.txt" --market=primary
+uv run mkts-backend fit-update create-doctrine --market=primary
+uv run mkts-backend fit-update doctrine-add-fit --market=primary
+uv run mkts-backend fit-update doctrine-remove-fit --market=primary
+```
+
+For the numbered multiline editor used when adding/updating a fit, press **Esc,
+then Enter** to submit pasted EFT text. This differs from `fitcheck --paste`.
+
+`add --interactive` prompts for metadata and market selection. `update` replaces
+fit contents in **every market where the fit already exists**, even when
+`--market` names just one. `--dry-run` previews the add/update workflow; it is
+not a universal preview flag for every management command.
+
+`doctrine-add-fit` currently prompts for the doctrine even if a `--doctrine-id`
+is supplied. Both doctrine link commands offer interactive selection. To pass
+several fits, use `--fit-id=313,314,315` (singular `fit-id`), not `--fit-ids`.
+`doctrine-add-fit --skip-targets` keeps existing targets and skips target prompts.
+
+### Changing saved targets and labels
+
+```bash
+uv run mkts-backend fit-update update-target --fit-id=313 --target=300 --market=deployment
+uv run mkts-backend fit-update update-lead-ship --doctrine-id=21 --fit-id=313 --market=deployment
+uv run mkts-backend fit-update update-friendly-name --doctrine-id=21 --name="Hurricane" --market=all
+```
+
+`update-target` prompts for confirmation in a terminal; omit `--target` to enter
+it at the prompt. The top-level `mkts-backend update-target` also exists but
+requires both values and does not provide the same confirmation prompt.
+
+A friendly name is the short display label for a doctrine. Friendly-name changes
+apply to **all configured markets**, regardless of the market selector.
+`populate-friendly-names` loads a `doctrine_names.json` file from the working
+folder, with entries such as `{"21": "Hurricane", "34": "Muninn"}`, and also
+updates all markets.
+
+### Assignment and removal scope
+
+The fitting assignment model currently links `primary` and `market3`.
+Assigning to `primary` includes market3; saved target changes for `primary` also
+apply to market3. Deployment can be managed separately.
+
+```bash
+uv run mkts-backend fit-update assign-market --fit-id=313 --market=deployment
+uv run mkts-backend fit-update unassign-market --fit-id=313 --market=deployment
+```
+
+Assignment replaces the fit's market membership; choosing deployment can remove
+its primary/market3 assignment. Use `--market=all` to assign everywhere.
+These commands also accept `--doctrine-id` to act on a whole doctrine.
+`unassign-market` removes membership from the selected market group.
+
+`doctrine-remove-fit` unlinks a fit from a doctrine while keeping its fit record.
+The separate `fit-update remove` command removes wider tracking. In the current
+implementation, `remove --market=primary` selects **all markets**. Have the
+maintainer handle full removals; do not use it as a primary-only delete.
+
+### File and metadata workflow
+
+`update-fit` is a separate file-based command; it is not an alias for
+`fit-update` and does not take its subcommands or paste mode.
+
+```bash
+uv run mkts-backend update-fit --fit-file="my-fit.txt" --fit-id=313 --interactive --market=deployment --dry-run
+```
+
+Replace `--fit-id=313 --interactive` with `--meta-file="metadata.json"` to use:
+
 ```json
 {
   "fit_id": 313,
@@ -151,272 +196,54 @@ uv run mkts-backend fit-update update --fit-id=313 --paste
 }
 ```
 
-**update-friendly-name Subcommand:**
-```bash
-# Set a friendly display name for all fits in a doctrine (every configured market)
-uv run mkts-backend fit-update update-friendly-name --doctrine-id=21 --name="Hurricane"
-```
+Remove `--dry-run` to save. `--update-targets` also updates target-related tables;
+`--no-clear` keeps existing fitting items. Legacy `--remote`, `--local`, and
+`--local-only` flags are not reliable ways to isolate an edit from shared data:
+the engines use the same local replica and management writers still push.
 
-Writes the `friendly_name` value to every configured market's local replica, pushing each one to Turso.
-
-**populate-friendly-names Subcommand:**
-```bash
-# Bulk populate from doctrine_names.json in working directory (every configured market)
-uv run mkts-backend fit-update populate-friendly-names
-```
-
-Reads a `doctrine_names.json` file and updates `friendly_name` for all matching doctrines on every configured market, pushing each replica to Turso.
-
-**Database Tables Updated:**
-- **wcfitting.db:**
-  - `fittings_doctrine` - doctrine records (auto-created if missing)
-  - `fittings_fitting` - fit shell records
-  - `fittings_fittingitem` - fit items
-  - `fittings_doctrine_fittings` - doctrine-fit links
-  - `watch_doctrines` - watched doctrines (auto-added for new doctrines)
-
-- **The target market's database** (`database_file` in `settings.toml`, per `--market`):
-  - `doctrine_fits` - fit metadata with market_flag and friendly_name
-  - `doctrine_map` - doctrine-fit links
-  - `watchlist` - items to track
-  - `ship_targets` (optional with --update-targets)
-  - `doctrines` (optional with --update-targets)
-
-**Input Modes (fitcheck):**
-- `--file=<path>`: Parse an EFT-formatted fit file and query live market data
-- `--fit=<id>`: Look up fit by ID from `doctrine_fits` table and display pre-calculated market data from `doctrines` table
-- `--paste`: Open a multiline prompt to paste EFT fit text directly (uses prompt_toolkit); reads from stdin when invoked via `mkts-backend fit-check`
-
-**Display Features:**
-- **Header Section**: Shows fit name, ship name, ship type ID, total fit cost, fits available (bottleneck), and target quantity
-- **Market Data Table**: Displays for each item:
-  - `type_id`: Item type ID
-  - `type_name`: Item name
-  - `market_stock`: Current inventory on market
-  - `fit_qty`: Quantity required per fit
-  - `fits`: Number of complete fits available (bottleneck highlighted)
-  - `price`: Market price (5th percentile from marketstats)
-  - `fit_cost`: Total cost for this item in one fit
-  - `avg_price`: 30-day average price
-  - `qty_needed`: Quantity needed to meet target (only shown when target available)
-- **Summary Section**: Shows item availability counts and missing items
-- **Missing Items for Target**: Lists items below target with quantities needed
-
-**Target Integration:**
-- Automatically looks up target quantities from `doctrine_fits` table by fit_name or ship_type_id
-- Use `--target=N` to override the database target
-- Displays "Qty Needed" column when target is available
-- Shows missing items list with quantities needed to reach target
-
-**Export Options (`--output=<format>`):**
-- `csv`: Exports the fit status table to CSV file for spreadsheet analysis (auto-named from fit)
-- `multibuy`: Displays items below target in Eve Multi-buy/jEveAssets stockpile format:
-  ```
-  Damage Control II 15
-  Gyrostabilizer II 30
-  Large Shield Extender II 20
-  ```
-  This format can be copied directly into Eve Online or jEveAssets for easy restocking.
-- `markdown`: Discord-friendly markdown format with bold formatting for sharing fit status:
-  ```markdown
-  # Hurricane Fleet Issue
-  Target (**300**); Fits (**245**)
-
-  - **Damage Control II**: 165 needed (current: 245.0 fits)
-  - **Gyrostabilizer II**: 330 needed (current: 245.0 fits)
-  ```
-
-**Database Integration:**
-- With `--file` or `--paste`:
-  - Queries `marketstats` table for items on watchlist (uses pre-calculated pricing)
-  - Falls back to `marketorders` table for non-watchlist items (calculates 5th percentile on-the-fly)
-  - Looks up targets from `doctrine_fits` table
-- With `--fit-id`:
-  - Looks up fit metadata from `doctrine_fits` table (fit_name, ship_name, target, etc.)
-  - Retrieves pre-calculated market data from `doctrines` table (fits_on_mkt, total_stock, price)
-  - Uses cached data from the last backend run for faster results
-- Uses SDE database for type name resolution when needed
-- Fetches Jita prices for comparison in both modes
-
-**Implementation Details:**
-- Location: `/home/orthel/workspace/github/mkts_backend/src/mkts_backend/cli_tools/fit_check.py`
-- Uses Rich library for beautiful console output with tables, panels, and color coding
-- Handles missing items gracefully with fallback pricing
-- Supports file input (`--file`), stdin (`--paste`), and doctrine lookup (`--fit=<id>`)
-- Three main subcommands: `needed`, `module`, and `list-fits`
-- Fetches Jita prices for comparison and highlights overpriced items (>120% Jita)
-
-## update-fit Subcommands
-
-The `update-fit` command supports multiple subcommands for managing fits and doctrines:
-
-### Available Subcommands:
-- `add` - Add a NEW fit from an EFT file or pasted text and assign to doctrine(s)
-- `update` - Update an existing fit's items from an EFT file or pasted text
-- `assign-market` - Change the market assignment for an existing fit
-- `list-fits` - List all fits in the doctrine tracking system (includes `friendly_name` column)
-- `list-doctrines` - List all available doctrines
-- `create-doctrine` - Create a new doctrine (group of fits)
-- `doctrine-add-fit` - Add existing fit(s) to a doctrine (supports multiple)
-- `doctrine-remove-fit` - Remove fit(s) from a doctrine (supports multiple)
-- `update-target` - Update the target quantity for a fit
-- `update-friendly-name` - Set the friendly display name for all fits in a doctrine
-- `populate-friendly-names` - Bulk populate friendly names from `doctrine_names.json`
-
-### doctrine-add-fit Subcommand
-
-Add existing fits that are already in the fittings database to a doctrine for tracking.
+## Watchlists and interchangeable modules
 
 ```bash
-# Interactive mode (recommended) - prompts per-fit for targets
-uv run mkts-backend update-fit doctrine-add-fit
+# Add EVE type IDs to the deployment market watchlist
+uv run mkts-backend add-watchlist --type-id=11379,11269 --market=deployment
 
-# Non-interactive with fit ID
-uv run mkts-backend update-fit doctrine-add-fit --doctrine-id=42 --fit-id=313
-
-# Add multiple fits at once (comma-separated)
-uv run mkts-backend update-fit doctrine-add-fit --doctrine-id=42 --fit-ids=313,314,315
-
-# Specify default target and market (target applies to new fits only)
-uv run mkts-backend update-fit doctrine-add-fit --doctrine-id=42 --fit-id=313 --target=300 --market=primary
-
-# Preserve existing targets (don't prompt or update targets)
-uv run mkts-backend update-fit doctrine-add-fit --doctrine-id=42 --fit-ids=313,314,315 --skip-targets
-```
-
-**Features:**
-- Interactive prompts guide you through doctrine and fit selection
-- **Per-fit target setting**: Each fit can have a different target quantity (e.g., 300 Muninns, 50 Huginns)
-- Shows existing targets for fits that already have them
-- `--skip-targets` preserves existing targets and skips prompts
-- Supports adding multiple fits at once (comma-separated IDs)
-- Validates fit IDs exist in fittings database
-- Skips fits already in the doctrine
-- Sets up tracking in both fittings and market databases
-- Links fits to doctrines in `fittings_doctrine_fittings` table
-- Adds entries to `doctrine_fits`, `doctrine_map`, and `doctrines` tables
-
-### doctrine-remove-fit Subcommand
-
-Remove fits from a doctrine (reverse operation of `doctrine-add-fit`). This unlinks fits from a doctrine but does NOT delete the fit itself.
-
-```bash
-# Interactive mode (recommended)
-uv run mkts-backend update-fit doctrine-remove-fit
-
-# Non-interactive with fit ID
-uv run mkts-backend update-fit doctrine-remove-fit --doctrine-id=42 --fit-id=313
-
-# Remove multiple fits at once (comma-separated)
-uv run mkts-backend update-fit doctrine-remove-fit --doctrine-id=42 --fit-ids=313,314,315
-
-# --remote is a legacy no-op flag (see Command Options above)
-uv run mkts-backend update-fit doctrine-remove-fit --doctrine-id=42 --fit-id=313 --remote
-```
-
-**Features:**
-- Interactive prompts display current fits in the doctrine
-- Supports removing multiple fits at once (comma-separated IDs)
-- Validates fit IDs are actually in the doctrine
-- Removes tracking from both fittings and market databases
-- Removes entries from `fittings_doctrine_fittings`, `doctrine_fits`, `doctrine_map`, and `doctrines` tables
-- Safe operation: the fit itself remains in the fittings database
-
-**Databases Affected:**
-- `wcfitting.db`: Removes link in `fittings_doctrine_fittings`
-- The target market's database (per `--market`): removes entries from `doctrine_fits`, `doctrine_map`, and `doctrines`
-
-### update-target Subcommand
-
-Update the target quantity for an existing fit.
-
-```bash
-# Update target for a fit on primary market
-uv run mkts-backend update-target --fit-id=313 --target=300
-
-# Update target for deployment market
-uv run mkts-backend update-target --fit-id=313 --target=300 --market=deployment
-```
-
-**Features:**
-- Updates target in both `ship_targets` and `doctrine_fits` tables
-- Shows the previous and new target values
-- Validates the fit exists in the specified database before updating
-
-## equiv Command
-
-The `equiv` command manages module equivalence groups — sets of faction modules that are functionally identical and can substitute for each other in doctrine calculations.
-
-```bash
-# List all equivalence groups
-uv run mkts-backend equiv list
-
-# Find equivalent modules by type ID or name (uses attribute fingerprinting)
-uv run mkts-backend equiv find 13984
+# Search without changing groups
 uv run mkts-backend equiv find "Thermal Armor Hardener"
+uv run mkts-backend equiv list --market=primary
 
-# Find equivalents and automatically add them as a group
-uv run mkts-backend equiv find 13984 --add
-
-# Create a new equivalence group manually with specific type IDs
-uv run mkts-backend equiv add --type-ids=13984,17838,15705,28528,14065,13982
-
-# Remove an equivalence group by group ID
-uv run mkts-backend equiv remove --id=1
-
-# Target a single market (default: all markets)
+# Save an interchangeable-module group
 uv run mkts-backend equiv add --type-ids=13984,17838 --market=primary
 ```
 
-**Notes:**
-- `add` and `remove` operate on **all markets by default** (equivalents are universal game data)
-- `find` uses SDE attribute fingerprinting (`dgmTypeAttributes`) to discover identical modules
-- Multiple name matches show a selection table; use `--type-id=<id>` to disambiguate
-- `add`, `remove`, and `find --add` push each affected market's replica to Turso automatically — no follow-up `sync` needed (`sync` is a pull, not a push)
+The market watchlist controls which items receive calculated statistics.
+`add-watchlist --file` reads item names, one per line; `--paste` accepts those
+names in the multiline editor. Successfully adding market items also attempts
+to add buildable items to the independent builder-cost watchlist.
 
-**Subcommands:**
-- `list` - Display all equivalence groups with member modules
-- `find <type_id|name> [--add]` - Auto-discover equivalent modules by attribute matching
-- `add --type-ids=<ids>` - Create a new group from comma-separated type IDs
-- `remove --id=<group_id>` - Remove all members from a group
+Equivalence groups combine stock for interchangeable modules. `equiv find`
+compares SDE attributes; adding `--add` saves its result. `equiv remove --id=1`
+deletes a group. Equivalence operations default to **all markets**; use an explicit
+`--market=primary`, `deployment`, or `market3` to narrow them. Omit the selector
+for all markets (the current equiv handler does not expand `--market=all`).
 
-## seed_new_market.py Script
+## Collection and other tools
 
-A standalone script (not a `mkts-backend` subcommand) that bootstraps a newly-created market by copying the reference/config tables from an existing market's replica into the new market's replica, via `DatabaseConfig.remote_engine`. Run it after creating the new Turso database, configuring its keys, and adding its `[markets.<alias>]` section to `settings.toml`.
+| Command | Purpose |
+|---|---|
+| `mkts-backend update-markets --market=primary --history` | Collect orders and history, calculate statistics, and upload results |
+| `mkts-backend update-builder-costs` | Refresh the shared manufacturing-cost database |
+| `mkts-backend build-watchlist` | Manage manufacturing items; requires a subcommand |
+| `mkts-backend add-structure --dry-run` | Preview structure imports from the configured Google Sheet |
+| `mkts-backend parse-items --input="structure_data.txt" --output="market_prices.csv"` | Convert copied structure data into a priced CSV |
+| `mkts-backend esi-auth` | Choose a configured character and authorize EVE access |
+| `mkts-backend --check_tables --market=primary` | Inspect database tables |
+| `mkts-backend --list-db-paths` | Print configured database filenames |
+| `mkts-backend --validate-env` | Check required credential presence, not remote connectivity |
 
-```bash
-# Dry-run / preview (default): shows source vs. destination row counts and the plan
-uv run python scripts/seed_new_market.py
+Prefix these commands with `uv run`. See [builder costs](builder_costs.md) for
+manufacturing commands and [setup](setup.md) for credentials.
 
-# Apply: writes to the destination's replica
-uv run python scripts/seed_new_market.py --apply
-
-# Different source/destination markets (by database alias)
-uv run python scripts/seed_new_market.py --source wcmktnewkeep --dest wcmktbkg --apply
-
-# Restrict to specific tables (repeatable)
-uv run python scripts/seed_new_market.py --dest wcmktbkg --only watchlist --only doctrines --apply
-```
-
-**Options:**
-- `--source=<alias>`: Source market DB alias to copy from (its local `.db`). Default: `wcmktnewkeep`
-- `--dest=<alias>`: Destination market DB alias to seed. Default: `wcmktbkg`
-- `--only=<table>`: Restrict to specific reference tables. Repeatable
-- `--apply`: Actually perform the migration. Omit for a dry-run
-- `--allow-empty-source`: Permit wiping a populated destination table when the source table is empty (refused by default)
-
-**Tables copied** (reference/config only — market-data tables are deliberately excluded):
-- `watchlist`, `doctrines`, `doctrine_fits`, `doctrine_map`, `lead_ships`, `ship_targets`, `module_equivalents`
-
-**Behavior:**
-- **Ensures schema first**: creates any missing target tables from `Base` (`create_all`, idempotent — existing tables are left alone), so a brand-new replica works
-- **Wipe-and-replace per table**: each table runs in its own transaction (`DELETE` then bulk `INSERT`); a row-count mismatch rolls the table back, so it is safe to re-run
-- **Preserves `id` values** exactly, keeping cross-table references (`doctrine_map`, `doctrines`, `lead_ships`, …) consistent
-- **CSV backup**: any existing destination rows are dumped to `data/migration_backups/<dest>_<table>_<timestamp>.csv` before being wiped
-- **Resets market-derived columns**: `doctrines` stock/price/timestamp fields are zeroed on insert (see `MARKET_DERIVED_RESET` in the script) so the new market starts at zero availability instead of showing the source market's numbers
-- **Refuses empty-source wipes**: if a source table is empty while the destination has rows (usually a wrong `--source` or a stale local db), the table is skipped and reported as failed; override with `--allow-empty-source`
-- **Pushes to Turso**: after every requested table has been seeded, `--apply` calls `push()` once for the destination, so the writes reach Turso in a single run. Market-data tables then fill on the first collection run for that market (e.g. `uv run mkts-backend update-markets --market=market3 --history`)
-- To add another reference table to the set, append its model to `REFERENCE_MODELS` in the script — table name and columns are derived from the model
-
-**Location:** `scripts/seed_new_market.py`
-
+For command help use `uv run fitcheck --help`,
+`uv run mkts-backend fit-update --help`, or
+`uv run mkts-backend build-watchlist --help`. Some commands show the general
+help page rather than a dedicated page.

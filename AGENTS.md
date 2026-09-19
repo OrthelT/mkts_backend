@@ -1,261 +1,198 @@
-# LLM Agent Guide: Eve Online Market Data System
+# Agent guide: EVE Market Tools
 
-This guide provides comprehensive documentation for LLM agents working with this Eve Online Market Data Collection and Analysis System. It covers both assisting users in implementing their own system and working with the existing codebase.
+This file is for coding agents and maintainers. User instructions belong in
+[README.md](README.md) and [docs/cli-tools.md](docs/cli-tools.md). Keep the README
+focused on a non-programmer checking stock and managing fits; put implementation
+notes here. Historical plans and duplicate feature notes are archived locally
+under ignored `devfiles/`; they are not current specifications or clone dependencies.
 
-## Quick Start for Development
+## Development commands
 
-**Run the main application:**
 ```bash
-uv run mkts-backend update-markets   # all configured markets
-```
-A bare `uv run mkts-backend` prints help; the pipeline needs the `update-markets`
-subcommand (aliases: `update`).
-
-**Include historical data:**
-```bash
-uv run mkts-backend update-markets --history
-```
-
-**Specify a market (update-markets defaults to every market):**
-```bash
-uv run mkts-backend update-markets --market=deployment
-uv run mkts-backend update-markets --primary      # shorthand
+uv sync
+uv run mkts-backend --help
+uv run fitcheck --help
+uv run pytest -q
 ```
 
-**Check database tables:**
+A bare `mkts-backend` prints help. Collection requires `update-markets` (alias
+`update`), defaults to all configured markets, and writes/pushes shared data:
+
 ```bash
-uv run mkts-backend --check_tables
-uv run mkts-backend --check_tables --deployment  # Check deployment market tables
+uv run mkts-backend update-markets --market=primary --history
 ```
 
-**Sync databases:**
-```bash
-uv run mkts-backend sync              # Pull every routed replica: all markets +
-                                       # shared sde/fittings/buildcost (excludes
-                                       # the dev/test DB, [shared.testing])
-uv run mkts-backend sync --deployment # Pull the deployment market only
-uv run mkts-backend sync --no-buildcost    # Skip the optional buildcost replica
-uv run mkts-backend sync --markets-only    # Markets only, skip shared databases
-uv run mkts-backend sync --include-testing # Also pull [shared.testing]
-# NOTE: `sync` is a PULL (Turso → local). Local writes reach Turso only via push();
-# see "Turso sync model" below.
-# NOTE: --both is a legacy market-alias synonym for --all. It now spans all three
-# markets, not just primary+deployment. Use --all.
-```
+Do not run collection or management writes just to validate documentation.
+Prefer mocked tests and help/routing probes. If uv cannot access its cache,
+use `.venv/bin/python -m pytest` from the existing environment. Inspect tests
+for live database/API dependencies before running them with production credentials.
+The CI test job runs the full suite with `COLUMNS=80` and `TERM=dumb`.
 
-**Look up routed database paths** (global flags, not specific to `sync`):
-```bash
-uv run mkts-backend --list-db-paths     # Print every routed alias and file (alias<TAB>file)
-uv run mkts-backend --db-path=primary   # Print the file path for one database (by alias or market name)
-```
+## Architecture and source of truth
 
-**Check market availability for a ship fit:**
-```bash
-uv run fitcheck --file=path/to/fit.txt --market=primary
-uv run fitcheck --fit=42  # Check by fit ID
-uv run fitcheck needed    # Show all items needed across fits
-uv run fitcheck module --id=11269  # Show which fits use a module
-```
+All paths below are under `src/mkts_backend/` unless stated otherwise.
 
-**Look up character assets:**
-```bash
-uv run mkts-backend assets --id=11379        # By type ID (cached for 1 hour)
-uv run mkts-backend assets --name='Damage Control'  # By name
-uv run mkts-backend assets --id=11379 --refresh     # Bypass cache, re-fetch from ESI
-```
+| Area | Source |
+|---|---|
+| Entry points | `pyproject.toml`: `mkts-backend` / `mkts` → `cli.main`; `fitcheck` → `cli_tools.fit_check.main` |
+| Dispatch and typed argument parsing | `cli_tools/command_registry.py`, `args_parser.py`, `arg_utils.py` |
+| Market selection | `cli_tools/market_args.py`, `config/market_context.py` |
+| CLI help | `cli_tools/cli_help.py`, plus fitcheck/equiv help in their modules |
+| Market pipeline | `cli.py`, `processing/data_processing.py`, `db/db_handlers.py` |
+| Fit reports | `cli_tools/fit_check.py`, `fit_check_needed.py`, `fit_check_module.py` |
+| Fit writes and assignment | `cli_tools/fit_update.py`, `utils/parse_fits.py`, `utils/doctrine_update.py` |
+| Database routing/replicas | `config/settings_service.py`, `config/db_config.py` |
+| Models and queries | `db/models.py`, `db/db_queries.py` |
+| EVE requests and auth | `esi/esi_requests.py`, `esi/esi_auth.py`, `esi/async_*` |
+| Builder costs | `builder_costs/`, `esi/async_everref.py`, `cli_tools/build_watchlist_cli.py` |
+| Structure import | `cli_tools/add_structure.py`, `utils/build_cost_utils.py` |
+| Google Sheets | `config/gsheets_config.py` |
 
-**Dependencies are managed with uv:**
-```bash
-uv sync  # Install dependencies
-uv add <package>  # Add new dependency
-```
+The frontend is a separate repository, `OrthelT/wcmkts_new`. Do not infer its
+current implementation from old backend feature notes.
 
-## System Overview
+## Configuration
 
-This is a comprehensive Eve Online market data collection and analysis system consisting of two repositories:
-
-1. **mkts_backend** (this repo): Backend data collection, processing, and storage
-   - Fetches market data from Eve Online ESI API for specific structures/regions
-   - Processes and stores market orders, history, and calculated statistics in SQLite databases
-   - Analyzes doctrine fits and calculates market availability for ship loadouts
-   - Tracks regional/system market data with automated Google Sheets integration
-   - Supports local and remote (Turso) database sync
-
-2. **wcmkts_new** (frontend): Streamlit web application for data visualization
-   - Repository: https://github.com/OrthelT/wcmkts_new
-   - Displays market statistics and trends
-   - Shows doctrine/fitting availability
-   - Provides interactive data exploration
-
-## Core Components and Architecture
-
-### Main Data Flow (`cli.py`)
-The primary orchestration file that coordinates all data collection and processing:
-- `fetch_market_orders()` - Gets current market orders from ESI API with OAuth
-- `fetch_history()` - Gets historical market data for watchlist items from primary region
-- `calculate_market_stats()` - Computes statistics from orders and history
-- `calculate_doctrine_stats()` - Analyzes ship fitting availability
-- Regional order processing and system-specific market analysis
-
-### Database Layer (`config/db_config.py`, `db/db_handlers.py`)
-Manages all database operations:
-- **DatabaseConfig class** (in `config/db_config.py`): Manages the local pyturso replica and its Turso remote
-  - Supports MarketContext-based initialization (preferred) or alias-based init
-  - `engine` / `remote_engine`: both return the **same** `sqlite+turso_sync` engine.
-    `remote_engine` is a backwards-compatible alias kept during the migration; it
-    no longer opens a direct HTTP connection to Turso.
-  - `sync()` / `pull()`: pull remote changes into the local replica
-  - `push()`: send local writes to Turso. **Required** — a `commit()` alone leaves
-    the write in the local CDC queue.
-  - `verify_db_exists()`: Ensures database and metadata are in a consistent state
-    - Handles 4 cases: neither exists, both exist, db without metadata, metadata without db
-    - When both exist, calls `assert_remote_compatible()` then `heal_metadata()`
-      instead of assuming the pair is valid; otherwise nukes the inconsistent
-      state and syncs from remote
-  - `heal_metadata()`: confirms the replica's `-info` sidecar is genuine pyturso
-    metadata (not libsql-era or corrupt). If not, deletes just the `-info`
-    sidecar and re-pulls to rebuild it against the existing `.db`/`-wal`/
-    `-changes`. Returns `True` once the replica has pyturso metadata, `False` if
-    the repair pull fails.
-  - `remote_matches_metadata()`: compares the Turso remote recorded in `-info` at
-    bootstrap time against the currently configured remote (host + path only,
-    ignoring scheme and trailing slash). Returns `True`/`False`, or `None` if
-    either side is unknown. `assert_remote_compatible()` raises when it returns
-    `False` — the guard against reading or pushing a replica bootstrapped
-    against a different environment (e.g. a test replica opened under a
-    production config after cutover).
-  - `nuke_db()`: removes the database and each of its pyturso sidecars found on
-    disk — up to five (`-shm`, `-wal`, `-info`, `-changes`, `-wal-revert`). Not
-    every replica has all five: `-shm` is the WAL shared-memory index and is
-    usually absent once a connection closes cleanly. They must be deleted
-    together — a stale change queue beside a freshly pulled database replays
-    local state that is no longer there.
-- **db_handlers.py**: CRUD operations on market data tables
-- ORM-based data insertion with chunking for large datasets
-
-### Data Models (`models.py`)
-SQLAlchemy ORM model definitions (at `src/mkts_backend/db/models.py`):
-- **Core Models:** `MarketOrders`, `MarketHistory`, `MarketStats`, `Doctrines`, `Watchlist`
-- **Organizational Models:** `ShipTargets`, `DoctrineMap`, `DoctrineFitItems`, `LeadShips`
-- **Utility Models:** `UpdateLog`, `ESIRequestCache`
-- **Module Equivalents:** `ModuleEquivalents` - maps interchangeable faction modules by `equiv_group_id`
-- **Asset Cache:** Stored in local-only `cli_cache.db` (not synced to Turso); schema managed by `asset_cache._ensure_table()`
-- `DoctrineFitItems` maps to `doctrine_fits` table; includes `friendly_name` field (nullable) added in Feb 2026
-- Tables stored in market-specific databases (e.g., `wcmktnewkeeptest.db`, `wcmktnorth2test.db`)
-
-### OAuth Authentication (`ESI_OAUTH_FLOW.py` / `esi_auth.py`)
-Handles Eve Online SSO authentication:
-- Eve Online SSO authentication for ESI API access
-- Token refresh and storage in `token.json`
-- Manages OAuth flow for initial authorization
-
-### Regional Market Processing (`esi/esi_requests.py`)
-Regional market data fetching:
-- `fetch_region_orders()` - Fetches all market orders for a region by order type
-
-### Google Sheets Integration (`google_sheets_utils.py` / `gsheets_config.py`)
-Automated spreadsheet updates:
-- Automated Google Sheets updates with market data
-- Service account authentication
-- Configurable append/replace data modes
-
-### Data Processing (`data_processing.py`)
-Statistics and analysis calculations:
-- Market statistics calculation with 5th percentile pricing
-- Doctrine availability analysis
-- Historical data integration (30-day averages)
-
-## Key Configuration Values
-
-Configuration is now managed through `settings.toml` with market-specific configs:
-
-Values below are the current contents of `settings.toml` in this worktree.
-`settings.toml` is authoritative — read it rather than trusting this table.
-
-### Primary Market (`markets.primary`)
-- **Name:** 4-HWWF - WinterCo. Central Station
-- **Region ID:** `10000003` (Vale of the Silent)
-- **System ID:** `30000240`
-- **Structure ID:** `1053970513596`
-- **Database:** alias `wcmktnewkeeptest`, file `wcmktnewkeeptest.db`
-
-### Deployment Market (`markets.deployment`)
-- **Name:** X47L-Q - Rogue Threshold
-- **Region ID:** `10000023` (Pure Blind)
-- **System ID:** `30001967`
-- **Structure ID:** `1041669946862`
-- **Database:** alias `wcmktnorthtest`, file `wcmktnorth2test.db`
-
-### Third Market (`markets.market3`)
-- **Name:** BKG-Q2 - Insidious Prime
-- **Region ID:** `10000055` (Branch)
-- **System ID:** `30004333`
-- **Structure ID:** `1032721770598`
-- **Database:** alias `wcmktbkgtest`, file `wcmktbkgtest.db`
-
-### Configuration Files
-- **Market Settings:** `src/mkts_backend/config/settings.toml`
-- **ESI Config:** Auto-generated from MarketContext based on settings.toml
-- **Watchlist:** Database table with ~850 common items and WinterCo doctrine ships/fittings
-
-### Settings Access (`config/settings_service.py`)
-
-All `settings.toml` reads go through a single centralized service. **Do not parse the TOML
-directly** — import `SettingsService` and use a typed property or `settings_dict` for raw access.
+Read all settings through `SettingsService`; do not parse TOML directly.
+`src/mkts_backend/config/settings.toml` is authoritative. Avoid duplicating
+market IDs, database filenames, and routing maps in code or documentation.
 
 ```python
 from mkts_backend.config.settings_service import (
-    SettingsService,
-    get_all_market_contexts,
-    get_all_characters,
-    clear_cache,
+    SettingsService, get_all_market_contexts, get_all_characters, clear_cache,
 )
 
 s = SettingsService()
-s.environment              # "production" or "development"
-s.log_level                # "INFO" / "DEBUG" / ...
-s.esi_user_agent           # User-Agent string for ESI requests
-s.wipe_replace_tables      # ["marketstats", "doctrines", "jita_prices", "builder_costs"]
-s.jita_cache_ttl           # timedelta — [jita] cache_ttl_hours
-s.database_routing()       # {alias: {file, turso_url_env, turso_token_env, optional}}
-                           #   for every [markets.*] and [shared.*] block
-s.settings_dict            # Read-only view, for keys without a typed accessor
-
-get_all_market_contexts()  # {"primary": …, "deployment": …, "market3": MarketContext}
-get_all_characters()       # list[CharacterConfig], merges legacy [chareacters] typo section
+s.environment
+s.log_level
+s.esi_user_agent
+s.jita_cache_ttl
+s.wipe_replace_tables
+s.database_routing()
+s.settings_dict  # keys without a typed accessor
+get_all_market_contexts()
+get_all_characters()  # also merges the legacy [chareacters] spelling
 ```
 
-Behavior:
-- **Module-level cache.** First call parses the TOML; subsequent calls return the cached dict.
-- **Test reload.** Call `settings_service.clear_cache()` after mutating env vars or settings.toml in tests.
-- **Path resolution.** Uses `Path(__file__).parent / "settings.toml"` so it works from any CWD.
-- **Env override.** `MKTS_ENVIRONMENT=development` overrides `[app][environment]` at load time.
+The service caches settings at module level and resolves the TOML relative to
+its module, not CWD. Call `clear_cache()` after settings/env changes in tests.
+`MKTS_ENVIRONMENT` overrides `[app].environment` at load time. Some CLI market
+maps are constructed at import time; clearing the settings cache alone does
+not recreate those module constants.
 
-### TOML Structure
+`[markets.<alias>]` and `[shared.<name>]` jointly define database routing. Every
+block needs unique `database_alias`, `database_file`, and appropriate credential
+variable names. Malformed/duplicate routing fails with section-named errors.
+Shared aliases are SDE, fittings, buildcost, and testing. Inspect routes with:
 
-| Section | Purpose |
-|---|---|
-| `[app]` | Environment + log level |
-| `[esi]` | User-Agent, compatibility date |
-| `[auth]` | OAuth callback + token storage |
-| `[markets.<alias>]` | Per-market configuration (primary, deployment, market3) — the **single source** for all per-market DB config (alias, file, turso env vars, gsheets) |
-| `[shared.<name>]` | Market-independent databases — `sde`, `fittings`, `buildcost`, `testing`. Each block has the same shape as a market DB block (`database_alias`, `database_file`, `turso_url_env`, `turso_token_env`, optional `optional = true`), so `database_routing()` emits markets and shared DBs through one code path. `[shared.testing]` is the dev/test DB the default market routes to when `environment="development"`. |
-| `[wipe_replace]` | `tables` — list of tables fully wiped/re-inserted on each upsert run (vs. incrementally upserted). Useful for resetting deployment history when switching regions. |
-| `[google_sheets]` | Sheets integration toggle + legacy URLs |
-| `[buildcost]` | `add_structure` CLI source sheet |
-| `[jita]` | `cache_ttl_hours` — how long `jita_prices` stays reusable before the pipeline and `fitcheck` re-fetch |
-| `[characters.<key>]` | Character definitions for asset checks |
-| `[corporations.<key>]` | Corporation definitions for asset checks |
+```bash
+uv run mkts-backend --list-markets
+uv run mkts-backend --list-db-paths
+uv run mkts-backend --db-path=primary
+```
 
-## External Dependencies
+Current market selectors are `primary` (4-HWWF), `deployment` (X47L-Q), and
+`market3` (BKG-Q2). Production database aliases are currently `wcmktnewkeep`,
+`wcmktnorth`, and `wcmktbkg`; do not restore the old `*test` routes from archived docs.
+`MarketContext` in development routes only the configured default market to
+`[shared.testing]`; other markets/shared DBs are not isolated automatically.
+The environment flag is not a general no-production-writes switch.
 
-- **EVE Static Data Export (SDE):** `sdelite.db` - game item/type information (synced from Turso), uses `sdetypes` table for type lookups
-- **Custom dbtools:** Database utility functions in `utils/db_utils.py`
-- **pyturso:** Remote database synchronization (optional in dev, required in production).
-  Provides the `sqlite+turso`, `sqlite+turso_sync`, and `sqlite+aioturso` SQLAlchemy
-  dialects. The `libsql` and `sqlalchemy-libsql` packages have been removed.
-- **Google Sheets API:** For automated market data reporting (optional)
-- **prompt_toolkit:** For multiline input prompts (paste mode in fit-update)
+Credential variable names come from settings; their environment values choose
+the actual remote. `.env.example` lists the shipped names without values.
+Collection validation requires EVE credentials and the selected markets plus
+non-optional shared databases. `--validate-env` checks presence across all
+markets; it does not test connectivity. Do not describe normal collection as
+credential-free local-only operation.
+
+Google credential file variables are `GOOGLE_APPLICATION_CREDENTIALS` and
+`GOOGLE_SERVICE_ACCOUNT_FILE`; literal JSON uses `GOOGLE_SHEET_KEY`.
+The Actions workflow uses its own `GOOGLE_SA_JSON` secret and creates a file.
+Auth currently uses constants in `esi/esi_auth.py` for the callback and token
+file; do not assume the similarly named settings properties are wired through.
+
+## CLI contracts and current limitations
+
+Keep docs aligned with handler bodies, not just help strings or docstrings.
+Use the canonical entry point, `--option=value`, and put flags after the command
+in user examples. The registry is shared, but the two entry points do not have
+identical default-market/help handling.
+
+- `mkts-backend sync` pulls all markets and shared SDE/fittings/buildcost, excluding
+  testing unless `--include-testing`. A market selector narrows only the market
+  loop; add `--markets-only` to exclude shared DBs. `--no-buildcost` skips buildcost.
+- `fitcheck` / `list-fits` / `needed` use a single market; `module` expands `all`.
+  Reports read stored market data. `fitcheck --refresh` refreshes Jita comparison
+  prices; `needed --refresh` affects assets only. Neither collects market orders.
+- `fit-update` requires a subcommand. `update-fit` is a separate file/metadata
+  workflow, not an alias. Its `--fit-id` requires `--interactive` or `--meta-file`.
+- `fit-update update` finds every market containing the fit and updates all of
+  them, irrespective of a narrower requested market. `add --interactive` prompts
+  for metadata and market choice. Dry-run support is per-handler, not universal.
+- The fit registry accepts comma-separated `--fit-id`, not documented legacy
+  `--fit-ids`. `doctrine-add-fit` passes `doctrine_id=None` to its interactive
+  handler even if supplied on the command line; do not promise unattended use.
+- Assignment uses `_flag_to_aliases`: `primary` includes market3, `deployment`
+  is separate, and `all` includes every configured market. Saved target updates
+  share that mapping. Assignment/unassignment validators still restrict choices
+  to primary/deployment/all; an arbitrary new configured market is not fully
+  supported by that assignment model. `assign-market` replaces membership.
+- `fit-update remove --market=primary` currently expands to all markets. Do not
+  advertise it as a primary-only removal. `doctrine-remove-fit` only unlinks fits.
+- Friendly-name commands write all configured markets, regardless of selection.
+  `update-lead-ship` uses the selected market expansion instead.
+- `equiv` defaults to all markets and reads its own literal `--market` value.
+  Its handler does not expand `--market=all` or honor shorthand market flags;
+  use an explicit concrete selector or omit the selector for all markets.
+- `--remote` is an engine-selection compatibility flag, not direct cloud access.
+  `--local`/`--local-only` do not reliably suppress management pushes. Never use
+  these as a production isolation boundary. Likewise, `build-watchlist --no-sync`
+  skips the handler's extra push but repository mutation helpers already push.
+- Registered handlers should return bool, leaving exit codes to the entry point.
+  Some report wrappers currently discard the inner result and return success;
+  console errors therefore matter even when the shell status is zero.
+
+## Data and writer ownership
+
+The market run initializes shared replicas, pulls market replicas before its
+first writes, refreshes Jita prices, then fetches orders, optionally history,
+calculates statistics and doctrine availability, exports configured Sheets, and
+pushes market writes. Jita fetching is independent of `--history`.
+
+Market databases contain `marketorders`, `market_history`, `marketstats`,
+`doctrines`, `watchlist`, `jita_prices`, `updatelog`, and reference tables such as
+`doctrine_fits`, `doctrine_map`, `ship_targets`, `lead_ships`, `module_equivalents`.
+`DoctrineFitItems` maps to `doctrine_fits`; `friendly_name` is nullable.
+Shared fittings holds the fit/doctrine/item records; SDE supplies item metadata.
+Character assets are cached in local-only `cli_cache.db`, not pushed to Turso.
+
+Builder costs now have a dedicated shared database and independent
+`build_watchlist`. The runner reads primary Jita prices and SDE, upserts successful
+EverRef results, prunes orphan costs after a write, and stamps `updatelog`.
+Partial fetches return a failing CLI status while retaining successful writes.
+Do not route builder estimates through the market wipe-and-replace writer.
+`build-watchlist mirror` adds missing primary-market items; `sync` only pulls.
+`add-watchlist` also attempts to mirror buildable additions. Structure imports
+upsert shared `structures`, not market databases.
+
+## Replica verification and recovery
+
+`DatabaseConfig.engine` and `remote_engine` share the same engine. Before engine
+or raw connection access, `assert_remote_compatible()` rejects a known mismatch
+between the remote in `-info` and the configured URL. Comparison uses host and
+path, ignoring scheme and trailing slash; unknown metadata returns `None`, not
+proof of compatibility.
+
+`verify_db_exists()` handles missing DB/metadata pairs by rebuilding and pulling.
+When both exist it checks remote compatibility and calls `heal_metadata()`.
+Healing distinguishes genuine pyturso metadata from old libsql/corrupt metadata;
+it removes just `-info` and re-pulls against the existing DB/WAL/change queue.
+It is not a full database integrity check.
+
+`nuke_db()` removes the DB plus any `-shm`, `-wal`, `-info`, `-changes`, and
+`-wal-revert` files. Preserve needed pending local work before an explicitly
+chosen rebuild. Never leave a stale change queue beside a fresh DB, and do not
+use a plain `sqlite+turso` connection for a sync-managed replica.
 
 ### Turso sync model (pyturso)
 
@@ -279,7 +216,7 @@ both are inert aliases of the local engine, so a new writer must add its own
 
 **Convergence when a push is skipped or fails:** a stranded write sits in the
 local CDC queue until some later command pushes that alias. Market databases
-converge on the 4-hourly market-data workflow and `buildcost` on the daily
+converge on the hourly market-data workflow and `buildcost` on the daily
 builder-costs workflow, but **`fittings` has no scheduled push** — a stranded
 fittings write converges only on the next manual fit command that pushes that
 alias.
@@ -313,67 +250,6 @@ first place.
   (`utils/parse_fits.py`) does this for `fittings_type` before any fit row is
   written. Repair a rejected row by delete + re-insert locally (fresh CDC
   INSERT), then push.
-
-## Data Processing Flow
-
-The complete data pipeline when running the application:
-
-1. **Initialize**: Load market configuration from settings.toml. `update-markets` runs every configured market unless `--market=<alias>` narrows it
-2. **Database Setup**: Verify database exists with `verify_db_exists()` (syncs from Turso if needed)
-3. **Authenticate**: Authenticate with Eve SSO using required scopes
-4. **Market Orders**: Fetch current market orders for configured structure
-5. **Historical Data** (optional with `--history` flag):
-   - Primary market history → `MarketHistory` table
-   - Jita comparative pricing fetched for watchlist items (if configured)
-6. **Statistics**: Calculate market statistics (price, volume, days remaining)
-7. **Doctrine Analysis**: Analyze ship fitting availability based on market data
-8. **Google Sheets** (if enabled): Update spreadsheets with market data (primary market only, non-dev)
-9. **Storage**: Write all results to the local replica, then `db.push()` them to Turso (`cli.py`)
-
-## Environment Variables Required
-
-```env
-# Eve Online ESI Credentials (Required)
-CLIENT_ID=<eve_sso_client_id>
-SECRET_KEY=<eve_sso_client_secret>
-REFRESH_TOKEN=<your_refresh_token_here> # this is uded in automated workflows where a token.json file cannot be stored persistently. copy the refresh_token field from token.json.
-
-# Google Sheets (Optional)
-GOOGLE_SHEET_KEY={"type":"service_account"...}  # Entire JSON key file content
-# OR
-GGOOGLE_APPLICATION_CREDENTIALS=<filename.json>  # Path to service account key file
-
-# Janice API key for Jita price fallback (optional)
-JANICE_KEY=<janice_api_key>
-
-# Turso — one URL/token pair per database. The var NAMES are set by
-# turso_url_env / turso_token_env in settings.toml; the VALUES decide whether
-# this checkout talks to production or test remotes.
-TURSO_WCMKTNEWKEEP_URL=<primary market db url>
-TURSO_WCMKTNEWKEEP_TOKEN=<primary market db token>
-TURSO_WCMKTNORTH_URL=<deployment market db url>
-TURSO_WCMKTNORTH_TOKEN=<deployment market db token>
-TURSO_WCMKTBKG_URL=<market3 db url>
-TURSO_WCMKTBKG_TOKEN=<market3 db token>
-
-# Turso — shared, market-independent databases
-TURSO_SDE_URL=<sde db url>
-TURSO_SDE_TOKEN=<sde db token>
-TURSO_FITTING_URL=<fitting db url>
-TURSO_FITTING_TOKEN=<fitting db token>
-
-# Turso — optional; a market run proceeds without these
-TURSO_BUILDCOST_URL=<buildcost db url>
-TURSO_BUILDCOST_TOKEN=<buildcost db token>
-TURSO_WCMKTTEST_URL=<dev/test db url>
-TURSO_WCMKTTEST_TOKEN=<dev/test db token>
-```
-
-Check what is actually loaded with `uv run mkts-backend --validate-env`.
-**Important Notes**:
-- `REFRESH_TOKEN` must be obtained through OAuth flow (see `src/mkts_backend/esi/esi_auth.py`)
-- For local-only operation, Turso credentials are optional
-- `GOOGLE_SHEET_KEY` can be the entire JSON content or the system will fall back to a file
 
 ## ESI Request Caching (Conditional Requests)
 
@@ -428,7 +304,7 @@ process_market_orders (cli.py)
 - **Headers:** `ESIConfig.headers` provides base headers (auth, user-agent, etc.) without `If-None-Match`. The `fetch_market_orders` loop manages `If-None-Match` per-page, setting it from `page_etags` or removing it for fresh requests.
 - **User-Agent:** Loaded from `settings.toml` (`[esi] user_agent`), never hard-coded.
 - **Mixed responses:** If some pages return 304 and others 200, page boundaries may have shifted (ESI rebalances pages). The function discards partial results and re-fetches all pages without etags to get a consistent dataset. A `_clean_retry` flag prevents infinite recursion.
-- **Cache read/write engines:** Both `load_orders_cache` and `save_orders_cache` use `db.engine` (the local pyturso replica). Cache rows travel to Turso with the pipeline's `push()`, so a run that dies before the push re-fetches those pages next time — the safe direction to fail.
+- **Cache read/write engines:** Both `load_orders_cache` and `save_orders_cache` use `db.engine` (the local pyturso replica). Cache rows travel to Turso with the pipeline's `push()`. A failed push can leave both data and cache changes pending locally; do not assume a subsequent local run will re-fetch them.
 
 ### Related Files
 
@@ -444,7 +320,7 @@ Both Jita price paths — the pipeline and `fitcheck` — reuse the `jita_prices
 table while it is under an hour old, instead of calling Fuzzwork again.
 
 Freshness comes from the `updatelog` row for `jita_prices`, written by
-`log_update()` at the end of every pipeline run. `get_update_age()`
+`log_update()` after a successful Jita price write. `get_update_age()`
 (`db/db_queries.py`) returns that age, or `None` when the row or the table is
 missing — which callers treat as "no cache, fetch".
 
@@ -474,10 +350,8 @@ key raises a `KeyError` naming the section rather than falling back to a silent
 default. Read at access time, so a change takes effect on the next run with no
 code edit. Fractional hours are allowed (`0.5` = 30 minutes).
 
-The pipeline refreshes `jita_prices` every 4 hours, so a 1-hour TTL means
-fitcheck live-fetches for most of that window. That is deliberate — fresher
-prices over a higher hit rate. Raising the TTL toward 4 hours trades freshness
-for cache hits.
+The market workflow currently runs hourly. Cache reuse still depends on each
+market's successful write timestamp and the configured TTL, not the schedule alone.
 
 ### Related Files
 
@@ -487,632 +361,26 @@ for cache hits.
 - `src/mkts_backend/utils/jita.py` — `fetch_jita_price_data()`: the shared fetcher
 - `src/mkts_backend/config/settings.toml` — `[jita] cache_ttl_hours`: the TTL
 
-## Additional Features
+## Validation and documentation maintenance
 
-- **Multi-Market Support:** Configure and process multiple markets independently via `--market` flag
-- **Fit Checking Tool:** CLI command to check market availability for ship fittings with export options
-- **Comparative Market Analysis:** Dual-region history tracking (primary market vs Jita) for price comparison charts
-- **Market Value Calculation:** Filters out blueprints and skills for accurate market value assessment
-- **Ship Count Tracking:** Specifically tracks ship availability on the market
-- **Google Sheets Automation:** Automatically updates spreadsheets with latest market data
-- **Database State Management:** Automatic verification and sync of database consistency
-- **Multi-Region Support:** Handles both structure-specific and region-wide market data
-- **Async Processing:** High-performance concurrent API requests with rate limiting and backoff
-- **Error Handling:** Comprehensive logging and error recovery for API failures
-- **GitHub Actions Integration:** Automated scheduled data collection via workflows
-- **Module Equivalents:** Aggregate stock across interchangeable faction modules; managed via `equiv` CLI commands
-- **Friendly Names:** Per-doctrine display names stored in `doctrine_fits.friendly_name`; managed via `fit-update update-friendly-name`
-- **Asset Cache:** ESI character asset data cached in local-only `cli_cache.db` (1-hour TTL); used by `assets` and `fitcheck needed --assets` commands; bypass with `--refresh` flag
-- **Jita Price Cache:** `jita_prices` reused for 1 hour by both the pipeline and `fitcheck`, keyed on the `updatelog` timestamp; bypass with `fitcheck --refresh`
-
-## CLI Tools
-This project includes an extensive set of CLI tools.
-- See `docs/cli-tools.md` for details on CLI tools and usage. 
-
-## User Implementation Guide
-
-## Prerequisites Checklist
-
-Before starting, ensure the user has:
-
-- [ ] Python 3.12 or higher
-- [ ] Git installed
-- [ ] An Eve Online character with market access to their target structure
-- [ ] Access to create Eve Online developer applications
-- [ ] (Optional) Google account for Sheets integration
-- [ ] (Optional) Turso account for remote database hosting
-
-## Implementation Steps
-
-### Step 1: Eve Online ESI Application Setup
-
-Guide the user through creating an ESI application:
-
-1. **Navigate to Eve Developers Portal**:
-   - URL: https://developers.eveonline.com/
-   - Have user log in with their Eve Online account
-
-2. **Create New Application**:
-   - Click "Create New Application"
-   - Application Name: Choose descriptive name (e.g., "My Market Data Collector")
-   - Description: Brief description of purpose
-   - Callback URL: `http://localhost:8000/callback`
-   - Required Scopes:
-     - `esi-markets.structure_markets.v1` (for structure market access)
-   - Connection Type: "Authentication & API Access"
-
-3. **Save Credentials**:
-   - Note the Client ID
-   - Note the Secret Key
-   - These will be needed for `.env` file
-
-4. **Generate Refresh Token**:
-   - User needs to authenticate once to get a refresh token
-   - This requires running an OAuth flow locally (documented in ESI_OAUTH_FLOW.py)
-   - The refresh token allows unattended operation
-
-### Step 2: Google Service Account Setup (Optional)
-
-If user wants Google Sheets integration:
-
-1. **Create Google Cloud Project**:
-   - Navigate to: https://console.cloud.google.com/
-   - Create new project or select existing
-   - Note the project name
-
-2. **Enable APIs**:
-   - Enable "Google Sheets API"
-   - Enable "Google Drive API"
-
-3. **Create Service Account**:
-   - Navigate to: IAM & Admin > Service Accounts
-   - Click "Create Service Account"
-   - Name: "market-data-sheets" (or similar)
-   - Role: Leave as default or "Editor"
-   - Click "Done"
-
-4. **Generate Key**:
-   - Click on the created service account
-   - Go to "Keys" tab
-   - Click "Add Key" > "Create New Key"
-   - Choose JSON format
-   - Download and save the JSON file
-   - Rename to something recognizable (e.g., `market-service-account.json`)
-
-5. **Share Spreadsheet**:
-   - Create a Google Sheet for market data
-   - Share it with the service account email (found in JSON file, looks like `xxx@xxx.iam.gserviceaccount.com`)
-   - Give "Editor" permissions
-
-### Step 3: Clone and Setup Backend Repository
+The focused CLI documentation review can be checked with:
 
 ```bash
-# Clone the repository
-git clone https://github.com/OrthelT/mkts_backend.git
-cd mkts_backend
-
-# Install dependencies using uv
-pip install uv  # if not already installed
-uv sync
+uv run pytest -q tests/test_arg_utils.py tests/test_command_registry.py tests/test_cli_routing.py tests/test_cli_market_flag.py tests/test_sync_command.py tests/test_build_watchlist_cli.py tests/test_update_target_prompt.py tests/test_jita_cache.py
 ```
 
-### Step 4: Configure Environment Variables
-Create a `.env` file in the repository root:
-- See Environment Variables section above for required .env variables. 
-
-### Step 5: Customize Market Configuration
-Edit `src/mkts_backend/config/settings.toml` to match user's markets:
-
-```toml
-[markets]
-default = "primary"
-
-[markets.primary]
-name = "Your Structure Name"
-region_id = 10000003          # Change to your region ID
-system_id = 30000240          # Change to your system ID
-structure_id = 1053970513596  # Change to your structure ID
-database_alias = "wcmktnewkeeptest"
-database_file = "wcmktnewkeeptest.db"
-turso_url_env = "TURSO_WCMKTNEWKEEP_URL"
-turso_token_env = "TURSO_WCMKTNEWKEEP_TOKEN"
-gsheets_url = "https://docs.google.com/spreadsheets/d/…/edit"
-
-[markets.deployment]  # Optional second market
-name = "Deployment Market Name"
-region_id = 10000023          # Pure Blind
-system_id = 30001967
-structure_id = 1041669946862  # Change to your structure ID
-database_alias = "wcmktnorthtest"
-database_file = "wcmktnorth2test.db"
-turso_url_env = "TURSO_WCMKTNORTH_URL"
-turso_token_env = "TURSO_WCMKTNORTH_TOKEN"
-gsheets_url = "https://docs.google.com/spreadsheets/d/…/edit"
-
-# Optional per-market worksheet names
-[markets.primary.gsheets_worksheets]
-market_orders = "market_orders_4h"
-market_data = "market_data_4h"
-doctrines = "doctrines_mkt_4H"
-```
-
-Adding a market needs no code change: `database_routing()` picks up any new
-`[markets.<alias>]` block, and `DatabaseConfig` resolves the alias by lookup. A
-malformed block (missing `database_alias`/`database_file`, or a duplicate
-`database_alias`) fails at import with a section-named error.
-
-Jita comparative pricing is no longer per-market — `process_jita_prices()` fetches
-once for the union of every market's watchlist and writes the result to each market
-database.
-
-### Finding IDs:
-- **Structure ID**: In-game, right-click structure > Copy > Copy Info > paste somewhere > extract ID from `showinfo:` link
-- **Region ID**: Use ESI endpoint: `https://esi.evetech.net/latest/universe/regions/` and search
-- **System ID**: Use ESI endpoint: `https://esi.evetech.net/latest/search/?categories=solar_system&search=SystemName`
-- **tip**: Search Zkillboard.com for an item, ship, system, or character. The string of numbers at the end of the URL is the type_id for the item you searched for. 
-- **SDE**: The Eve Online [Static Data Export](https://developers.eveonline.com/docs/services/static-data/) is the authoritative source for mapping between items and their type_ids. 
-- **Excel Eve Plugin**: IDs can also be obtained from the Eve Excel Plugin's search functions.
-- **ESI**: The ESI, Eve's API, includes search endpoints that can queried from the browser with the [ESI API Explorer](https://developers.eveonline.com/api-explorer)
-
-### Step 6: Setup Initial Data
-
-#### 6.1 Create Watchlist
-
-The watchlist defines which items to track. Create or edit `databackup/all_watchlist.csv`:
-
-```csv
-type_id,type_name,group_id,group_name,category_id,category_name
-34,Tritanium,18,Mineral,4,Material
-35,Pyerite,18,Mineral,4,Material
-36,Mexallon,18,Mineral,4,Material
-```
-
-**Tips for Watchlist Creation**:
-- Start with common items (minerals, ships, modules)
-- Use Eve's "Show Info" > "Copy Type ID" to get type_ids
-- Or use the methods in the Finding IDs section. 
-
-#### 6.2 Add Fittings (Optional)
-
-If tracking doctrine availability, add ship fittings:
-
-1. Export fittings from Eve Online (in-game: Fitting window > Import/Export > Copy to Clipboard)
-2. Place fitting files in a designated folder
-3. Use the fitting parser utilities in `src/mkts_backend/utils/parse_fits.py`
-
-### Step 7: Initialize Databases
-
-```bash
-# Pulls every configured database from Turso; skips any already initialized
-uv run mkts-backend sync
-```
-
-The system will automatically:
-1. Check if database files exist with proper metadata
-2. Sync from Turso remote if files are missing or inconsistent
-3. Create tables if needed
-
-This creates local copies of (names from `settings.toml`):
-- `wcmktnewkeeptest.db` (primary market)
-- `wcmktnorth2test.db` (deployment market)
-- `wcmktbkgtest.db` (market3)
-- `wcfittingtest.db` (fittings/doctrines)
-- `sdelitetest.db` (Eve static data export)
-- `buildcosttest.db` (manufacturing costs; optional credentials)
-
-Each arrives with up to five pyturso sidecars (`-shm`, `-wal`, `-info`,
-`-changes`, `-wal-revert`) — `-shm` is usually absent once a connection closes
-cleanly. Never move or delete one without the others; use `nuke_db()` or
-`./dbdeltest.sh` instead.
-
-**Database Schema**:
-- `marketorders`: Current market orders
-- `market_history`: Historical price/volume data
-- `marketstats`: Calculated statistics
-- `doctrines`: Fitting availability analysis
-- `watchlist`: Items being tracked
-- `ship_targets`: Ship production targets
-- `doctrine_map`: Doctrine to fitting mappings
-- `character_asset_cache`: Cached per-character ESI asset data (in `cli_cache.db`, auto-created, 1-hour TTL)
-- `doctrine_fits`: Doctrine fitting configurations with target quantities and market flags
-  - Fields: `id`, `doctrine_name`, `fit_name`, `ship_type_id`, `doctrine_id`, `fit_id`, `ship_name`, `target`, `market_flag`, `friendly_name`
-  - Used by fit-check to retrieve target quantities for fits
-  - `target`: Number of fits to maintain in stock
-  - `market_flag`: Market assignment (primary, deployment, or both)
-  - `friendly_name`: Optional short display name for the doctrine (e.g., "Hurricane"); managed via `fit-update update-friendly-name` or `fit-update populate-friendly-names`
-
-**Database State Management**:
-The system uses `verify_db_exists()` to ensure database consistency:
-- If neither database nor metadata exists: syncs from remote
-- If both exist: validates and continues
-- If database exists without metadata: nukes and re-syncs
-- If metadata exists without database: nukes metadata and re-syncs
-
-### Step 8: Configure Google Sheets Integration (Optional)
-
-Edit `src/mkts_backend/config/gsheets_config.py`:
-
-```python
-class GoogleSheetConfig:
-    _google_private_key_file = "your-service-account.json"  # Path to your JSON key file
-    _google_sheet_url = "https://docs.google.com/spreadsheets/d/YOUR_SHEET_ID/edit"
-    _default_sheet_name = "market_data"  # Sheet tab name
-```
-
-### Step 9: Run Backend Data Collection
-
-```bash
-# Run basic market data collection
-uv run mkts-backend update-markets
-
-# Run with historical data processing (recommended)
-uv run mkts-backend update-markets --history
-
-# Check database contents
-uv run mkts-backend --check_tables
-```
-
-**Schedule Regular Updates**:
-
-Option A - GitHub Actions (recommended for remote deployment):
-- Configure secrets in GitHub repository settings
-- See `docs/GITHUB_ACTIONS_SETUP.md` for detailed guide
-- Workflow file: `.github/workflows/market-data-collection.yml`
-
-Option B - Cron job (for local server):
-```bash
-# Edit crontab
-crontab -e
-
-# Add entry (runs every 4 hours)
-0 */4 * * * cd /path/to/mkts_backend && /path/to/uv run mkts-backend update-markets --history >> /path/to/logs/cron.log 2>&1
-```
-
-### Step 10: Setup Streamlit Frontend
-
-Clone and setup the frontend application:
-
-```bash
-# Clone frontend repository
-cd ..
-git clone https://github.com/OrthelT/wcmkts_new.git
-cd wcmkts_new
-
-# Install dependencies
-pip install -r requirements.txt
-```
-
-**Configure Database Connection**:
-
-The frontend keeps its **own** pyturso replica of each market database and pulls it
-from the same Turso remotes the backend pushes to. Turso is the meeting point; the
-two repos never share a file.
-
-**Do not copy or symlink a `.db` between the backend and frontend directories.** A
-pyturso replica is the database plus its sidecars (up to five), including
-per-client sync watermarks in `-info`. Two processes pointed at one file will
-corrupt each other's sync state.
-
-Frontend configuration lives in two files:
-- `settings.toml` — `[markets.<alias>]` (name, IDs, `database_alias`,
-  `database_file`, `turso_secret_key`) and `[db_paths]` (alias → filename). Every
-  `database_alias` must appear in both.
-- `.streamlit/secrets.toml` — one `[<key>_turso]` section per database with `url`
-  and `token`, keyed by the market's `turso_secret_key` (or `[db_turso_keys]` for
-  shared DBs, else the `{alias}_turso` convention).
-
-Guard test: `uv run pytest tests/test_settings_toml.py`.
-
-**Run Streamlit App**:
-
-```bash
-streamlit run app.py
-```
-
-The app will be available at `http://localhost:8501`
-
-### Step 11: Turso Remote Database Setup (Optional)
-
-For production deployment with remote database access:
-
-1. **Create Turso Account**:
-   - Visit: https://turso.tech/
-   - Sign up for free account
-
-2. **Create Databases**:
-   ```bash
-   # Install Turso CLI
-   curl -sSfL https://get.tur.so/install.sh | bash
-
-   # Login
-   turso auth login
-
-   # Create databases
-   turso db create market-data
-   turso db create market-fittings
-   turso db create eve-sde
-
-   # Get connection strings
-   turso db show market-data
-   ```
-
-3. **Generate Tokens**:
-   ```bash
-   turso db tokens create market-data
-   turso db tokens create market-fittings
-   turso db tokens create eve-sde
-   ```
-
-4. **Update .env**:
-   - Add Turso URLs and tokens to `.env` file
-
-5. **Initial Sync**:
-   ```python
-   from mkts_backend.config.db_config import DatabaseConfig
-   from mkts_backend.config.market_context import MarketContext
-
-   db = DatabaseConfig(market_context=MarketContext.from_settings("primary"))
-
-   db.verify_db_exists()   # bootstrap the replica if it is missing or inconsistent
-   db.pull()               # Turso → local
-
-   # Writes go to the same local engine, then push them up:
-   with db.engine.begin() as conn:
-       ...                 # INSERT / UPDATE / DELETE
-   db.push()               # local → Turso; without this the write never leaves the box
-   ```
-
-## Common Customizations
-
-### Changing Market Structure
-
-To switch to a different market structure:
-
-1. Update `settings.toml` with new structure/region/system IDs
-2. Verify your ESI application has access (may need to re-authenticate)
-3. Clear old market data or create new database
-4. Run data collection: `uv run mkts-backend update-markets`
-
-### Adding Custom Doctrines
-
-1. Export fittings from Eve Online
-2. Parse fittings using `parse_fits.py` utilities
-3. Add to `wcfitting.db` database
-4. Link doctrines in `doctrine_map` table
-5. Run doctrine analysis: `uv run mkts-backend update-markets`
-
-### Multi-Market Support
-
-To track multiple markets simultaneously:
-
-1. **Configure Markets**: Add market configurations to `settings.toml`
-   ```toml
-   [markets.primary]
-   name = "Primary Market"
-   # ... configuration
-
-   [markets.deployment]
-   name = "Deployment Market"
-   # ... configuration
-   ```
-
-2. **Set Environment Variables**: Add Turso credentials for each market
-   ```env
-   TURSO_WCMKTNEWKEEP_URL=...
-   TURSO_WCMKTNEWKEEP_TOKEN=...
-   TURSO_WCMKTNORTH_URL=...
-   TURSO_WCMKTNORTH_TOKEN=...
-   ```
-
-3. **Run Individual Markets**:
-   ```bash
-   # Process primary market (default)
-   uv run mkts-backend update-markets --history
-
-   # Process deployment market
-   uv run mkts-backend update-markets --market=deployment --history
-   ```
-
-4. **GitHub Actions Parallel Processing**:
-   - Use matrix strategy in `.github/workflows/market-data-collection.yml`
-   - Process multiple markets in parallel jobs
-   - Each job runs independently with its own database
-
-## Troubleshooting Guide
-
-### Authentication Issues
-
-**Problem**: "CLIENT_ID environment variable is not set"
-**Solution**: Verify `.env` file exists and contains CLIENT_ID
-
-**Problem**: "Failed to refresh token"
-**Solution**:
-- Verify CLIENT_ID and SECRET_KEY are correct
-- Check if REFRESH_TOKEN is valid (may need to regenerate)
-- Ensure ESI application has correct scopes
-
-**Problem**: "Forbidden" errors when fetching structure markets
-**Solution**:
-- Character must have docking access to structure
-- Structure must allow market access
-- ESI application needs `esi-markets.structure_markets.v1` scope
-
-### Database Issues
-
-**Problem**: "Database file does not exist"
-**Solution**: Run `uv run mkts-backend update-markets` to create initial database
-
-**Problem**: "Table not found"
-**Solution**: Database schema may be outdated, check migrations or recreate
-
-**Problem**: Turso sync fails
-**Solution**:
-- Verify Turso credentials in `.env`
-- Check network connectivity
-- Verify database exists on Turso
-
-### Google Sheets Issues
-
-**Problem**: "Failed to initialize Google Sheets client"
-**Solution**:
-- Verify JSON key file exists and path is correct
-- Check GOOGLE_SHEET_KEY environment variable if using that method
-- Verify service account has access to spreadsheet
-
-**Problem**: "Insufficient permission" when updating sheets
-**Solution**: Share spreadsheet with service account email with Editor permissions
-
-### Data Collection Issues
-
-**Problem**: No data being collected
-**Solution**:
-- Verify market structure has orders
-- Check watchlist contains valid type_ids
-- Review logs in `logs/mkts-backend.log`
-
-**Problem**: Historical data not updating
-**Solution**:
-- Run with `--history` flag
-- Verify region_id is correct
-- Check ESI API status: https://esi.evetech.net/status.json
-
-### GitHub Actions Cache Issues
-
-**Problem**: Scheduled `Market Data Collection` runs fail because a cached DB (e.g., `wcmktnorth2test.db`) has drifted out of sync with Turso cloud, or carries libsql-era `-info` metadata that pyturso rejects.
-**Solution**: Wipe the cached DB bundle for the affected leg. Caches are immutable bundles keyed per leg per run, so individual files cannot be removed — the whole entry must go, after which the next run cold-starts and re-pulls from Turso. (Each run writes its own entry; `restore-keys` prefix-matches the most recent, so the chain warm-starts from the previous run.)
-
-Three key families, across `.github/workflows/market-data-collection.yml` and `.github/workflows/builder-costs-collection.yml`:
-- `turso-dbs-v4-mkt-<primary|deployment|market3>-<run_id>` — one market DB, written only by its own matrix leg
-- `turso-dbs-v4-shared-<run_id>` — the SDE + fitting DBs, written only by the primary leg
-- `builder-cost-dbs-v4-<run_id>` — the buildcost DB, from `builder-costs-collection.yml`
-
-```bash
-# Requires `gh` authenticated against the repo
-scripts/wipe_gha_db_cache.sh deployment   # wipe the wcmktnorth2test leg only
-scripts/wipe_gha_db_cache.sh primary      # wipe the wcmktnewkeeptest leg only
-scripts/wipe_gha_db_cache.sh shared       # wipe the SDE + fitting bundle
-scripts/wipe_gha_db_cache.sh buildercost  # wipe the buildcost bundle
-scripts/wipe_gha_db_cache.sh all          # wipe all five
-```
-
-The cache-save steps are gated on `if: success()`, so a failed run cannot poison the cache for the next run. Env overrides for the script: `GHA_CACHE_REF` (required, no default — the git ref whose caches to target; use `refs/heads/main` for production or `refs/heads/mkts-turso-main` on the staging repo) and `GHA_CACHE_PREFIX` (default `turso-dbs-v4`).
-
-## Agent Workflow for User Support
-
-When helping a user implement this system:
-
-1. **Assess Requirements**:
-   - What market structure/region are they tracking?
-   - Do they need Google Sheets integration?
-   - Local only or remote database?
-   - Single structure or multi-region?
-
-2. **Validate Prerequisites**:
-   - Check Python version
-   - Verify Eve Online account access
-   - Confirm structure access permissions
-
-3. **Guide Through Setup**:
-   - Follow steps 1-11 in order
-   - Don't skip configuration customization
-   - Test each component before moving to next
-
-4. **Test Data Collection**:
-   - Run first data collection manually
-   - Verify data appears in database
-   - Check logs for errors
-
-5. **Setup Automation**:
-   - Configure scheduled runs
-   - Test automated updates
-   - Monitor for issues
-
-6. **Configure Frontend**:
-   - Setup database connection
-   - Customize display settings
-   - Test visualization
-
-7. **Provide Documentation**:
-   - Document custom configuration choices
-   - Note any deviations from standard setup
-   - Create troubleshooting notes for their specific setup
-
-## Best Practices
-
-1. **Start Local**: Begin with local-only setup before adding Turso/Sheets
-2. **Small Watchlist**: Start with 10-20 items to test, expand gradually
-3. **Test Data Flow**: Verify data flows from ESI > Database > Frontend
-4. **Monitor Logs**: Check logs regularly for errors or warnings
-5. **Backup Databases**: Regular backups of `.db` files
-6. **Version Control**: Track configuration changes in git
-7. **Security**: Never commit `.env` file or service account keys
-
-## Additional Resources
-
-- **ESI Documentation**: https://esi.evetech.net/ui/
-- **Eve SDE**: https://developers.eveonline.com/resource/resources
-- **Turso Documentation**: https://docs.turso.tech/
-- **Google Sheets API**: https://developers.google.com/sheets/api
-- **Streamlit Documentation**: https://docs.streamlit.io/
-
-## Support and Contact
-
-- Backend Repository Issues: https://github.com/OrthelT/mkts_backend/issues
-- Frontend Repository Issues: https://github.com/OrthelT/wcmkts_new/issues
-- Discord: orthel_toralen
-
-## Architecture Summary for Agents
-
-When explaining the system architecture:
-
-```
-Data Flow:
-1. ESI API (Eve Online)
-   ↓ (OAuth authenticated requests)
-2. Backend Data Collection (mkts_backend)
-   ↓ (SQLAlchemy ORM)
-3. Local pyturso replica (wcmktnewkeeptest.db, wcmktnorth2test.db, …)
-   ↓ (db.push() — local CDC queue → cloud)
-4. Turso Remote Database
-   ↓ (db.pull() into the frontend's own replica)
-5. Streamlit Frontend (wcmkts_new)
-   ↓ (Visualization)
-6. User Browser
-
-Side Channel:
-3. SQLite Database
-   ↓ (gspread API)
-7. Google Sheets
-   ↓ (Manual viewing)
-8. User
-```
-
-**Key Components**:
-- **cli.py**: Main orchestration and entry point
-- **esi_auth.py**: OAuth token management
-- **esi_config.py**: Market configuration
-- **models.py**: Database schema definitions
-- **data_processing.py**: Statistics calculation
-- **gsheets_config.py**: Google Sheets integration
-- **db_config.py**: Database connection management (`DatabaseConfig` class)
-- **settings_service.py**: Centralized `settings.toml` loader (`SettingsService` class, module-level cache)
-- **cli_tools/prompter.py**: Multiline input prompter for paste mode (uses prompt_toolkit)
-- **cli_tools/fit_update.py**: Fit and doctrine management CLI commands (includes friendly name management)
-- **cli_tools/equiv_manager.py**: Module equivalents CLI commands (list, find, add, remove)
-- **esi/asset_cache.py**: Local SQLite cache for ESI character assets (1-hour TTL, auto-creates table)
-- **cli_tools/args_parser.py**: CLI argument routing for all mkts-backend subcommands
-- **cli_tools/cli_help.py**: Help text for all CLI commands
-
-## Version Compatibility
-
-- Python: 3.12+
-- SQLAlchemy: >=2.0.42 (floor imposed by the pyturso dialect)
-- pyturso: >=0.7.2 (0.7.2 in use; provides the `sqlite+turso*` dialects)
-- gspread: 5.x+
-- pandas: 2.x
-- prompt_toolkit: Latest
-- Streamlit: 1.x+
-
-## License and Disclaimer
-
-This is an educational project for Eve Online market analysis. All Eve Online data is provided by CCP Games through their ESI API. Eve Online is a trademark of CCP Games.
+For writer changes, also inspect/run relevant `test_management_push.py`,
+`test_fit_update_assign.py`, `test_pull_before_write.py`, and repository tests.
+Use temporary SQLite fixtures or `FakeDatabaseConfig` to exercise transactions
+and assert push/pull behavior without touching production.
+
+The market Actions workflow currently runs hourly at minute 20 UTC; builder
+costs run daily at 06:45 UTC. Read `.github/workflows/` for authoritative schedules,
+secret mappings, and per-run replica cache ownership. Never reuse a cache key
+that restores a replica older than its last push.
+
+Keep user workflows in the CLI guide, installation in `docs/setup.md`, builder
+usage in `docs/builder_costs.md`, and CI setup in `docs/GITHUB_ACTIONS_SETUP.md`.
+When removing a duplicate doc, preserve any unique current instructions and
+check links. Historical material may be moved to ignored `devfiles/`, but no
+tracked user instructions should depend on those local files.

@@ -683,34 +683,10 @@ def _register_all(reg: CommandRegistry) -> None:
 
     # ── esi-auth ────────────────────────────────────────────────
     def _handle_esi_auth(args: list[str], market_alias: str) -> bool:
-        from mkts_backend.cli_tools.arg_utils import ParsedArgs
-        from mkts_backend.esi.esi_auth import authorize_character, REQUIRED_SCOPES
-        from mkts_backend.config.settings_service import get_all_characters
+        from mkts_backend.cli_tools.esi_auth_cli import handle_esi_auth
+        return handle_esi_auth(args, market_alias)
 
-        p = ParsedArgs(args)
-        char_key = p.get_string("char")
-
-        if char_key:
-            authorize_character(char_key, REQUIRED_SCOPES)
-        else:
-            characters = get_all_characters()
-            print("Available characters:")
-            for i, char in enumerate(characters, 1):
-                print(f"  {i}. {char.name} (key: {char.key})")
-            choice = input("\nEnter character key (or number): ").strip()
-            if choice.isdigit():
-                idx = int(choice) - 1
-                if 0 <= idx < len(characters):
-                    char_key = characters[idx].key
-                else:
-                    print("Invalid selection.")
-                    return False
-            else:
-                char_key = choice
-            authorize_character(char_key, REQUIRED_SCOPES)
-        return True
-
-    reg.register("esi-auth", _handle_esi_auth, description="Re-authorize ESI tokens with expanded scopes")
+    reg.register("esi-auth", _handle_esi_auth, description="Manage ESI credentials and browser authorization")
 
     # ── build-watchlist ─────────────────────────────────────────
     def _handle_build_watchlist(args: list[str], market_alias: str) -> bool:

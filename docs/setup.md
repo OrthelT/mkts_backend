@@ -35,8 +35,9 @@ For one market and the shared databases, use `sync --market=primary`; add
 `--markets-only` only when the shared data is already available.
 
 `--validate-env` checks credential presence for collection across all configured
-markets. It also requires `CLIENT_ID`, `SECRET_KEY`, and `REFRESH_TOKEN`; a
-lookup-only installation may work without those collection credentials.
+markets. It also requires `CLIENT_ID` and `SECRET_KEY`, plus `REFRESH_TOKEN`
+unless the token cache already holds a refresh token; a lookup-only installation
+may work without those collection credentials.
 This check does not authenticate against EVE or Turso.
 
 # Setting Up `.env` file 
@@ -78,14 +79,37 @@ uv run mkts-backend sync
 ```
 ### EVE Developer Credentials
 Market collection requires an EVE developer application's `CLIENT_ID` and
-`SECRET_KEY`, plus an authorized character's `REFRESH_TOKEN`. The character must
+`SECRET_KEY`, plus an authorized character's refresh token — either in
+`REFRESH_TOKEN` or in the token cache that `esi-auth` writes. The character must
 have access to the market structure. The structure-market scope is
 `esi-markets.structure_markets.v1`.
 
-You can configure your application at the [Eve Developer page](https://developers.eveonline.com/)
-- The current OAuth code uses the callback `http://localhost:8000/callback`. Register that callback for the EVE application.
-- Set the following scopes: `esi-markets.structure_markets.v1`, `esi-assets.read_assets.v1`
-- Paste these into your .env file `CLIENT_ID` AND `SECRET_KEY` fields. 
+Run the authentication setup menu before your first collection:
+
+```bash
+uv run mkts-backend esi-auth
+```
+
+Choose **Configure application credentials** to enter your EVE application's
+client ID and secret. The menu shows the callback URL and scopes to register at
+the [EVE Developer Portal](https://developers.eveonline.com/), and saves the
+credentials in the project's `.env` without replacing unrelated settings.
+Then choose **Authorize market data access**, sign in through the browser, and
+return to the terminal. The local callback is captured automatically; if that
+is unavailable, paste the full redirect URL when prompted. No existing refresh
+token is needed. The command saves `REFRESH_TOKEN` in `.env` and the token cache
+configured by `[auth].token_file` (normally `token.json` in the working directory).
+
+To start market data authorization directly, use
+`uv run mkts-backend esi-auth --market-data`. Use `--status` to inspect credential
+presence without displaying secrets. Interactive authorization requires a terminal;
+scheduled jobs continue using their configured credentials without prompting.
+For GitHub Actions, copy the resulting `.env` credential values to the matching
+repository secrets; local setup does not update GitHub secrets.
+
+The default callback is `http://localhost:8000/callback`; `[auth].callback_url`
+is authoritative and must match your registered application's callback. Run
+setup and collection from the same working directory so they share token caches.
 
 # Advanced Configuration Options 
 ## Google Sheets (optional)
@@ -109,13 +133,13 @@ You will need esi authorization for these characters, which are configured in se
 uv run mkts-backend esi-auth
 ```
 
-Choose a character and complete the browser authorization. To select a configured
-key directly, use `esi-auth --char=your_character_key`. The command requests the
-scopes in `esi/esi_auth.py::REQUIRED_SCOPES`, saves a per-character token file,
-and reports the saved filename. Treat token files as secrets. The configured
-character's `token_env` names the environment variable for its refresh token. For the market collector, set `REFRESH_TOKEN` to the authorized
-market character's refresh token; the collector uses its separate `token.json`
-cache. Per-character asset credentials follow the settings entries.
+Choose **Authorize character** and complete browser authorization. To select a
+configured key directly, use `esi-auth --char=your_character_key`. Sign in as the
+character associated with that key. The command requests the scopes in
+`esi/esi_auth.py::REQUIRED_SCOPES`, saves `token_<key>.json`, and saves its refresh
+token in `.env` using the character's configured `token_env` name. Market data
+and character authorization are separate menu choices. Treat `.env` and token
+files as secrets.
 
 ## Creating a new market
 This is a maintainer task. Create its Turso database and add a complete

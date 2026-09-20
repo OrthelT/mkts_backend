@@ -59,6 +59,7 @@ uv run fitcheck needed --market=deployment # check the deployment market
 
 | What you want to do | Command |
 |---|---|
+| Set up EVE authentication | `uv run mkts-backend esi-auth` |
 | Refresh all markets | `uv run mkts-backend update-markets` |
 | See configured markets | `uv run mkts-backend --list-markets` |
 | Download the latest saved data | `uv run mkts-backend sync` |

@@ -10,6 +10,7 @@ import os
 from unittest.mock import patch
 
 from mkts_backend.config.settings_service import SettingsService
+from mkts_backend.esi import esi_auth
 from mkts_backend.utils.validation import validate_required_credentials
 
 
@@ -89,3 +90,29 @@ class TestRequiredCredentials:
             is_valid, missing, _ = validate_required_credentials()
 
         assert is_valid, f"unexpected missing credentials: {missing}"
+
+
+class TestRefreshTokenSource:
+    """esi_auth.get_token prefers the cached refresh token, so a machine that has
+    authorized once must not be blocked for a missing REFRESH_TOKEN variable."""
+
+    def _env_without_refresh_token(self, mock_env_vars: dict) -> dict:
+        env = dict(mock_env_vars)
+        env.pop("REFRESH_TOKEN", None)
+        return env
+
+    def test_refresh_token_required_without_a_usable_cache(self, mock_env_vars):
+        with patch.object(esi_auth, "load_cached_token", return_value=None), \
+                patch.dict(os.environ, self._env_without_refresh_token(mock_env_vars), clear=True):
+            is_valid, missing, _ = validate_required_credentials()
+
+        assert not is_valid
+        assert "REFRESH_TOKEN" in missing
+
+    def test_cached_refresh_token_replaces_the_environment_variable(self, mock_env_vars):
+        with patch.object(esi_auth, "load_cached_token", return_value={"refresh_token": "cached"}), \
+                patch.dict(os.environ, self._env_without_refresh_token(mock_env_vars), clear=True):
+            is_valid, missing, present = validate_required_credentials()
+
+        assert is_valid, f"unexpected missing credentials: {missing}"
+        assert "REFRESH_TOKEN" not in present

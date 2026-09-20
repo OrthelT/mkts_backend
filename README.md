@@ -1,4 +1,5 @@
 # EVE Market Tools
+### *ver. 0.2.1* 
 
 Check doctrine stock, find items to restock, and manage fits for WinterCo markets.
 Market collection feeds the [market website](https://github.com/OrthelT/wcmkts_new).
@@ -97,21 +98,33 @@ The project uses Python 3.12 or newer; `uv sync` prepares its Python environment
 git clone https://github.com/OrthelT/mkts_backend.git
 cd mkts_backend
 uv sync
-cp .env.example .env
 ```
 
 You will need: 
 - An Eve Developers Account. Set it up at [Eve Developer Site](https://developers.eveonline.com/)
 - A [Turso Cloud](https://turso.tech/) account to access remote databases. 
 
-Fill in `.env` using a text editor. This will store all of your credentials
-and should never be shared. It will include credentials for:
-- Databases  
-- Eve Online Developer Application credentials
-- Janice API key (optional)
-- Google Sheets API token (optional)
+Set up your EVE credentials with the interactive authentication command:
 
-Do not share that file. Existing users should keep their configured `.env`.
+```bash
+uv run mkts-backend esi-auth
+```
+
+Choose **Configure application credentials**, then **Authorize market data
+access**. Enter your application credentials in the menu and complete browser
+sign-in. The command creates or updates `.env` and saves your refresh token
+automatically; you do not need to edit EVE credentials into a file or create
+`token.json` yourself. For later authorization, run
+`uv run mkts-backend esi-auth --market-data`.
+
+See [EVE authorization](docs/setup.md#eve-authorization) for callback setup,
+character asset access, and credential status. Ordinary stock reports using
+saved data do not need this EVE authorization step.
+
+Database credentials are a separate step: add the Turso credentials supplied
+by your maintainer to `.env`, using `.env.example` as a reference. Keep the EVE
+credentials saved by the auth command and any existing database settings. Never
+share `.env`. See [database setup](docs/setup.md#turso-database-setup) for details.
 
 Then download the data and list the fits:
 ```bash

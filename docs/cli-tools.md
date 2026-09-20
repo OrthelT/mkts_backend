@@ -27,6 +27,39 @@ The examples use `fitcheck` for reports and `mkts-backend` for management.
 `mkts` is an alias for `mkts-backend`. Although the entry points share commands,
 their help and default-market handling differ; use the forms shown here.
 
+## Managing EVE authorization
+
+Run the setup menu before your first market collection or character asset lookup:
+
+```bash
+uv run mkts-backend esi-auth
+```
+
+Choose **Configure application credentials**, then **Authorize market data
+access** or **Authorize character**. Setup opens browser sign-in, captures the
+callback, and saves the refresh token and application credentials to the
+project's `.env`. No existing refresh token is needed. If automatic capture
+fails, paste the full redirect URL when prompted.
+
+You can also choose an action directly:
+
+```bash
+uv run mkts-backend esi-auth --market-data
+uv run mkts-backend esi-auth --char=your_character_key
+uv run mkts-backend esi-auth --status
+```
+
+Use one option at a time. Replace `your_character_key` with a key configured
+under `[characters.*]`. Market data authorization is shared by collection;
+`--market` does not select a separate authorization. Character authorization
+is separate and enables asset lookups for that configured character.
+
+`--status` checks saved credential and cache presence without showing secrets,
+contacting EVE, or requiring an interactive terminal. It does not validate
+tokens or structure access. Authorization requires a terminal. See
+[EVE authorization setup](setup.md#eve-authorization) for application
+registration, callback settings, token storage, and scheduled jobs.
+
 ## Downloading current data
 
 ```bash

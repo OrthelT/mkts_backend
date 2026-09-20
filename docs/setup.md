@@ -40,11 +40,13 @@ unless the token cache already holds a refresh token; a lookup-only installation
 may work without those collection credentials.
 This check does not authenticate against EVE or Turso.
 
-# Setting Up `.env` file 
-The `.env`` file is where you will save all your credentials. Never share this file or commit it to
-a public git repository. A file called `.env.example` is included. Copy it to a new file called  `.env` and populate it with your own credentials. 
+## Setting up `.env`
 
-Rename `.env.example` to `.env` then fill in your credentials. 
+The project's `.env` file holds your credentials. If it does not already exist,
+copy `.env.example` to `.env`, then add your database credentials. Keep an
+existing configured file. The EVE setup menu below fills in application
+credentials and refresh tokens without replacing unrelated entries. Never
+share `.env` or commit it to a public repository.
 
 ## Turso Database Setup
 You'll need to configure database credentials. Setup a [Turso](https://turso.tech/) account if you don't already have one. 
@@ -77,7 +79,7 @@ Once you have your Turso credentials set up run this to install the databases.
 uv run mkts-backend sync
 
 ```
-### EVE Developer Credentials
+## EVE authorization
 Market collection requires an EVE developer application's `CLIENT_ID` and
 `SECRET_KEY`, plus an authorized character's refresh token — either in
 `REFRESH_TOKEN` or in the token cache that `esi-auth` writes. The character must
@@ -100,16 +102,35 @@ is unavailable, paste the full redirect URL when prompted. No existing refresh
 token is needed. The command saves `REFRESH_TOKEN` in `.env` and the token cache
 configured by `[auth].token_file` (normally `token.json` in the working directory).
 
-To start market data authorization directly, use
-`uv run mkts-backend esi-auth --market-data`. Use `--status` to inspect credential
-presence without displaying secrets. Interactive authorization requires a terminal;
-scheduled jobs continue using their configured credentials without prompting.
+To start market data authorization directly or inspect saved setup:
+
+```bash
+uv run mkts-backend esi-auth --market-data
+uv run mkts-backend esi-auth --status
+```
+
+Direct authorization also prompts for application credentials if they are
+missing. `--status` reports credential and cache presence without displaying
+secrets or contacting EVE; it does not prove tokens are valid or that the
+character can access a structure. It works without an interactive terminal.
+Authorization itself requires a terminal; collection and scheduled jobs never
+open the setup menu or browser automatically.
 For GitHub Actions, copy the resulting `.env` credential values to the matching
 repository secrets; local setup does not update GitHub secrets.
 
 The default callback is `http://localhost:8000/callback`; `[auth].callback_url`
-is authoritative and must match your registered application's callback. Run
-setup and collection from the same working directory so they share token caches.
+is authoritative and must match your registered application's callback exactly.
+The current setup supports an HTTP callback on `localhost` or `127.0.0.1`.
+Use a browser on the same computer as the terminal for automatic capture.
+If the browser does not open, open the printed authorization link yourself.
+If the listener cannot start or the two-minute wait expires, complete sign-in
+and paste the full redirect URL into the terminal when prompted, even if the
+browser shows a connection error for the callback page.
+
+Run setup and collection from the project folder so they share token caches.
+Changing an existing client ID through the menu clears market and configured
+character token caches. Authorize each target you use again; tokens issued to
+the previous application cannot be reused with the new one.
 
 # Advanced Configuration Options 
 ## Google Sheets (optional)
@@ -134,9 +155,17 @@ uv run mkts-backend esi-auth
 ```
 
 Choose **Authorize character** and complete browser authorization. To select a
-configured key directly, use `esi-auth --char=your_character_key`. Sign in as the
-character associated with that key. The command requests the scopes in
-`esi/esi_auth.py::REQUIRED_SCOPES`, saves `token_<key>.json`, and saves its refresh
+configured key directly, use:
+
+```bash
+uv run mkts-backend esi-auth --char=your_character_key
+```
+
+Replace `your_character_key` with the key under `[characters.*]`, not the
+character's display name or numeric ID. Sign in as the character associated
+with that key. The setup menu displays the character scopes to register for
+structure access, market data, and character/corporation assets. Authorization
+saves `token_<key>.json` in the working directory and saves its refresh
 token in `.env` using the character's configured `token_env` name. Market data
 and character authorization are separate menu choices. Treat `.env` and token
 files as secrets.

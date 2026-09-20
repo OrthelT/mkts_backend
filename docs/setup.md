@@ -35,8 +35,9 @@ For one market and the shared databases, use `sync --market=primary`; add
 `--markets-only` only when the shared data is already available.
 
 `--validate-env` checks credential presence for collection across all configured
-markets. It also requires `CLIENT_ID`, `SECRET_KEY`, and `REFRESH_TOKEN`; a
-lookup-only installation may work without those collection credentials.
+markets. It also requires `CLIENT_ID` and `SECRET_KEY`, plus `REFRESH_TOKEN`
+unless the token cache already holds a refresh token; a lookup-only installation
+may work without those collection credentials.
 This check does not authenticate against EVE or Turso.
 
 # Setting Up `.env` file 
@@ -78,7 +79,8 @@ uv run mkts-backend sync
 ```
 ### EVE Developer Credentials
 Market collection requires an EVE developer application's `CLIENT_ID` and
-`SECRET_KEY`, plus an authorized character's `REFRESH_TOKEN`. The character must
+`SECRET_KEY`, plus an authorized character's refresh token — either in
+`REFRESH_TOKEN` or in the token cache that `esi-auth` writes. The character must
 have access to the market structure. The structure-market scope is
 `esi-markets.structure_markets.v1`.
 

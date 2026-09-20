@@ -200,3 +200,111 @@ def test_settings_control_callback_and_cache(monkeypatch, tmp_path):
     assert session.headers["User-Agent"] == "test-agent"
     auth.save_token({"refresh_token": "cached"})
     assert (tmp_path / "custom.json").exists()
+
+
+# Regressions from the PR #45 review.
+
+def test_denial_without_state_is_reported_as_denial():
+    """EVE omits state on some error redirects; a state message would mislead."""
+    with pytest.raises(ValueError, match="denied"):
+        auth._callback_code("http://localhost:8000/callback?error=access_denied",
+                            "http://localhost:8000/callback", "s")
+
+
+def test_listener_waits_when_the_browser_cannot_be_opened(monkeypatch):
+    """The printed URL is useless if webbrowser.open() failing closes the port."""
+    server = Mock()
+    monkeypatch.setattr(auth, "HTTPServer", lambda *a: server)
+    monkeypatch.setattr(auth.webbrowser, "open", lambda *a: False)
+    monkeypatch.setattr("builtins.input", lambda *a: "manual")
+    auth._capture_callback("url", "http://localhost:8000/callback", "s", timeout=0.05)
+    server.handle_request.assert_called()
+
+
+def test_half_open_connection_does_not_outlast_the_deadline(monkeypatch):
+    """A browser preconnect that sends nothing must not wedge handle_request()."""
+    import socket
+
+    monkeypatch.setattr(auth, "CALLBACK_READ_TIMEOUT", 0.2)
+    with socket.socket() as finder:
+        finder.bind(("127.0.0.1", 0))
+        port = finder.getsockname()[1]
+    probes = []
+
+    def connect_without_sending(url):
+        probes.append(socket.create_connection(("127.0.0.1", port)))
+        return True
+
+    monkeypatch.setattr(auth.webbrowser, "open", connect_without_sending)
+    monkeypatch.setattr("builtins.input", lambda *a: "manual")
+    started = time.monotonic()
+    try:
+        assert auth._capture_callback("url", f"http://127.0.0.1:{port}/callback", "s",
+                                      timeout=0.3) == "manual"
+    finally:
+        for probe in probes:
+            probe.close()
+    assert time.monotonic() - started < 3
+
+
+def test_token_updater_writes_to_the_requested_cache(monkeypatch):
+    """An auto-refresh on a character session must not overwrite token.json."""
+    session = Mock()
+    session.headers = {}
+    factory = Mock(return_value=session)
+    monkeypatch.setattr(auth, "OAuth2Session", factory)
+    auth.get_oauth_session(None, ["scope"], auth.token_path("pilot"))
+    factory.call_args.kwargs["token_updater"]({"refresh_token": "rotated"})
+    assert auth.load_cached_token(auth.token_path("pilot"))["refresh_token"] == "rotated"
+    assert not auth.token_path().exists()
+
+
+@pytest.mark.parametrize("write", [lambda p: p.mkdir(), lambda p: p.write_bytes(b"\xff\xfe")])
+def test_unusable_cache_is_ignored_not_raised(write):
+    """A cache that cannot be read must fall back to the refresh-token guidance."""
+    write(auth.token_path())
+    assert auth.load_cached_token() is None
+    with pytest.raises(ValueError, match="esi-auth --market-data"):
+        auth.get_token("scope")
+
+
+def test_market_selector_does_not_start_authorization(monkeypatch):
+    """--market must not abbreviate to --market-data and overwrite the token."""
+    authorize = Mock()
+    monkeypatch.setattr(auth, "authorize_character", authorize)
+    monkeypatch.setattr(cli.Prompt, "ask", lambda *a, **kw: "q")
+    assert cli.handle_esi_auth(["--market=primary"])
+    assert cli.handle_esi_auth(["--market", "primary"])
+    authorize.assert_not_called()
+
+
+def test_global_flags_after_the_subcommand_are_ignored():
+    assert cli.handle_esi_auth(["--status", "--env=development", "--remote"])
+
+
+def test_status_survives_an_unusable_character_key(monkeypatch):
+    """One bad settings.toml key must not hide every other target."""
+    monkeypatch.setattr(cli, "get_all_characters",
+                        lambda: [SimpleNamespace(key="alt.one", name="Alt", token_env="CUSTOM_TOKEN")])
+    assert cli.handle_esi_auth(["--status"])
+
+
+def test_menu_redraws_after_a_failed_authorization(monkeypatch):
+    monkeypatch.setattr(auth, "authorize_character", Mock(side_effect=KeyboardInterrupt))
+    choices = iter(["2", "q"])
+    monkeypatch.setattr(cli.Prompt, "ask", lambda *a, **kw: next(choices))
+    assert cli.handle_esi_auth([])
+
+
+@pytest.mark.parametrize("new_id,kept", [("other-client", False), ("test-client", True)])
+def test_token_caches_survive_only_the_same_application(tmp_path, monkeypatch, new_id, kept):
+    """Tokens from a replaced EVE application can never be refreshed again."""
+    monkeypatch.setattr(cli, "get_all_characters",
+                        lambda: [SimpleNamespace(key="pilot", name="Pilot", token_env="CUSTOM_TOKEN")])
+    auth.save_token({"refresh_token": "old"})
+    auth.save_token({"refresh_token": "old"}, auth.token_path("pilot"))
+    answers = iter([new_id, "secret"])
+    monkeypatch.setattr(cli.Prompt, "ask", lambda *a, **kw: next(answers))
+    assert cli.configure_credentials(tmp_path / ".env")
+    assert auth.token_path().exists() is kept
+    assert auth.token_path("pilot").exists() is kept

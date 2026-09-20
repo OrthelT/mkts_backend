@@ -44,6 +44,18 @@ def validate_env_file_exists() -> Tuple[bool, str]:
         return False, f".env file not found at: {env_path}"
 
 
+def _cached_refresh_token() -> bool:
+    """Report whether the market token cache can refresh without the environment.
+
+    ``esi_auth.get_token`` prefers the cached refresh token, so a machine that
+    has authorized once needs no REFRESH_TOKEN variable.
+    """
+    from mkts_backend.esi import esi_auth
+
+    token = esi_auth.load_cached_token()
+    return bool(token and token.get("refresh_token"))
+
+
 def validate_required_credentials(
     market_aliases: List[str] | None = None,
 ) -> Tuple[bool, List[str], List[str]]:
@@ -51,7 +63,8 @@ def validate_required_credentials(
     Validate that all required credentials are present in the environment.
 
     Required credentials:
-        - CLIENT_ID / SECRET_KEY / REFRESH_TOKEN: Eve Online ESI application
+        - CLIENT_ID / SECRET_KEY: Eve Online ESI application. REFRESH_TOKEN is
+          required only when the market token cache cannot supply one.
         - Turso URL/token env vars for every database that settings.toml does
           not mark ``optional`` — per-market ([markets.*]) plus the shared
           databases ([shared.*]). Market credentials are scoped to
@@ -73,11 +86,9 @@ def validate_required_credentials(
         scoped_aliases = {service.market_db_alias(a) for a in market_aliases}
         scoped_aliases |= service.shared_db_aliases()
 
-    required_credentials = [
-        "CLIENT_ID",
-        "SECRET_KEY",
-        "REFRESH_TOKEN",
-    ]
+    required_credentials = ["CLIENT_ID", "SECRET_KEY"]
+    if not _cached_refresh_token():
+        required_credentials.append("REFRESH_TOKEN")
 
     for alias, cfg in routing.items():
         if alias not in scoped_aliases or cfg["optional"]:

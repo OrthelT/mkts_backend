@@ -1,4 +1,5 @@
 """ESI tokens and browser authorization, shared by collection and the auth TUI."""
+import functools
 import json
 import os
 from pathlib import Path
@@ -24,6 +25,8 @@ REQUIRED_SCOPES = [
     "esi-assets.read_corporation_assets.v1",
 ]
 MARKET_SCOPES = ["esi-markets.structure_markets.v1"]
+# How long one callback connection may take to send its request line.
+CALLBACK_READ_TIMEOUT = 5
 
 
 def _settings():
@@ -44,7 +47,7 @@ def load_cached_token(path: Path | None = None) -> dict | None:
     try:
         token = json.loads((path or token_path()).read_text())
         return token if isinstance(token, dict) else None
-    except (FileNotFoundError, json.JSONDecodeError):
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
         return None
 
 
@@ -69,14 +72,16 @@ def _credentials() -> tuple[str, str]:
     return client_id, secret
 
 
-def get_oauth_session(token: dict | None, scope):
+def get_oauth_session(token: dict | None, scope, path: Path | None = None):
     client_id, secret = _credentials()
     session = OAuth2Session(
         client_id, token=token, scope=scope,
         redirect_uri=_settings().auth_callback_url,
         auto_refresh_url=TOKEN_URL,
         auto_refresh_kwargs={"client_id": client_id, "client_secret": secret},
-        token_updater=save_token,
+        # Bind the cache file, or an auto-refresh would write a character token
+        # over the market token.
+        token_updater=functools.partial(save_token, path=path or token_path()),
     )
     session.headers["User-Agent"] = _settings().esi_user_agent
     return session
@@ -90,7 +95,7 @@ def _get_token(path: Path, refresh_token: str | None, scope, command: str):
     refresh_token = (token or {}).get("refresh_token") or refresh_token
     if not refresh_token:
         raise ValueError(f"No ESI refresh token. Run: {command}")
-    session = get_oauth_session(token, scope)
+    session = get_oauth_session(token, scope, path)
     token = session.refresh_token(
         TOKEN_URL, refresh_token=refresh_token,
         client_id=client_id, client_secret=secret, timeout=30,
@@ -115,11 +120,13 @@ def _callback_code(url: str, callback: str, state: str) -> str:
     if (actual.scheme, actual.netloc, actual.path) != (expected.scheme, expected.netloc, expected.path):
         raise ValueError("The redirect URL does not match the configured callback")
     params = parse_qs(actual.query)
+    # Check the denial before the state: EVE omits state on some error redirects,
+    # and a mismatch message would send the user looking for the wrong problem.
+    if "error" in params:
+        raise ValueError("EVE authorization was denied; restart authorization")
     states = params.get("state", [])
     if len(states) != 1 or not secrets.compare_digest(states[0], state):
         raise ValueError("OAuth state mismatch; restart authorization")
-    if "error" in params:
-        raise ValueError("EVE authorization was denied; restart authorization")
     codes = params.get("code", [])
     if len(codes) != 1:
         raise ValueError("The callback did not contain an authorization code")
@@ -135,6 +142,10 @@ def _capture_callback(auth_url: str, callback: str, state: str, timeout: float =
     result = []
 
     class Handler(BaseHTTPRequestHandler):
+        # Without this, a browser preconnect that sends no request line makes
+        # handle_request() block past the deadline.
+        timeout = CALLBACK_READ_TIMEOUT
+
         def do_GET(self):
             url = f"{parsed.scheme}://{parsed.netloc}{self.path}"
             try:
@@ -142,8 +153,7 @@ def _capture_callback(auth_url: str, callback: str, state: str, timeout: float =
             except ValueError:
                 # A genuine denial ends the wait; other requests must not consume it.
                 query = parse_qs(urlsplit(url).query)
-                if (urlsplit(url).path == parsed.path and query.get("state") == [state]
-                        and "error" in query):
+                if urlsplit(url).path == parsed.path and "error" in query:
                     result.append(url)
                 self.send_response(400)
                 body = b"Authorization not completed. Return to the terminal."
@@ -165,11 +175,12 @@ def _capture_callback(auth_url: str, callback: str, state: str, timeout: float =
     print(f"Open this URL if the browser does not open:\n{auth_url}")
     try:
         try:
-            opened = webbrowser.open(auth_url)
+            webbrowser.open(auth_url)
         except webbrowser.Error:
-            opened = False
-        if server and opened:
-            print("Waiting for browser authorization (up to 120 seconds)...")
+            # The printed URL still reaches the listener when opened by hand.
+            pass
+        if server:
+            print(f"Waiting for browser authorization (up to {timeout:.0f} seconds)...")
             deadline = time.monotonic() + timeout
             while not result and time.monotonic() < deadline:
                 server.timeout = min(0.5, max(0, deadline - time.monotonic()))

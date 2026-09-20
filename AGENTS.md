@@ -101,8 +101,9 @@ The environment flag is not a general no-production-writes switch.
 Credential variable names come from settings; their environment values choose
 the actual remote. `.env.example` lists the shipped names without values.
 Collection validation requires EVE credentials and the selected markets plus
-non-optional shared databases. `--validate-env` checks presence across all
-markets; it does not test connectivity. Do not describe normal collection as
+non-optional shared databases. `REFRESH_TOKEN` is required only when the market
+token cache holds no refresh token, matching what `esi_auth.get_token` accepts.
+`--validate-env` checks presence across all markets; it does not test connectivity. Do not describe normal collection as
 credential-free local-only operation.
 
 Google credential file variables are `GOOGLE_APPLICATION_CREDENTIALS` and
@@ -112,7 +113,10 @@ Auth reads callback and market data token-file settings through `SettingsService
 `esi-auth` opens a Rich management menu; `--market-data` and `--char=<key>`
 authorize directly, while `--status` is read-only and headless-safe. Setup saves
 credentials and target refresh tokens to the project `.env`; caches are relative
-to CWD. Collection never launches interactive authorization.
+to CWD. Its parser uses `allow_abbrev=False` so `--market` cannot abbreviate to
+`--market-data`, and `parse_known_args` so global flags may follow the command.
+Changing `CLIENT_ID` deletes the token caches, which the new application cannot
+refresh. Collection never launches interactive authorization.
 
 ## CLI contracts and current limitations
 

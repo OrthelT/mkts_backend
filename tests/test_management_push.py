@@ -470,24 +470,12 @@ def _create_fittings_market_schema(conn) -> None:
 
 def _create_fittings_sde_schema(conn) -> None:
     conn.execute(text(
-        "CREATE TABLE inv_info (typeID INTEGER PRIMARY KEY, typeName TEXT, "
-        "groupID INTEGER, groupName TEXT, categoryID INTEGER, categoryName TEXT, "
-        "volume REAL)"
-    ))
-    conn.execute(text(
         "CREATE TABLE sdetypes (typeID INTEGER PRIMARY KEY, typeName TEXT, "
         "groupID INTEGER, groupName TEXT, categoryID INTEGER, categoryName TEXT, "
         "volume REAL, metaGroupID INTEGER, metaGroupName TEXT, published INTEGER, "
         "repackagedVolume REAL)"
     ))
     for type_name, type_id in _FITTINGS_EFT_TYPE_MAP.items():
-        conn.execute(
-            text(
-                "INSERT INTO inv_info VALUES "
-                "(:id, :name, 18, 'Group', 6, 'Category', 1.0)"
-            ),
-            {"id": type_id, "name": type_name},
-        )
         conn.execute(
             text(
                 "INSERT INTO sdetypes VALUES "

@@ -20,7 +20,7 @@ Market collection uses:
 - `TURSO_WCMKTNEWKEEP_URL` / `TURSO_WCMKTNEWKEEP_TOKEN`.
 - `TURSO_WCMKTNORTH_URL` / `TURSO_WCMKTNORTH_TOKEN`.
 - `TURSO_WCMKTBKG_URL` / `TURSO_WCMKTBKG_TOKEN`.
-- `TURSO_SDE_URL` / `TURSO_SDE_TOKEN`.
+- `TURSO_SDE2_URL` / `TURSO_SDE2_TOKEN`.
 - `TURSO_FITTING_URL` / `TURSO_FITTING_TOKEN`.
 - `JANICE_KEY` for optional Jita price fallback.
 - `GOOGLE_SA_JSON` for the Google service-account JSON used by Sheets exports.

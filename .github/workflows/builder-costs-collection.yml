@@ -69,8 +69,8 @@ jobs:
         env:
           TURSO_WCMKTNEWKEEP_URL: ${{ secrets.TURSO_WCMKTNEWKEEP_URL }}
           TURSO_WCMKTNEWKEEP_TOKEN: ${{ secrets.TURSO_WCMKTNEWKEEP_TOKEN }}
-          TURSO_SDE_URL: ${{ secrets.TURSO_SDE_URL }}
-          TURSO_SDE_TOKEN: ${{ secrets.TURSO_SDE_TOKEN }}
+          TURSO_SDE2_URL: ${{ secrets.TURSO_SDE2_URL }}
+          TURSO_SDE2_TOKEN: ${{ secrets.TURSO_SDE2_TOKEN }}
           TURSO_BUILDCOST_URL: ${{ secrets.TURSO_BUILDCOST_URL }}
           TURSO_BUILDCOST_TOKEN: ${{ secrets.TURSO_BUILDCOST_TOKEN }}
       - name: Save cached databases

@@ -167,8 +167,8 @@ jobs:
       run: |
         echo "CLIENT_ID=${{ secrets.CLIENT_ID }}" >> $GITHUB_ENV
         echo "SECRET_KEY=${{ secrets.SECRET_KEY }}" >> $GITHUB_ENV
-        echo "TURSO_SDE_URL=${{ secrets.TURSO_SDE_URL }}" >> $GITHUB_ENV
-        echo "TURSO_SDE_TOKEN=${{ secrets.TURSO_SDE_TOKEN }}" >> $GITHUB_ENV
+        echo "TURSO_SDE2_URL=${{ secrets.TURSO_SDE2_URL }}" >> $GITHUB_ENV
+        echo "TURSO_SDE2_TOKEN=${{ secrets.TURSO_SDE2_TOKEN }}" >> $GITHUB_ENV
         echo "TURSO_FITTING_URL=${{ secrets.TURSO_FITTING_URL }}" >> $GITHUB_ENV
         echo "TURSO_FITTING_TOKEN=${{ secrets.TURSO_FITTING_TOKEN }}" >> $GITHUB_ENV
         # primary market (4-HWWF WinterCo Central Station)
@@ -206,8 +206,8 @@ jobs:
         echo "SECRET_KEY is set: $([ -n "$SECRET_KEY" ] && echo "YES" || echo "NO")"
         echo "REFRESH_TOKEN is set: $([ -n "$REFRESH_TOKEN" ] && echo "YES" || echo "NO")"
         echo "REFRESH_TOKEN length: ${#REFRESH_TOKEN}"
-        echo "TURSO_SDE_URL is set: $([ -n "$TURSO_SDE_URL" ] && echo "YES" || echo "NO")"
-        echo "TURSO_SDE_TOKEN is set: $([ -n "$TURSO_SDE_TOKEN" ] && echo "YES" || echo "NO")"
+        echo "TURSO_SDE2_URL is set: $([ -n "$TURSO_SDE2_URL" ] && echo "YES" || echo "NO")"
+        echo "TURSO_SDE2_TOKEN is set: $([ -n "$TURSO_SDE2_TOKEN" ] && echo "YES" || echo "NO")"
         echo "TURSO_FITTING_URL is set: $([ -n "$TURSO_FITTING_URL" ] && echo "YES" || echo "NO")"
         echo "TURSO_FITTING_TOKEN is set: $([ -n "$TURSO_FITTING_TOKEN" ] && echo "YES" || echo "NO")"
         echo "TURSO_WCMKTNEWKEEP_URL is set (primary): $([ -n "$TURSO_WCMKTNEWKEEP_URL" ] && echo "YES" || echo "NO")"

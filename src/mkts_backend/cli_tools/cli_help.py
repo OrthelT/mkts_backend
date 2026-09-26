@@ -55,6 +55,8 @@ Examples:
   mkts-backend sync --no-buildcost            # Skip the optional buildcost replica
   mkts-backend sync --include-testing         # Also pull the dev/test database
   mkts-backend fit-check --file=fits/hfi.txt  # Check fit availability
+  mkts-backend fitcheck module --name="Small Shield Extender II" # Find all fits using a module 
+  mkts-backend fitcheck module --list-all   # returns a list of all low-stock modules 
   mkts-backend assets --name='Damage Control'   # Look up assets by partial name
   mkts-backend assets --id=11379                # Look up assets by type ID
   mkts-backend equiv list                       # List all module equivalence groups

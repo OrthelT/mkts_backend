@@ -105,6 +105,58 @@ def _query_module_usage(
 
     return results
 
+def get_all_modules(market_alias):
+    market = MarketContext.from_settings(market_alias)
+    items = _query_low_stock_module_usage(market_ctx=market)
+    for item in items:
+        console.print(item)
+ 
+def _query_low_stock_module_usage(
+    market_ctx: Optional[MarketContext] = None,
+) -> List[str]:
+    """Return per-fit usage and market stock for the given module."""
+    db_alias = market_ctx.database_alias if market_ctx else "wcmkt"
+    db = DatabaseConfig(db_alias)
+
+    results = []
+    with db.engine.connect() as conn:
+        query = text("""
+        WITH all_fits AS (
+            SELECT
+                d.type_name,
+                d.type_id,
+                d.fit_id,
+                df.fit_name,
+                df.ship_name,
+                df.doctrine_name,
+                d.fit_qty,
+                df.target,
+                d.total_stock,
+                d.fits_on_mkt,
+                d.price, 
+                d.total_stock - (df.target * d.fit_qty) AS stock_status
+            FROM doctrines d
+            JOIN doctrine_fits df ON d.fit_id = df.fit_id
+            WHERE stock_status < 0
+            ORDER BY df.doctrine_name, df.fit_name
+            )
+        SELECT 
+            type_name,
+            MAX(stock_status * -1) AS needed
+        FROM all_fits
+        GROUP BY type_id, type_name
+        ORDER BY type_name
+        """)
+        rows = conn.execute(query).fetchall()
+
+        for row in rows:
+            module_name = row.type_name
+            needed = row.needed
+
+            results.append(
+                f"{module_name}\t{needed}"
+            )
+    return results
 
 def module_command(
     type_id: Optional[int] = None,
@@ -224,6 +276,10 @@ def handle_module(sub_args: List[str]) -> None:
     """CLI dispatcher for ``fitcheck module``."""
     p = ParsedArgs(sub_args)
     market_alias = parse_market_args(sub_args)
+    
+    if p.has_flag("list-all"):
+        get_all_modules(market_alias)
+        return
 
     try:
         type_id = p.get_int("id")

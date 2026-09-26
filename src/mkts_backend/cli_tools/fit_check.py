@@ -1226,6 +1226,7 @@ EXAMPLES:
     fitcheck module --id=11269
     fitcheck module --name="Multispectrum Energized Membrane II"
     fitcheck module --id=11269 --market=all
+    fitcheck module --list-all
 """)
 
 

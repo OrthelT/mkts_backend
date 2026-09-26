@@ -105,58 +105,62 @@ def _query_module_usage(
 
     return results
 
-def get_all_modules(market_alias):
-    market = MarketContext.from_settings(market_alias)
-    items = _query_low_stock_module_usage(market_ctx=market)
-    for item in items:
-        console.print(item)
- 
-def _query_low_stock_module_usage(
-    market_ctx: Optional[MarketContext] = None,
-) -> List[str]:
-    """Return per-fit usage and market stock for the given module."""
-    db_alias = market_ctx.database_alias if market_ctx else "wcmkt"
-    db = DatabaseConfig(db_alias)
+def _query_low_stock_modules(market_ctx: MarketContext) -> List[Dict]:
+    """Return modules whose market stock is below at least one fit's target.
+
+    The shortfall is the largest single-fit deficit,
+    ``MAX(ship_target * fit_qty) - total_stock``, not the combined need of all
+    fits. Targets come from ``ship_targets`` and stock includes equivalent
+    modules, matching ``fitcheck needed``.
+    """
+    # Lazy import — see fit_check_needed._query_needed_data.
+    from mkts_backend.cli_tools.fit_check import get_equiv_stock
+
+    db = DatabaseConfig(market_ctx.database_alias)
+    with db.engine.connect() as conn:
+        rows = conn.execute(text("""
+            SELECT
+                d.type_id,
+                d.type_name,
+                MAX(t.ship_target * d.fit_qty) AS required,
+                MAX(d.total_stock) AS total_stock
+            FROM doctrines AS d
+            JOIN ship_targets AS t ON d.fit_id = t.fit_id
+            GROUP BY d.type_id, d.type_name
+            HAVING MAX(t.ship_target * d.fit_qty) > COALESCE(MAX(d.total_stock), 0)
+        """)).fetchall()
+
+    equiv_stock = get_equiv_stock([row.type_id for row in rows], market_ctx)
 
     results = []
-    with db.engine.connect() as conn:
-        query = text("""
-        WITH all_fits AS (
-            SELECT
-                d.type_name,
-                d.type_id,
-                d.fit_id,
-                df.fit_name,
-                df.ship_name,
-                df.doctrine_name,
-                d.fit_qty,
-                df.target,
-                d.total_stock,
-                d.fits_on_mkt,
-                d.price, 
-                d.total_stock - (df.target * d.fit_qty) AS stock_status
-            FROM doctrines d
-            JOIN doctrine_fits df ON d.fit_id = df.fit_id
-            WHERE stock_status < 0
-            ORDER BY df.doctrine_name, df.fit_name
-            )
-        SELECT 
-            type_name,
-            MAX(stock_status * -1) AS needed
-        FROM all_fits
-        GROUP BY type_id, type_name
-        ORDER BY type_name
-        """)
-        rows = conn.execute(query).fetchall()
+    for row in rows:
+        stock = (row.total_stock or 0) + sum(
+            e["stock"] for e in equiv_stock.get(row.type_id, [])
+        )
+        needed = int(row.required - stock)
+        if needed > 0:
+            results.append({"type_name": row.type_name, "needed": needed})
 
-        for row in rows:
-            module_name = row.type_name
-            needed = row.needed
+    return sorted(results, key=lambda r: r["type_name"])
 
-            results.append(
-                f"{module_name}\t{needed}"
-            )
-    return results
+
+def list_low_stock_command(market_alias: str = "primary") -> bool:
+    """Print low-stock modules for each selected market."""
+    markets = expand_market_alias(market_alias)
+    for alias in markets:
+        try:
+            market_ctx = MarketContext.from_settings(alias)
+        except ValueError as e:
+            console.print(f"[red]Error: {e}[/red]")
+            console.print(f"Available markets: {', '.join(MarketContext.list_available())}")
+            return False
+
+        if len(markets) > 1:
+            console.print(f"\n[bold]{market_ctx.name}[/bold]")
+        for item in _query_low_stock_modules(market_ctx):
+            console.print(f"{item['type_name']}\t{item['needed']}")
+    return True
+
 
 def module_command(
     type_id: Optional[int] = None,
@@ -276,9 +280,9 @@ def handle_module(sub_args: List[str]) -> None:
     """CLI dispatcher for ``fitcheck module``."""
     p = ParsedArgs(sub_args)
     market_alias = parse_market_args(sub_args)
-    
+
     if p.has_flag("list-all"):
-        get_all_modules(market_alias)
+        list_low_stock_command(market_alias)
         return
 
     try:

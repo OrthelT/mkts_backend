@@ -154,11 +154,18 @@ def list_low_stock_command(market_alias: str = "primary") -> bool:
             console.print(f"[red]Error: {e}[/red]")
             console.print(f"Available markets: {', '.join(MarketContext.list_available())}")
             return False
-
+        items = _query_low_stock_modules(market_ctx)
         if len(markets) > 1:
-            console.print(f"\n[bold]{market_ctx.name}[/bold]")
-        for item in _query_low_stock_modules(market_ctx):
-            console.print(f"{item['type_name']}\t{item['needed']}")
+            console.print(f"\n[bold]{market_ctx.name}[/bold]\n")
+        console.print("\n")
+        console.print("Copy items below to JEve Assets stockpile or in-game multi-buy")
+        console.print("-------------------------------\n")
+        for item in items:
+            print(f"{item['type_name']} {item['needed']}")
+        console.print("\n")
+        console.print("-------------------------------")
+        console.print(f"[bold]{len(items)} found for {market_ctx.name}")
+        console.print("-------------------------------\n")
     return True
 
 

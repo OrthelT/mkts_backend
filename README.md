@@ -1,5 +1,5 @@
 # EVE Market Tools
-### *ver. 0.2.1* 
+### *ver. 0.2.2* 
 
 Check doctrine stock, find items to restock, and manage fits for WinterCo markets.
 Market collection feeds the [market website](https://github.com/OrthelT/wcmkts_new).
@@ -69,6 +69,7 @@ uv run fitcheck needed --market=deployment # check the deployment market
 | Check an EFT text file | `uv run fitcheck --file="my-fit.txt" --market=primary` |
 | Show restocking needs | `uv run fitcheck needed --market=primary` |
 | Find fits using an item | `uv run fitcheck module --name="Damage Control II" --market=primary` |
+  Find all low stock items | uv run fitcheck module --list-all 
 | Show fit-check help | `uv run fitcheck --help` |
 
 Use `--market=deployment` for X47L-Q or `--market=market3` for BKG-Q2.

@@ -1227,6 +1227,8 @@ EXAMPLES:
     fitcheck module --name="Multispectrum Energized Membrane II"
     fitcheck module --id=11269 --market=all
     fitcheck module --list-all
+    fitcheck module --list-all --output=markdown   # Discord post, by category
+    fitcheck module --list-all --output=csv        # Writes <market>_low_stock.csv
 """)
 
 

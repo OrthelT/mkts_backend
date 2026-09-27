@@ -57,6 +57,7 @@ Examples:
   mkts-backend fit-check --file=fits/hfi.txt  # Check fit availability
   mkts-backend module --name="Small Shield Extender II"  # Find all fits using a module
   mkts-backend module --list-all              # List all low-stock modules
+  mkts-backend module --list-all --output=markdown  # Low-stock list for Discord
   mkts-backend assets --name='Damage Control'   # Look up assets by partial name
   mkts-backend assets --id=11379                # Look up assets by type ID
   mkts-backend equiv list                       # List all module equivalence groups

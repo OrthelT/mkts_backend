@@ -6,13 +6,19 @@ clarity — this feature has no shared helpers with the main fit-status
 display.
 """
 
+import csv
+from pathlib import Path
 from typing import Dict, List, Optional
 
 from sqlalchemy import text
 
 from mkts_backend.cli_tools.arg_utils import ArgError, ParsedArgs
 from mkts_backend.cli_tools.market_args import expand_market_alias, parse_market_args
-from mkts_backend.cli_tools.rich_display import console, create_module_usage_table
+from mkts_backend.cli_tools.rich_display import (
+    console,
+    create_module_usage_table,
+    print_markdown_export,
+)
 from mkts_backend.config import DatabaseConfig
 from mkts_backend.config.market_context import MarketContext
 
@@ -122,6 +128,7 @@ def _query_low_stock_modules(market_ctx: MarketContext) -> List[Dict]:
             SELECT
                 d.type_id,
                 d.type_name,
+                MAX(d.category_id) AS category_id,
                 MAX(t.ship_target * d.fit_qty) AS required,
                 MAX(d.total_stock) AS total_stock
             FROM doctrines AS d
@@ -139,14 +146,81 @@ def _query_low_stock_modules(market_ctx: MarketContext) -> List[Dict]:
         )
         needed = int(row.required - stock)
         if needed > 0:
-            results.append({"type_name": row.type_name, "needed": needed})
+            results.append({
+                "type_id": row.type_id,
+                "type_name": row.type_name,
+                "category_id": row.category_id,
+                "needed": needed,
+            })
 
     return sorted(results, key=lambda r: r["type_name"])
 
 
-def list_low_stock_command(market_alias: str = "primary") -> bool:
-    """Print low-stock modules for each selected market."""
+LIST_ALL_OUTPUTS = ("multibuy", "markdown", "csv")
+
+# SDE category IDs shown as their own markdown section; others go under "Other".
+CATEGORY_HEADINGS = {6: "Ship", 7: "Module", 8: "Charge"}
+
+
+def _category_heading(category_id: Optional[int]) -> str:
+    return CATEGORY_HEADINGS.get(category_id, "Other")
+
+
+def format_low_stock_markdown(market_name: str, items: List[Dict]) -> str:
+    """Format low-stock items as Discord markdown, grouped by category."""
+    groups: Dict[str, List[Dict]] = {
+        heading: [] for heading in (*CATEGORY_HEADINGS.values(), "Other")
+    }
+    for item in items:
+        groups[_category_heading(item["category_id"])].append(item)
+
+    lines = [f"# {market_name}"]
+    for heading, group in groups.items():
+        if group:
+            lines += ["", f"## {heading}"]
+            lines += [f"- {item['type_name']} - {item['needed']:,}" for item in group]
+    if not items:
+        lines += ["", "No items needed."]
+    return "\n".join(lines)
+
+
+def write_low_stock_csv(file_path: str, items: List[Dict]) -> str:
+    """Write low-stock items to a CSV file and return its absolute path."""
+    path = Path(file_path)
+    with open(path, "w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(["type_id", "type_name", "category", "needed"])
+        for item in items:
+            writer.writerow([
+                item["type_id"],
+                item["type_name"],
+                _category_heading(item["category_id"]),
+                item["needed"],
+            ])
+    return str(path.absolute())
+
+
+def _print_low_stock_multibuy(market_ctx: MarketContext, items: List[Dict], multi: bool) -> None:
+    if multi:
+        console.print(f"\n[bold]{market_ctx.name}[/bold]\n")
+    console.print("\n")
+    console.print("Copy items below to JEve Assets stockpile or in-game multi-buy")
+    console.print("-------------------------------\n")
+    for item in items:
+        print(f"{item['type_name']} {item['needed']}")
+    console.print("\n")
+    console.print("-------------------------------")
+    console.print(f"[bold]{len(items)} found for {market_ctx.name}")
+    console.print("-------------------------------\n")
+
+
+def list_low_stock_command(
+    market_alias: str = "primary",
+    output_format: str = "multibuy",
+) -> bool:
+    """Print or export low-stock modules for each selected market."""
     markets = expand_market_alias(market_alias)
+    markdown_blocks = []
     for alias in markets:
         try:
             market_ctx = MarketContext.from_settings(alias)
@@ -155,17 +229,18 @@ def list_low_stock_command(market_alias: str = "primary") -> bool:
             console.print(f"Available markets: {', '.join(MarketContext.list_available())}")
             return False
         items = _query_low_stock_modules(market_ctx)
-        if len(markets) > 1:
-            console.print(f"\n[bold]{market_ctx.name}[/bold]\n")
-        console.print("\n")
-        console.print("Copy items below to JEve Assets stockpile or in-game multi-buy")
-        console.print("-------------------------------\n")
-        for item in items:
-            print(f"{item['type_name']} {item['needed']}")
-        console.print("\n")
-        console.print("-------------------------------")
-        console.print(f"[bold]{len(items)} found for {market_ctx.name}")
-        console.print("-------------------------------\n")
+        if output_format == "markdown":
+            markdown_blocks.append(format_low_stock_markdown(market_ctx.name, items))
+        elif output_format == "csv":
+            csv_path = write_low_stock_csv(f"{alias}_low_stock.csv", items)
+            console.print(
+                f"[green]{len(items)} items for {market_ctx.name} exported to:[/green] {csv_path}"
+            )
+        else:
+            _print_low_stock_multibuy(market_ctx, items, multi=len(markets) > 1)
+
+    if markdown_blocks:
+        print_markdown_export("\n\n".join(markdown_blocks))
     return True
 
 
@@ -288,8 +363,18 @@ def handle_module(sub_args: List[str]) -> None:
     p = ParsedArgs(sub_args)
     market_alias = parse_market_args(sub_args)
 
+    try:
+        output_format = p.get_choice("output", choices=LIST_ALL_OUTPUTS)
+    except ArgError as e:
+        console.print(f"[red]Error: {e}[/red]")
+        return
+
     if p.has_flag("list-all"):
-        list_low_stock_command(market_alias)
+        list_low_stock_command(market_alias, output_format or "multibuy")
+        return
+
+    if output_format:
+        console.print("[red]Error: --output requires --list-all[/red]")
         return
 
     try:

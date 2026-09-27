@@ -129,11 +129,17 @@ a new target quantity. `--ship` and `--fit` accept comma-separated values.
 ```bash
 uv run fitcheck module --id=11269 --market=primary
 uv run fitcheck module --name="Multispectrum Energized Membrane II" --market=all
+uv run fitcheck module --list-all --market=primary
+uv run fitcheck module --list-all --market=all --output=markdown
 uv run mkts-backend assets --name="Damage Control"
 uv run mkts-backend assets --id=11379 --refresh
 ```
 
-`module` shows fits that use an item. `assets` searches configured characters'
+`module` shows fits that use an item. `module --list-all` lists every item
+below at least one fit's target, with the quantity needed. Its `--output` is
+`multibuy` (default, for EVE Multibuy or jEveAssets), `markdown` (a Discord post
+grouped into Ship, Module, Charge, and Other), or `csv` (writes
+`<market>_low_stock.csv` in the current directory). `assets` searches configured characters'
 assets, cached locally for one hour. Asset access requires authorization for
 those characters; see [setup](setup.md#eve-authorization).
 

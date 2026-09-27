@@ -69,7 +69,8 @@ uv run fitcheck needed --market=deployment # check the deployment market
 | Check an EFT text file | `uv run fitcheck --file="my-fit.txt" --market=primary` |
 | Show restocking needs | `uv run fitcheck needed --market=primary` |
 | Find fits using an item | `uv run fitcheck module --name="Damage Control II" --market=primary` |
-  Find all low stock items | uv run fitcheck module --list-all 
+| Find all low-stock items | `uv run fitcheck module --list-all --market=primary` |
+| Post low-stock items to Discord | `uv run fitcheck module --list-all --output=markdown` |
 | Show fit-check help | `uv run fitcheck --help` |
 
 Use `--market=deployment` for X47L-Q or `--market=market3` for BKG-Q2.

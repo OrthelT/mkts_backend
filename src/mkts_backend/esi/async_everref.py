@@ -4,6 +4,8 @@ import time
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
+from math import isfinite
 from typing import Any, TypedDict
 
 import httpx
@@ -23,10 +25,8 @@ EVEREF_STATIC_PARAMS = (
 )
 API_TIMEOUT = 20.0
 MAX_CONCURRENCY = 10
-# EverRef has no rate limit; the maintainer has confirmed bursts are fine.
-# 120 req/min keeps the average at 2/sec (polite for a single-maintainer hobby
-# API) and lets the full ~1300-item watchlist finish inside a 15-min CI budget.
 EVEREF_REQUESTS_PER_MINUTE = 120
+MAX_RATE_LIMIT_RETRIES = 3
 
 MANUFACTURABLE_META_GROUPS = frozenset({1, 2, 14})
 ALLOWED_CATEGORIES = frozenset({7, 18, 8, 6, 87, 22, 32})
@@ -294,19 +294,42 @@ async def _fetch_one_inner(
 ) -> BuilderCostRecord | None:
     url = _build_request_url(type_id, me, runs)
 
-    async with limiter:
-        async with semaphore:
-            try:
-                response = await client.get(url, timeout=API_TIMEOUT)
-            except Exception as exc:
-                logger.warning(f"EverRef fetch failed for {type_id}: {exc}")
-                return None
+    for attempt in range(MAX_RATE_LIMIT_RETRIES + 1):
+        async with limiter:
+            async with semaphore:
+                try:
+                    response = await client.get(url, timeout=API_TIMEOUT)
+                except Exception as exc:
+                    logger.warning(f"EverRef fetch failed for {type_id}: {exc}")
+                    return None
 
-    if response.status_code != 200:
-        logger.warning(
-            f"EverRef returned HTTP {response.status_code} for {type_id}: {response.text[:200]}"
-        )
-        return None
+        if response.status_code == 429 and attempt < MAX_RATE_LIMIT_RETRIES:
+            retry_after = response.headers.get("Retry-After")
+            try:
+                delay = float(retry_after) if retry_after is not None else 2**attempt
+                if not isfinite(delay) or delay < 0:
+                    raise ValueError("invalid Retry-After delay")
+            except ValueError:
+                try:
+                    retry_at = parsedate_to_datetime(retry_after)
+                    if retry_at.tzinfo is None:
+                        retry_at = retry_at.replace(tzinfo=timezone.utc)
+                    delay = max(
+                        0.0,
+                        (retry_at - datetime.now(timezone.utc)).total_seconds(),
+                    )
+                except (TypeError, ValueError, OverflowError):
+                    delay = 2**attempt
+            await asyncio.sleep(delay)
+            continue
+
+        if response.status_code != 200:
+            logger.warning(
+                f"EverRef returned HTTP {response.status_code} for {type_id}: {response.text[:200]}"
+            )
+            return None
+
+        break
 
     try:
         payload = response.json()
@@ -387,7 +410,9 @@ async def async_fetch_builder_costs(
         )
 
     semaphore = asyncio.Semaphore(MAX_CONCURRENCY)
-    limiter = AsyncLimiter(EVEREF_REQUESTS_PER_MINUTE, time_period=60.0)
+    # AsyncLimiter permits an initial burst equal to max_rate. Capacity one
+    # preserves the same average rate while spacing requests to avoid 429s.
+    limiter = AsyncLimiter(1, time_period=60.0 / EVEREF_REQUESTS_PER_MINUTE)
     headers = {"User-Agent": SettingsService().esi_user_agent}
     progress = _ProgressTracker(total=len(fetch_jobs))
 
@@ -429,4 +454,3 @@ def run_async_fetch_builder_costs(
             watchlist_metadata=watchlist_metadata,
         )
     )
-

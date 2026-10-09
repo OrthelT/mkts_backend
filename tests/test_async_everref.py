@@ -1,5 +1,5 @@
 from datetime import datetime, timezone
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from sqlalchemy import create_engine
@@ -160,3 +160,58 @@ class TestAsyncFetchBuilderCosts:
         assert summary.failed == 1
         assert len(summary.records) == 1
         assert summary.records[0]["type_id"] == 34
+
+
+class TestFetchOneRateLimitRetry:
+    @pytest.mark.asyncio
+    async def test_retries_429_using_retry_after(self):
+        import asyncio
+
+        import httpx
+
+        from mkts_backend.esi import async_everref
+
+        class NoopAsyncContext:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args):
+                return None
+
+        class FakeClient:
+            def __init__(self, responses):
+                self.responses = iter(responses)
+                self.get = AsyncMock(
+                    side_effect=lambda *args, **kwargs: next(self.responses)
+                )
+
+        client = FakeClient(
+            [
+                httpx.Response(429, headers={"Retry-After": "0.25"}),
+                httpx.Response(
+                    200,
+                    json={
+                        "manufacturing": {
+                            "34": {
+                                "total_cost_per_unit": 123.4,
+                                "time_per_unit": "PT1M",
+                            }
+                        }
+                    },
+                ),
+            ]
+        )
+
+        with patch.object(asyncio, "sleep", new_callable=AsyncMock) as sleep:
+            result = await async_everref._fetch_one_inner(
+                client,
+                asyncio.Semaphore(1),
+                NoopAsyncContext(),
+                type_id=34,
+                me=10,
+                runs=10,
+            )
+
+        assert result["type_id"] == 34
+        assert client.get.await_count == 2
+        sleep.assert_awaited_once_with(0.25)

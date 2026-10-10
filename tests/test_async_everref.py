@@ -1,6 +1,10 @@
-from datetime import datetime, timezone
-from unittest.mock import patch
+import asyncio
+import time
+from datetime import datetime, timedelta, timezone
+from email.utils import format_datetime
+from unittest.mock import AsyncMock, patch
 
+import httpx
 import pytest
 from sqlalchemy import create_engine
 
@@ -160,3 +164,138 @@ class TestAsyncFetchBuilderCosts:
         assert summary.failed == 1
         assert len(summary.records) == 1
         assert summary.records[0]["type_id"] == 34
+
+
+class TestRetryDelay:
+    def test_numeric_retry_after(self):
+        from mkts_backend.esi.async_everref import _retry_delay
+
+        assert _retry_delay("0.25", attempt=0) == 0.25
+
+    def test_http_date_retry_after(self):
+        from mkts_backend.esi.async_everref import _retry_delay
+
+        retry_at = datetime.now(timezone.utc) + timedelta(seconds=30)
+
+        assert 28 <= _retry_delay(format_datetime(retry_at, usegmt=True), 0) <= 30
+
+    def test_retry_after_is_capped(self):
+        from mkts_backend.esi.async_everref import MAX_RETRY_DELAY, _retry_delay
+
+        far = datetime.now(timezone.utc) + timedelta(days=1)
+
+        assert _retry_delay("3600", attempt=0) == MAX_RETRY_DELAY
+        assert _retry_delay(format_datetime(far, usegmt=True), 0) == MAX_RETRY_DELAY
+
+    @pytest.mark.parametrize(
+        "retry_after",
+        [None, "nan", "inf", "-5", "soon", "Wed, 21 Oct 2015 07:28:00 GMT"],
+    )
+    def test_missing_or_invalid_retry_after_uses_exponential_backoff(
+        self, retry_after
+    ):
+        from mkts_backend.esi.async_everref import _retry_delay
+
+        assert _retry_delay(retry_after, attempt=0) == 1
+        assert _retry_delay(retry_after, attempt=2) == 4
+
+
+class TestThrottle:
+    @pytest.mark.asyncio
+    async def test_wait_blocks_until_pause_ends(self):
+        from mkts_backend.esi import async_everref
+
+        with patch.object(async_everref, "EVEREF_REQUESTS_PER_MINUTE", 60_000):
+            throttle = async_everref._Throttle()
+        await throttle.wait()
+        assert throttle.pause(0.1)
+
+        start = time.monotonic()
+        await throttle.wait()
+
+        assert time.monotonic() - start >= 0.09
+
+    @pytest.mark.asyncio
+    async def test_pause_refuses_once_budget_is_spent(self):
+        from mkts_backend.esi import async_everref
+
+        with patch.object(async_everref, "RATE_LIMIT_PAUSE_BUDGET", 10.0):
+            throttle = async_everref._Throttle()
+
+        assert throttle.pause(8.0)
+        # Already paused for longer than this, so it costs no budget.
+        assert throttle.pause(5.0)
+        assert not throttle.pause(60.0)
+
+
+class FakeThrottle:
+    def __init__(self, allow_pause=True):
+        self.allow_pause = allow_pause
+        self.pauses = []
+
+    async def wait(self):
+        return None
+
+    def pause(self, delay):
+        self.pauses.append(delay)
+        return self.allow_pause
+
+
+class FakeClient:
+    def __init__(self, responses):
+        self.get = AsyncMock(side_effect=responses)
+
+
+OK_RESPONSE_JSON = {
+    "manufacturing": {
+        "34": {"total_cost_per_unit": 123.4, "time_per_unit": "PT1M"}
+    }
+}
+
+
+async def _fetch(client, throttle):
+    from mkts_backend.esi import async_everref
+
+    return await async_everref._fetch_one_inner(
+        client, asyncio.Semaphore(1), throttle, type_id=34, me=10, runs=10
+    )
+
+
+class TestFetchOneRateLimitRetry:
+    @pytest.mark.asyncio
+    async def test_retries_429_using_retry_after(self, caplog):
+        client = FakeClient(
+            [
+                httpx.Response(429, headers={"Retry-After": "0.25"}),
+                httpx.Response(200, json=OK_RESPONSE_JSON),
+            ]
+        )
+        throttle = FakeThrottle()
+
+        with caplog.at_level("WARNING"):
+            result = await _fetch(client, throttle)
+
+        assert result["type_id"] == 34
+        assert client.get.await_count == 2
+        assert throttle.pauses == [0.25]
+        assert "HTTP 429 for 34; pausing all requests for 0.2s" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_returns_none_after_retries_are_exhausted(self):
+        from mkts_backend.esi.async_everref import MAX_RATE_LIMIT_RETRIES
+
+        client = FakeClient(
+            [httpx.Response(429) for _ in range(MAX_RATE_LIMIT_RETRIES + 1)]
+        )
+        throttle = FakeThrottle()
+
+        assert await _fetch(client, throttle) is None
+        assert client.get.await_count == MAX_RATE_LIMIT_RETRIES + 1
+        assert throttle.pauses == [1, 2, 4]
+
+    @pytest.mark.asyncio
+    async def test_does_not_retry_once_pause_budget_is_spent(self):
+        client = FakeClient([httpx.Response(429)])
+
+        assert await _fetch(client, FakeThrottle(allow_pause=False)) is None
+        assert client.get.await_count == 1

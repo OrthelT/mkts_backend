@@ -4,6 +4,8 @@ import time
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
+from math import isfinite
 from typing import Any, TypedDict
 
 import httpx
@@ -23,10 +25,13 @@ EVEREF_STATIC_PARAMS = (
 )
 API_TIMEOUT = 20.0
 MAX_CONCURRENCY = 10
-# EverRef has no rate limit; the maintainer has confirmed bursts are fine.
-# 120 req/min keeps the average at 2/sec (polite for a single-maintainer hobby
-# API) and lets the full ~1300-item watchlist finish inside a 15-min CI budget.
+# 2 req/s takes about 11 minutes for the ~1300-item watchlist. That time plus
+# RATE_LIMIT_PAUSE_BUDGET must fit the 30-minute job timeout in
+# .github/workflows/builder-costs-collection.yml.
 EVEREF_REQUESTS_PER_MINUTE = 120
+MAX_RATE_LIMIT_RETRIES = 3
+MAX_RETRY_DELAY = 60.0
+RATE_LIMIT_PAUSE_BUDGET = 300.0
 
 MANUFACTURABLE_META_GROUPS = frozenset({1, 2, 14})
 ALLOWED_CATEGORIES = frozenset({7, 18, 8, 6, 87, 22, 32})
@@ -83,7 +88,7 @@ class _ProgressTracker:
 
     Safe for asyncio because all increments happen between awaits in the
     single-threaded event loop. ETA is derived from wall-clock rate, which
-    converges to the rate-limiter's steady-state after the initial burst.
+    converges to the rate limiter's steady-state rate.
     """
 
     def __init__(self, total: int, interval: int = PROGRESS_LOG_INTERVAL) -> None:
@@ -268,17 +273,80 @@ def _build_request_url(type_id: int, me: int, runs: int) -> str:
     )
 
 
+def _retry_delay(retry_after: str | None, attempt: int) -> float:
+    """Return the seconds to wait after a 429, capped at MAX_RETRY_DELAY.
+
+    Reads Retry-After as seconds or as an HTTP-date. A missing, invalid, or
+    past value falls back to exponential backoff.
+    """
+    delay = None
+    if retry_after is not None:
+        try:
+            delay = float(retry_after)
+        except ValueError:
+            try:
+                retry_at = parsedate_to_datetime(retry_after)
+            except (TypeError, ValueError):
+                pass
+            else:
+                if retry_at.tzinfo is None:
+                    retry_at = retry_at.replace(tzinfo=timezone.utc)
+                delay = (retry_at - datetime.now(timezone.utc)).total_seconds()
+    if delay is None or not isfinite(delay) or delay < 0:
+        delay = 2**attempt
+    return min(delay, MAX_RETRY_DELAY)
+
+
+class _Throttle:
+    """Spaces requests evenly and pauses every task after a 429.
+
+    A per-task backoff would leave the other tasks sending into the same
+    rate-limit window. RATE_LIMIT_PAUSE_BUDGET caps the total pause time so
+    sustained 429s cannot push the run past the CI job timeout.
+    """
+
+    def __init__(self) -> None:
+        # AsyncLimiter permits an initial burst equal to max_rate. Capacity one
+        # preserves the same average rate while spacing requests to avoid 429s.
+        self._limiter = AsyncLimiter(1, time_period=60.0 / EVEREF_REQUESTS_PER_MINUTE)
+        self._resume_at = 0.0
+        self._pause_budget = RATE_LIMIT_PAUSE_BUDGET
+
+    async def wait(self) -> None:
+        while True:
+            await self._limiter.acquire()
+            delay = self._resume_at - time.monotonic()
+            if delay <= 0:
+                return
+            await asyncio.sleep(delay)
+
+    def pause(self, delay: float) -> bool:
+        """Pause all requests for ``delay`` seconds.
+
+        Returns False, without pausing, once the pause budget is spent.
+        """
+        now = time.monotonic()
+        extension = now + delay - max(self._resume_at, now)
+        if extension <= 0:
+            return True
+        if extension > self._pause_budget:
+            return False
+        self._pause_budget -= extension
+        self._resume_at = now + delay
+        return True
+
+
 async def _fetch_one(
     client: httpx.AsyncClient,
     semaphore: asyncio.Semaphore,
-    limiter: AsyncLimiter,
+    throttle: _Throttle,
     type_id: int,
     me: int,
     runs: int,
     progress: _ProgressTracker | None = None,
 ) -> BuilderCostRecord | None:
     try:
-        return await _fetch_one_inner(client, semaphore, limiter, type_id, me, runs)
+        return await _fetch_one_inner(client, semaphore, throttle, type_id, me, runs)
     finally:
         if progress is not None:
             progress.tick()
@@ -287,20 +355,33 @@ async def _fetch_one(
 async def _fetch_one_inner(
     client: httpx.AsyncClient,
     semaphore: asyncio.Semaphore,
-    limiter: AsyncLimiter,
+    throttle: _Throttle,
     type_id: int,
     me: int,
     runs: int,
 ) -> BuilderCostRecord | None:
     url = _build_request_url(type_id, me, runs)
 
-    async with limiter:
-        async with semaphore:
+    # Take the semaphore before the throttle so no task waits on the semaphore
+    # with a request slot already granted, and a retry keeps its place.
+    async with semaphore:
+        for attempt in range(MAX_RATE_LIMIT_RETRIES + 1):
+            await throttle.wait()
             try:
                 response = await client.get(url, timeout=API_TIMEOUT)
             except Exception as exc:
                 logger.warning(f"EverRef fetch failed for {type_id}: {exc}")
                 return None
+
+            if response.status_code != 429 or attempt == MAX_RATE_LIMIT_RETRIES:
+                break
+            delay = _retry_delay(response.headers.get("Retry-After"), attempt)
+            if not throttle.pause(delay):
+                break
+            logger.warning(
+                f"EverRef returned HTTP 429 for {type_id}; pausing all requests "
+                f"for {delay:.1f}s (retry {attempt + 1}/{MAX_RATE_LIMIT_RETRIES})"
+            )
 
     if response.status_code != 200:
         logger.warning(
@@ -387,14 +468,14 @@ async def async_fetch_builder_costs(
         )
 
     semaphore = asyncio.Semaphore(MAX_CONCURRENCY)
-    limiter = AsyncLimiter(EVEREF_REQUESTS_PER_MINUTE, time_period=60.0)
+    throttle = _Throttle()
     headers = {"User-Agent": SettingsService().esi_user_agent}
     progress = _ProgressTracker(total=len(fetch_jobs))
 
     async with httpx.AsyncClient(http2=True, headers=headers) as client:
         results = await asyncio.gather(
             *(
-                _fetch_one(client, semaphore, limiter, type_id, me, runs, progress)
+                _fetch_one(client, semaphore, throttle, type_id, me, runs, progress)
                 for type_id, me, runs in fetch_jobs
             )
         )
@@ -429,4 +510,3 @@ def run_async_fetch_builder_costs(
             watchlist_metadata=watchlist_metadata,
         )
     )
-

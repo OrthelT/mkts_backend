@@ -34,7 +34,7 @@ class MarketContext:
     turso_url_env: str          # env var name for Turso URL
     turso_token_env: str        # env var name for Turso token
     gsheets_url: str
-    gsheets_worksheets: dict    # e.g., {"market_data": "market_data_4h", "doctrines": "doctrines_4h"}
+    gsheets_worksheets: dict    # e.g., {"market_data": "market_stats_4h", "doctrines": "doctrines_4h"}
 
     @classmethod
     def from_settings(cls, alias: str) -> "MarketContext":

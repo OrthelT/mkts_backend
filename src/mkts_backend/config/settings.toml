@@ -40,7 +40,7 @@ database_alias = "wcmktnewkeep"
 database_file = "wcmktnewkeep.db"
 turso_url_env = "TURSO_WCMKTNEWKEEP_URL"
 turso_token_env = "TURSO_WCMKTNEWKEEP_TOKEN"
-gsheets_url = "https://docs.google.com/spreadsheets/d/1I5XwtI9dfAVE4E73v3Lwr8z3od-ibr3h_evBeaAuhaw/edit" # wc_northern_supply
+gsheets_url = "https://docs.google.com/spreadsheets/d/18SMowuoGN6gqW4W_5gEMdA5a6XDYABoLutoJ4ZfB18M/edit?usp=sharing" # wc_northern_supply
 
 [markets.deployment]
 name = "X47L-Q - Rogue Threshold"
@@ -51,7 +51,7 @@ database_alias = "wcmktnorth"
 database_file = "wcmktnorth2.db"
 turso_url_env = "TURSO_WCMKTNORTH_URL"
 turso_token_env = "TURSO_WCMKTNORTH_TOKEN"
-gsheets_url = "https://docs.google.com/spreadsheets/d/1I5XwtI9dfAVE4E73v3Lwr8z3od-ibr3h_evBeaAuhaw/edit" # wc_northern_supply
+gsheets_url = "" # wc_northern_supply
 
 [markets.market3]
 name = "BKG-Q2 - Insidious Prime"
@@ -62,11 +62,11 @@ database_alias = "wcmktbkg"
 database_file = "wcmktbkg.db"
 turso_url_env = "TURSO_WCMKTBKG_URL"
 turso_token_env = "TURSO_WCMKTBKG_TOKEN"
-gsheets_url = "https://docs.google.com/spreadsheets/d/1I5XwtI9dfAVE4E73v3Lwr8z3od-ibr3h_evBeaAuhaw/edit" # wc_northern_supply
+gsheets_url = "" # wc_northern_supply
 
 [markets.primary.gsheets_worksheets]
 market_orders = "market_orders_4h"
-market_data = "market_data_4h"
+market_data = "market_stats_4h"
 doctrines = "doctrines_mkt_4H"
 # ============================================================================
 # SHARED DATABASE CONFIGURATION
@@ -115,7 +115,7 @@ optional = true
 # These settings are for global Google Sheets configuration.
 
 [google_sheets]
-enabled = false
+enabled = true
 
 # Source sheet for the `add_structure` CLI (imports rows into buildcost.db structures table).
 [buildcost]

@@ -227,6 +227,14 @@ def google_sheets_update_workflow(market_ctx: MarketContext) -> None:
         market_ctx=market_ctx,
     )
 
+    doctrines_sheet = worksheets.get("doctrines", "doctrines")
+    update_google_sheet(
+        google_sheet_config,
+        sheet_name=doctrines_sheet,
+        table_name="doctrines",
+        market_ctx=market_ctx,
+    )
+
 
 def update_google_sheet(
     google_sheet_config: GoogleSheetConfig,
@@ -235,6 +243,7 @@ def update_google_sheet(
     market_ctx: Optional[MarketContext] = None,
 ) -> None:
     import pandas as pd
+    from sqlalchemy import text
 
     db = (
         DatabaseConfig(market_context=market_ctx)
@@ -244,6 +253,15 @@ def update_google_sheet(
     engine = db.engine
     with engine.connect() as conn:
         df = pd.read_sql_table(table_name, conn)
+        if table_name == "marketorders":
+            # marketorders has no time column; updatelog records its last write.
+            df["last_update"] = conn.execute(
+                text("SELECT timestamp FROM updatelog WHERE table_name = :t"),
+                {"t": "marketorders"},
+            ).scalar()
+        # Sheets use one name for the update time; the DB column (doctrines.timestamp)
+        # stays as-is because the frontend reads it.
+        df = df.rename(columns={"timestamp": "last_update"})
         google_sheet_config.update_sheet(df, sheet_name=sheet_name)
         logger.info(f"Updated Google Sheet with {len(df)} rows of data")
 

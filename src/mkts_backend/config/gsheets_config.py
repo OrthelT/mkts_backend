@@ -34,7 +34,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[3]
 class GoogleSheetConfig:
     # Defaults (can be overridden via env or __init__)
     _default_local_credentials_file = "wcupdates-1eec6cbb5e0c.json"
-    _google_sheet_url = "https://docs.google.com/spreadsheets/d/1I5XwtI9dfAVE4E73v3Lwr8z3od-ibr3h_evBeaAuhaw/edit?gid=800271361#gid=800271361"
+    _google_sheet_url = "https://docs.google.com/spreadsheets/d/18SMowuoGN6gqW4W_5gEMdA5a6XDYABoLutoJ4ZfB18M/edit?usp=sharing"
     _default_sheet_name = "4H Market Data"
     _default_clear_range = "A2:Z10000"
     _default_worksheet_rows = 1000
@@ -277,6 +277,17 @@ class GoogleSheetConfig:
             logger.info(f"Data columns: {list(data.columns)}")
 
             values = data.values.tolist()
+
+            # Data writes start at row 2. Fill only blank header cells in row 1,
+            # so hand-edited labels are left alone and new columns get a label.
+            existing_header = worksheet.row_values(1)
+            header = [
+                existing_header[i] if i < len(existing_header) and existing_header[i] else str(col)
+                for i, col in enumerate(data.columns)
+            ]
+            if header != existing_header[: len(header)]:
+                worksheet.update("A1", [header])
+                logger.info(f"Filled blank header cells in worksheet '{worksheet.title}'")
 
             if append_data:
                 try:

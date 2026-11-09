@@ -75,3 +75,4 @@ devfiles
 .envbak
 devfiles
 docs/superpowers/
+scripts/update_buildcost.py

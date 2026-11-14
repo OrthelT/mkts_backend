@@ -132,3 +132,51 @@ class TestNoFitsMessage:
         assert "wcmktnorth" in out
         # Rich may insert soft wraps in long output; normalize whitespace.
         assert "connection refused" in " ".join(out.split())
+
+
+class TestListDoctrinesUsesMarketDb:
+    """list-doctrines reads the market's doctrine_fits, not the fittings DB.
+
+    unassign-market removes doctrine_fits rows but keeps fittings_doctrine,
+    so only doctrine_fits reflects current market membership.
+    """
+
+    def _fake_db(self, tmp_path):
+        from sqlalchemy import create_engine, text
+
+        engine = create_engine(f"sqlite:///{tmp_path / 'market.db'}")
+        with engine.begin() as conn:
+            conn.execute(text(
+                "CREATE TABLE doctrine_fits (id INTEGER PRIMARY KEY, doctrine_name TEXT, "
+                "fit_name TEXT, ship_type_id INTEGER, doctrine_id INTEGER, fit_id INTEGER, "
+                "ship_name TEXT, target INTEGER, market_flag TEXT, friendly_name TEXT)"
+            ))
+            conn.execute(text(
+                "INSERT INTO doctrine_fits (doctrine_name, doctrine_id, fit_id) VALUES "
+                "('Hurricanes ', 7, 101), ('Hurricanes', 7, 102), ('Ferox', 3, 201)"
+            ))
+
+        class FakeDb:
+            def __init__(self, alias):
+                self.alias = alias
+                self.engine = engine
+                self.remote_engine = engine
+
+        return FakeDb
+
+    def test_get_market_doctrines_groups_by_doctrine(self, tmp_path):
+        with patch.object(fit_update, "DatabaseConfig", self._fake_db(tmp_path)):
+            doctrines = fit_update.get_market_doctrines("wcmktprod")
+        assert doctrines == [
+            {"id": 3, "name": "Ferox", "fit_count": 1},
+            {"id": 7, "name": "Hurricanes", "fit_count": 2},
+        ]
+
+    def test_subcommand_queries_target_market(self):
+        with patch.object(fit_update, "get_market_doctrines", return_value=[]) as market, \
+             patch.object(fit_update, "get_available_doctrines") as fittings:
+            fit_update.fit_update_command(
+                subcommand="list-doctrines", target_alias="wcmktnorth",
+            )
+        market.assert_called_once_with(db_alias="wcmktnorth", remote=False)
+        fittings.assert_not_called()

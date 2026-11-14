@@ -8,7 +8,7 @@ Interactive tools for managing fits and doctrines:
 - assign-market: Assign market flags to fits
 - unassign-market: Remove a fit from one or all markets
 - list-fits: List all fits
-- list-doctrines: List all doctrines
+- list-doctrines: List doctrines assigned to the market
 - create-doctrine: Create a new doctrine
 - doctrine-add-fit: Add existing fit(s) to a doctrine
 - doctrine-remove-fit: Remove fit(s) from a doctrine
@@ -177,6 +177,32 @@ def get_available_doctrines(remote: bool = False) -> List[dict]:
             )
 
     engine.dispose()
+    return doctrines
+
+
+def get_market_doctrines(db_alias: str, remote: bool = False) -> List[dict]:
+    """Get doctrines assigned to a market from its doctrine_fits table.
+
+    unassign-market removes rows from doctrine_fits but leaves the fittings
+    database untouched, so this reflects current market membership.
+    """
+    db = DatabaseConfig(db_alias)
+    engine = db.remote_engine if remote else db.engine
+
+    with engine.connect() as conn:
+        result = conn.execute(
+            text("""
+            SELECT doctrine_id, MIN(TRIM(doctrine_name)) AS name, COUNT(DISTINCT fit_id)
+            FROM doctrine_fits
+            GROUP BY doctrine_id
+            ORDER BY name
+        """)
+        )
+        doctrines = [
+            {"id": row[0], "name": row[1] or "", "fit_count": row[2]}
+            for row in result
+        ]
+
     return doctrines
 
 
@@ -1665,9 +1691,9 @@ def list_fits_command(db_alias: str = "wcmkt", remote: bool = False) -> None:
         console.print("[yellow]No fits found[/yellow]")
 
 
-def list_doctrines_command(remote: bool = False) -> None:
-    """List all available doctrines (excludes deprecated 'zz' prefixed)."""
-    doctrines = get_available_doctrines(remote=remote)
+def list_doctrines_command(db_alias: str, remote: bool = False) -> None:
+    """List doctrines assigned to the given market (excludes deprecated 'zz' prefixed)."""
+    doctrines = get_market_doctrines(db_alias=db_alias, remote=remote)
     # Filter out deprecated doctrines for count
     active_doctrines = [
         d for d in doctrines if not d["name"].lower().startswith("zz")]
@@ -3010,7 +3036,7 @@ def fit_update_command(
         assign-market        - Change the market assignment for an existing fit
         unassign-market      - Remove a fit or doctrine from a specific market
         list-fits            - List all fits in the doctrine tracking system
-        list-doctrines       - List all available doctrines
+        list-doctrines       - List doctrines assigned to the market
         create-doctrine      - Create a new doctrine (group of fits)
         doctrine-add-fit     - Add existing fit(s) to a doctrine (supports multiple)
         doctrine-remove-fit  - Remove fit(s) from a doctrine (supports multiple)
@@ -3058,7 +3084,7 @@ def fit_update_command(
         return True
 
     elif subcommand == "list-doctrines":
-        list_doctrines_command(remote=use_remote)
+        list_doctrines_command(db_alias=target_alias, remote=use_remote)
         return True
 
     elif subcommand == "assign-market":

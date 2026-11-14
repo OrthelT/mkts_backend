@@ -297,7 +297,7 @@ SUBCOMMANDS:
     populate-friendly-names   Bulk populate friendly names from doctrine_names.json
 
     Doctrine Management:
-    list-doctrines    List all available doctrines
+    list-doctrines    List doctrines assigned to the market
     create-doctrine   Create a new doctrine (group of fits)
     doctrine-add-fit  Add existing fit(s) to a doctrine (supports multiple)
     doctrine-remove-fit Remove a fit from a doctrine

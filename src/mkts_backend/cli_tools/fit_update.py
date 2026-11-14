@@ -1619,8 +1619,10 @@ def unassign_doctrine_market(
 
     if market_to_remove in ("both", "all"):
         prompt_msg = (
-            f"[bold red]Remove doctrine '{doctrine_name}' from ALL markets? "
+            f"Remove doctrine '{doctrine_name}' from ALL markets? "
             "This cannot be undone.[/bold red]"
+            "Fits will be maintained for other doctrines that use them."
+
         )
     else:
         prompt_msg = (

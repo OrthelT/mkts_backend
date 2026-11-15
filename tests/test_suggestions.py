@@ -33,7 +33,7 @@ class TestEditDistance:
 
 
 class TestSuggestCommand:
-    KNOWN = {"fit-check", "fit-update", "update-fit", "sync", "assets", "equiv"}
+    KNOWN = {"fit-check", "fit-manager", "sync", "assets", "equiv"}
 
     def test_underscore_to_hyphen(self):
         assert suggest_command("fit_check", self.KNOWN) == "fit-check"

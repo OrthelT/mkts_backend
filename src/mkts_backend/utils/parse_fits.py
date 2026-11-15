@@ -850,7 +850,6 @@ def update_fit_workflow(
     clear_existing: bool = True,
     dry_run: bool = False,
     target_alias: str = "wcmkt",
-    update_targets: bool = False,
     metadata_override: Optional[Dict] = None,
     touched_aliases: Optional[set] = None,
 ):
@@ -869,7 +868,6 @@ def update_fit_workflow(
         clear_existing: Clear existing fit items before inserting
         dry_run: Preview changes without saving
         target_alias: Target database alias (wcmkt or wcmktnorth)
-        update_targets: If True, update ship_targets table (default: False)
         metadata_override: Dict with metadata fields (overrides file if provided)
         touched_aliases: Optional accumulator set. This workflow writes the
             shared ``fittings`` replica and one market replica (``target_alias``)
@@ -999,7 +997,7 @@ def update_fit_workflow(
     logger.info(
         f"Completed fit update for fit_id={
             fit_id}, doctrine_ids={metadata.doctrine_ids} "
-        f"(remote={remote}, update_targets={update_targets})"
+        f"(remote={remote})"
     )
 
 

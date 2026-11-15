@@ -3,7 +3,7 @@
 These tests cover contracts introduced by the fix round:
 - ``_require_single_context`` rejects simultaneous conn= + engine=
 - ``_execute_market_plan`` aborts cleanly when no markets are configured
-- ``_handle_fit_update`` defaults to 'primary' and warns in non-TTY sessions
+- the ``fit-manager`` handler defaults to 'primary' and warns in non-TTY sessions
 """
 from unittest.mock import patch, MagicMock
 
@@ -78,7 +78,7 @@ class TestExecuteMarketPlanZeroAliasGuard:
 
 
 class TestFitUpdateDispatcherNonTtyFallback:
-    """Cover the command_registry._handle_fit_update non-TTY branch.
+    """Cover the fit-manager handler's non-TTY market resolution.
 
     In non-TTY with no --market flag, the handler must default to 'primary'
     and emit a warning rather than silently picking a DB (which was the
@@ -87,27 +87,23 @@ class TestFitUpdateDispatcherNonTtyFallback:
 
     def _handler(self):
         from mkts_backend.cli_tools.command_registry import get_registry
-        entry = get_registry().resolve("fit-update")
+        entry = get_registry().resolve("fit-manager")
         assert entry is not None
         return entry.handler
 
     def test_non_tty_no_market_flag_defaults_to_primary_and_warns(self, caplog):
-        handler = self._handler()
-        captured_kwargs: dict = {}
+        from mkts_backend.cli_tools.market_args import MARKET_DB_MAP
 
-        def fake_fit_update_command(**kwargs):
-            captured_kwargs.update(kwargs)
-            return True
+        handler = self._handler()
 
         with patch("sys.stdin.isatty", return_value=False), \
-             patch("mkts_backend.cli_tools.fit_update.fit_update_command",
-                   side_effect=fake_fit_update_command), \
+             patch("mkts_backend.cli_tools.fit_update.list_fits_command") as spy, \
              caplog.at_level("WARNING"):
-            # args simulate: `mkts-backend fit-update list-fits` with no --market
-            result = handler(["fit-update", "list-fits"], "primary")
+            # args simulate: `mkts-backend fit-manager list-fits` with no --market
+            result = handler(["list-fits"], "primary")
 
         assert result is True
-        assert captured_kwargs.get("market_flag") == "primary"
+        spy.assert_called_once_with(db_alias=MARKET_DB_MAP["primary"])
         assert any("non-TTY" in rec.message for rec in caplog.records), \
             f"expected non-TTY warning, got: {[r.message for r in caplog.records]}"
 
@@ -120,14 +116,13 @@ class TestFitUpdateDispatcherNonTtyFallback:
         handler = self._handler()
 
         for flag in ("--market=all", "--market=both"):
-            captured_kwargs: dict = {}
+            with patch(
+                "mkts_backend.cli_tools.fit_update.update_lead_ship_command",
+                return_value=True,
+            ) as spy:
+                handler(
+                    ["update-lead-ship", "--doctrine-id=21", "--fit-id=313", flag],
+                    "all",
+                )
 
-            def fake_fit_update_command(**kwargs):
-                captured_kwargs.update(kwargs)
-                return True
-
-            with patch("mkts_backend.cli_tools.fit_update.fit_update_command",
-                       side_effect=fake_fit_update_command):
-                handler(["fit-update", "list-fits", flag], "all")
-
-            assert captured_kwargs.get("market_flag") == "all", f"flag={flag}"
+            assert spy.call_args.kwargs["market_flag"] == "all", f"flag={flag}"

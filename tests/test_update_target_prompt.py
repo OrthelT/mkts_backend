@@ -1,9 +1,9 @@
-"""Regression locks for the interactive `fit-update update-target` flow.
+"""Regression locks for the interactive `fit-manager update-target` flow.
 
-Bug: `mkts-backend fit-update update-target --fit-id=139` (no `--target`)
-silently defaulted the target to 100 and wrote it with no prompt and no
-confirmation. The dispatcher injected `default=100`, which made the
-`if not target:` guard in ``fit_update_command`` dead code.
+Bug: `update-target --fit-id=139` (no `--target`) silently defaulted the
+target to 100 and wrote it with no prompt and no confirmation. The
+dispatcher injected `default=100`, which made its missing-target guard
+dead code.
 
 Expected behavior:
 - Missing ``--target`` in a non-TTY session: error, no write.
@@ -16,7 +16,7 @@ from mkts_backend.cli_tools.command_registry import get_registry
 
 
 def _fit_update_handler():
-    entry = get_registry().resolve("fit-update")
+    entry = get_registry().resolve("fit-manager")
     assert entry is not None
     return entry.handler
 
@@ -28,7 +28,7 @@ class TestUpdateTargetMissingTarget:
         with patch("sys.stdin.isatty", return_value=False), \
              patch("mkts_backend.cli_tools.fit_update.update_target_command") as spy:
             result = handler(
-                ["fit-update", "update-target", "--fit-id=139", "--market=primary"],
+                ["update-target", "--fit-id=139", "--market=primary"],
                 "primary",
             )
         spy.assert_not_called()
@@ -44,7 +44,7 @@ class TestUpdateTargetMissingTarget:
              patch("mkts_backend.cli_tools.fit_update.update_target_command",
                    return_value=True) as spy:
             result = handler(
-                ["fit-update", "update-target", "--fit-id=139", "--market=primary"],
+                ["update-target", "--fit-id=139", "--market=primary"],
                 "primary",
             )
         ask.assert_called_once()
@@ -63,7 +63,7 @@ class TestUpdateTargetConfirmation:
                    return_value=False) as confirm, \
              patch("mkts_backend.cli_tools.fit_update.update_target_command") as spy:
             result = handler(
-                ["fit-update", "update-target", "--fit-id=139", "--target=50",
+                ["update-target", "--fit-id=139", "--target=50",
                  "--market=primary"],
                 "primary",
             )
@@ -79,7 +79,7 @@ class TestUpdateTargetConfirmation:
              patch("mkts_backend.cli_tools.fit_update.update_target_command",
                    return_value=True) as spy:
             result = handler(
-                ["fit-update", "update-target", "--fit-id=139", "--target=50",
+                ["update-target", "--fit-id=139", "--target=50",
                  "--market=primary"],
                 "primary",
             )

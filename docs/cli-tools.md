@@ -145,85 +145,58 @@ those characters; see [setup](setup.md#eve-authorization).
 
 ## Managing fits and doctrines
 
-These commands change shared fitting/market data and normally upload changes to
-Turso. Download current data with `sync` before editing. Read the prompts and the
-market scope below before confirming changes.
-
-Use `fit-update` for the interactive workflows:
+`fit-manager` is the one command for adding, changing, and removing fits and
+doctrines. It changes shared fitting/market data and uploads each change to
+Turso. Download current data with `sync` before editing.
 
 ```bash
-uv run mkts-backend fit-update list-fits --market=primary
-uv run mkts-backend fit-update list-doctrines --market=primary
-uv run mkts-backend fit-update add --paste --interactive --market=primary
-uv run mkts-backend fit-update update --fit-id=313 --file="my-fit.txt" --market=primary --dry-run
-uv run mkts-backend fit-update update --fit-id=313 --file="my-fit.txt" --market=primary
-uv run mkts-backend fit-update create-doctrine --market=primary
-uv run mkts-backend fit-update doctrine-add-fit --market=primary
-uv run mkts-backend fit-update doctrine-remove-fit --market=primary
+uv run mkts-backend fit-manager --help                # list the subcommands
+uv run mkts-backend fit-manager update --help         # one subcommand's options and examples
 ```
 
-For the numbered multiline editor used when adding/updating a fit, press **Esc,
-then Enter** to submit pasted EFT text. This differs from `fitcheck --paste`.
+Every subcommand has its own help page with its options, the markets it
+writes, and examples. An option that a subcommand does not list is rejected
+with an error, so a typo cannot be silently ignored.
 
-`add --interactive` prompts for metadata and market selection. `update` replaces
-fit contents in **every market where the fit already exists**, even when
-`--market` names just one. `--dry-run` previews the add/update workflow; it is
-not a universal preview flag for every management command.
+| Subcommand | Purpose | Markets written |
+|---|---|---|
+| `add` | Add a new fit from EFT text and link it to doctrines | Selected market; `all` for every market |
+| `update` | Replace the items of an existing fit | Every market that already tracks the fit |
+| `remove` | Stop tracking a fit in a market | Selected market; `all` for every market |
+| `list-fits` | List the fits tracked in a market | Reads one market |
+| `create-doctrine` | Create a new doctrine | None (shared fittings database) |
+| `list-doctrines` | List the doctrines assigned to a market | Reads one market |
+| `doctrine-add-fit` | Link existing fits to a doctrine | Selected market; `all` for every market |
+| `doctrine-remove-fit` | Unlink fits from a doctrine | One market |
+| `assign-market` | Set which markets stock a fit or doctrine | `primary` (with market3), `deployment`, or `all` |
+| `unassign-market` | Remove a fit or doctrine from a market | `primary` (with market3), `deployment`, or `all` |
+| `update-target` | Set the target quantity for a fit | Selected market; `primary` also writes market3 |
+| `update-lead-ship` | Set the lead ship shown for a doctrine | Selected market; `all` for every market |
+| `update-friendly-name` | Set the short display name for a doctrine | Every market |
+| `populate-friendly-names` | Set display names in bulk from a JSON file | Every market |
 
-`doctrine-add-fit` currently prompts for the doctrine even if a `--doctrine-id`
-is supplied. Both doctrine link commands offer interactive selection. To pass
-several fits, use `--fit-id=313,314,315` (singular `fit-id`), not `--fit-ids`.
-`doctrine-add-fit --skip-targets` keeps existing targets and skips target prompts.
+Subcommands that take a market ask which one to use when you leave out
+`--market` in a terminal. `update`, `create-doctrine`, `update-friendly-name`,
+and `populate-friendly-names` take no market option and reject one.
 
-### Changing saved targets and labels
+### Adding and updating fits
 
 ```bash
-uv run mkts-backend fit-update update-target --fit-id=313 --target=300 --market=deployment
-uv run mkts-backend fit-update update-lead-ship --doctrine-id=21 --fit-id=313 --market=deployment
-uv run mkts-backend fit-update update-friendly-name --doctrine-id=21 --name="Hurricane" --market=all
+# Add a new fit: paste it, then answer the prompts
+uv run mkts-backend fit-manager add --paste --interactive --market=primary
+
+# Add a new fit from files
+uv run mkts-backend fit-manager add --file="my-fit.txt" --meta-file="metadata.json" --market=deployment
+
+# Preview, then save, new items for an existing fit
+uv run mkts-backend fit-manager update --fit-id=313 --file="my-fit.txt" --dry-run
+uv run mkts-backend fit-manager update --fit-id=313 --file="my-fit.txt"
 ```
 
-`update-target` prompts for confirmation in a terminal; omit `--target` to enter
-it at the prompt. The top-level `mkts-backend update-target` also exists but
-requires both values and does not provide the same confirmation prompt.
+Give the fit with `--file` or `--paste`. In the paste editor, press **Esc, then
+Enter** to submit. This differs from `fitcheck --paste`.
 
-A friendly name is the short display label for a doctrine. Friendly-name changes
-apply to **all configured markets**, regardless of the market selector.
-`populate-friendly-names` loads a `doctrine_names.json` file from the working
-folder, with entries such as `{"21": "Hurricane", "34": "Muninn"}`, and also
-updates all markets.
-
-### Assignment and removal scope
-
-The fitting assignment model currently links `primary` and `market3`.
-Assigning to `primary` includes market3; saved target changes for `primary` also
-apply to market3. Deployment can be managed separately.
-
-```bash
-uv run mkts-backend fit-update assign-market --fit-id=313 --market=deployment
-uv run mkts-backend fit-update unassign-market --fit-id=313 --market=deployment
-```
-
-Assignment replaces the fit's market membership; choosing deployment can remove
-its primary/market3 assignment. Use `--market=all` to assign everywhere.
-These commands also accept `--doctrine-id` to act on a whole doctrine.
-`unassign-market` removes membership from the selected market group.
-
-`doctrine-remove-fit` unlinks a fit from a doctrine while keeping its fit record.
-The separate `fit-update remove` command removes wider tracking. In the current
-implementation, `remove --market=primary` selects **all markets**. Have the
-maintainer handle full removals; do not use it as a primary-only delete.
-
-### File and metadata workflow
-
-`update-fit` is a separate file-based command; it is not an alias for
-`fit-update` and does not take its subcommands or paste mode.
-
-```bash
-uv run mkts-backend update-fit --fit-file="my-fit.txt" --fit-id=313 --interactive --market=deployment --dry-run
-```
-
-Replace `--fit-id=313 --interactive` with `--meta-file="metadata.json"` to use:
+`add` needs the fit's metadata from `--interactive` (prompts) or `--meta-file`:
 
 ```json
 {
@@ -235,10 +208,79 @@ Replace `--fit-id=313 --interactive` with `--meta-file="metadata.json"` to use:
 }
 ```
 
-Remove `--dry-run` to save. `--update-targets` also updates target-related tables;
-`--no-clear` keeps existing fitting items. Legacy `--remote`, `--local`, and
-`--local-only` flags are not reliable ways to isolate an edit from shared data:
-the engines use the same local replica and management writers still push.
+`update` replaces a fit's items in **every market where the fit already
+exists** and keeps its stored name, doctrines, and target. Add `--meta-file` to
+replace those too. Add `--no-clear` to keep items that the new fit no longer
+lists. `update` fails for a fit that no market tracks; use `add` for that.
+`--dry-run` is available on `add` and `update` only.
+
+### Doctrines
+
+```bash
+uv run mkts-backend fit-manager create-doctrine
+uv run mkts-backend fit-manager doctrine-add-fit --fit-id=313,314,315 --market=primary
+uv run mkts-backend fit-manager doctrine-remove-fit --doctrine-id=21 --fit-id=313 --market=primary
+```
+
+`doctrine-add-fit` always asks which doctrine to use. `--skip-targets` keeps
+existing targets and skips the target prompts. `doctrine-remove-fit` unlinks a
+fit from one doctrine and keeps the fit.
+
+### Targets and labels
+
+```bash
+uv run mkts-backend fit-manager update-target --fit-id=313 --target=300 --market=deployment
+uv run mkts-backend fit-manager update-lead-ship --doctrine-id=21 --fit-id=313 --market=deployment
+uv run mkts-backend fit-manager update-friendly-name --doctrine-id=21 --name="Hurricane"
+```
+
+`update-target` asks for confirmation in a terminal; omit `--target` to enter
+it at the prompt.
+
+A friendly name is the short display label for a doctrine. Friendly-name
+changes apply to **all configured markets**. `populate-friendly-names` loads
+`doctrine_names.json` from the working folder:
+
+```json
+[
+  {"fit_id": 313, "doctrine_id": 21, "friendly_name": "Hurricane"},
+  {"fit_id": 550, "doctrine_id": 34, "friendly_name": "Muninn"}
+]
+```
+
+### Assignment and removal scope
+
+The fitting assignment model links `primary` and `market3`. Assigning to
+`primary` includes market3; a target change for `primary` also applies to
+market3. Deployment is managed separately.
+
+```bash
+uv run mkts-backend fit-manager assign-market --fit-id=313 --market=deployment
+uv run mkts-backend fit-manager unassign-market --fit-id=313 --market=deployment
+```
+
+Assignment replaces the fit's market membership; choosing deployment removes
+its primary/market3 assignment. Use `--market=all` to assign everywhere. Pass
+`--doctrine-id` in place of `--fit-id` to act on a whole doctrine.
+
+`remove` stops tracking a fit in the selected market: it deletes the fit from
+that market's doctrines, targets, and stock data. `remove --market=all` does
+this in every market. A removal asks for confirmation and cannot be undone.
+
+### Replaced commands
+
+`fit-manager` replaced three commands. Running an old name prints this mapping
+and exits with an error.
+
+| Old command | Use |
+|---|---|
+| `fit-update <subcommand>` | `fit-manager <subcommand>` (same subcommand names) |
+| `update-target` | `fit-manager update-target` |
+| `update-fit --fit-file=... --meta-file=...` | `fit-manager update --file=... --meta-file=...` for an existing fit, or `fit-manager add` for a new fit |
+
+`fit-manager` does not accept `--remote`, `--local-only`, or `--update-targets`.
+Those options never changed where data was saved: every change goes to the
+local copy and is then uploaded, and targets are always saved with a fit.
 
 ## Watchlists and interchangeable modules
 
@@ -283,6 +325,6 @@ Prefix these commands with `uv run`. See [builder costs](builder_costs.md) for
 manufacturing commands and [setup](setup.md) for credentials.
 
 For command help use `uv run fitcheck --help`,
-`uv run mkts-backend fit-update --help`, or
+`uv run mkts-backend fit-manager --help`, or
 `uv run mkts-backend build-watchlist --help`. Some commands show the general
 help page rather than a dedicated page.

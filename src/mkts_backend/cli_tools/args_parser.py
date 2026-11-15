@@ -1,7 +1,7 @@
 from mkts_backend.cli_tools.cli_help import display_cli_help
 from mkts_backend.cli_tools.market_args import resolve_market_alias
 from mkts_backend.cli_tools.arg_utils import ParsedArgs, suggest_command, check_bare_args
-from mkts_backend.cli_tools.command_registry import get_registry
+from mkts_backend.cli_tools.command_registry import get_registry, removed_command_message
 
 from mkts_backend.config.market_context import MarketContext
 from mkts_backend.utils.validation import validate_all
@@ -18,9 +18,7 @@ _VALID_ENVIRONMENTS = ("production", "development")
 _SUBCOMMANDS_WITH_HELP = {
     "esi-auth",
     "fit-check",
-    "fit-update",
-    "update-fit",
-    "update-target",
+    "fit-manager",
     "update-builder-costs",
     "build-watchlist",
 }
@@ -133,6 +131,10 @@ def parse_args(args: list[str]) -> dict | None:
     for i, arg in enumerate(args):
         if arg.startswith("--"):
             continue
+        removed = removed_command_message(arg)
+        if removed:
+            print(removed)
+            exit(1)
         entry = registry.resolve(arg)
         if entry:
             sub_args = args[i + 1:]

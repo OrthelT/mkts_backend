@@ -1367,6 +1367,12 @@ def main():
             success = entry.handler(sub_args, market_alias)
             sys.exit(0 if success else 1)
 
+        from mkts_backend.cli_tools.command_registry import removed_command_message
+        removed = removed_command_message(args[0])
+        if removed:
+            print(removed)
+            sys.exit(1)
+
         # Unknown subcommand — suggest closest match
         from mkts_backend.cli_tools.arg_utils import suggest_command
         suggestion = suggest_command(args[0], registry.all_names())

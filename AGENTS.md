@@ -37,9 +37,10 @@ All paths below are under `src/mkts_backend/` unless stated otherwise.
 | Entry points | `pyproject.toml`: `mkts-backend` / `mkts` → `cli.main`; `fitcheck` → `cli_tools.fit_check.main` |
 | Dispatch and typed argument parsing | `cli_tools/command_registry.py`, `args_parser.py`, `arg_utils.py` |
 | Market selection | `cli_tools/market_args.py`, `config/market_context.py` |
-| CLI help | `cli_tools/cli_help.py`, plus fitcheck/equiv help in their modules |
+| CLI help | `cli_tools/cli_help.py`, plus fitcheck/equiv/fit-manager help in their modules |
 | Market pipeline | `cli.py`, `processing/data_processing.py`, `db/db_handlers.py` |
 | Fit reports | `cli_tools/fit_check.py`, `fit_check_needed.py`, `fit_check_module.py` |
+| Fit management CLI surface | `cli_tools/fit_manager.py`: subcommand table, per-subcommand help, option validation, dispatch |
 | Fit writes and assignment | `cli_tools/fit_update.py`, `utils/parse_fits.py`, `utils/doctrine_update.py` |
 | Database routing/replicas | `config/settings_service.py`, `config/db_config.py` |
 | Models and queries | `db/models.py`, `db/db_queries.py` |
@@ -131,27 +132,42 @@ identical default-market/help handling.
 - `fitcheck` / `list-fits` / `needed` use a single market; `module` expands `all`.
   Reports read stored market data. `fitcheck --refresh` refreshes Jita comparison
   prices; `needed --refresh` affects assets only. Neither collects market orders.
-- `fit-update` requires a subcommand. `update-fit` is a separate file/metadata
-  workflow, not an alias. Its `--fit-id` requires `--interactive` or `--meta-file`.
-- `fit-update update` finds every market containing the fit and updates all of
-  them, irrespective of a narrower requested market. `add --interactive` prompts
-  for metadata and market choice. Dry-run support is per-handler, not universal.
-- The fit registry accepts comma-separated `--fit-id`, not documented legacy
-  `--fit-ids`. `doctrine-add-fit` passes `doctrine_id=None` to its interactive
-  handler even if supplied on the command line; do not promise unattended use.
+- `fit-manager` is the one command for fit and doctrine management. It replaced
+  `fit-update`, `update-fit`, and top-level `update-target`; those names are
+  unregistered and print a pointer (`REMOVED_COMMANDS` in `command_registry.py`).
+- Each `fit-manager` subcommand is one `Subcommand` entry in `fit_manager.py`.
+  Its `options` tuple is both the help text and the accepted set: an unlisted
+  `--option` is rejected. Add an option there, never as an undocumented
+  `ParsedArgs` read. `markets=None` means the subcommand takes no market option
+  and never prompts for one. `tests/test_fit_manager.py` checks every help page
+  (sections, 80 columns, examples parse).
+- `fit-manager update` writes every market that already tracks the fit and takes
+  no market option; it fails for an untracked fit (use `add`). `--meta-file`
+  replaces metadata; `--fit-id` overrides the file's `fit_id`. `--no-clear` keeps
+  unlisted items. `add` requires `--file` or `--paste`, and exactly one of
+  `--interactive` or `--meta-file`. Only `add` and `update` support `--dry-run`.
+- `fit-manager` rejects `--remote`, `--local-only`, and `--update-targets`; all
+  three were inert. The `remote=` parameters inside `fit_update.py` remain.
+- `--fit-id` takes a comma-separated list only on `doctrine-add-fit` and
+  `doctrine-remove-fit`. `doctrine-add-fit` always prompts for the doctrine and
+  rejects `--doctrine-id`; do not promise unattended use.
 - Assignment uses `_flag_to_aliases`: `primary` includes market3, `deployment`
   is separate, and `all` includes every configured market. Saved target updates
   share that mapping. Assignment/unassignment validators still restrict choices
   to primary/deployment/all; an arbitrary new configured market is not fully
   supported by that assignment model. `assign-market` replaces membership.
-- `fit-update remove --market=primary` currently expands to all markets. Do not
-  advertise it as a primary-only removal. `doctrine-remove-fit` only unlinks fits.
+- `fit-manager remove` acts on the selected market; `--market=all` removes
+  everywhere. It deletes the shared `fittings_doctrine_fittings` links only when
+  no other market still tracks the fit (`keep_doctrine_links`).
+  `doctrine-remove-fit` only unlinks fits. `list-fits`, `list-doctrines`, and
+  `doctrine-remove-fit` use one database; `--market=all` is read as primary.
 - Friendly-name commands write all configured markets, regardless of selection.
   `update-lead-ship` uses the selected market expansion instead.
 - `equiv` defaults to all markets and reads its own literal `--market` value.
   Its handler does not expand `--market=all` or honor shorthand market flags;
   use an explicit concrete selector or omit the selector for all markets.
-- `--remote` is an engine-selection compatibility flag, not direct cloud access.
+- Where a command still accepts `--remote`, it is an engine-selection
+  compatibility flag, not direct cloud access.
   `--local`/`--local-only` do not reliably suppress management pushes. Never use
   these as a production isolation boundary. Likewise, `build-watchlist --no-sync`
   skips the handler's extra push but repository mutation helpers already push.
@@ -373,7 +389,7 @@ market's successful write timestamp and the configured TTL, not the schedule alo
 The focused CLI documentation review can be checked with:
 
 ```bash
-uv run pytest -q tests/test_arg_utils.py tests/test_command_registry.py tests/test_cli_routing.py tests/test_cli_market_flag.py tests/test_sync_command.py tests/test_build_watchlist_cli.py tests/test_update_target_prompt.py tests/test_jita_cache.py
+uv run pytest -q tests/test_arg_utils.py tests/test_command_registry.py tests/test_cli_routing.py tests/test_cli_market_flag.py tests/test_sync_command.py tests/test_build_watchlist_cli.py tests/test_fit_manager.py tests/test_update_target_prompt.py tests/test_jita_cache.py
 ```
 
 For writer changes, also inspect/run relevant `test_management_push.py`,

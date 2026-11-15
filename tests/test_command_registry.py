@@ -67,7 +67,7 @@ class TestGlobalRegistry:
     def test_all_expected_commands_registered(self):
         reg = get_registry()
         expected = {
-            "fit-check", "fit-update", "update-fit", "update-target",
+            "fit-check", "fit-manager",
             "assets", "equiv", "sync", "parse-items",
             "update-builder-costs",
             "esi-auth", "add_watchlist", "list-fits", "needed", "module",

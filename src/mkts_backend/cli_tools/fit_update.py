@@ -1,27 +1,11 @@
 """
-Fit Update CLI commands.
+Fit and doctrine management: the database work behind ``fit-manager``.
 
-Interactive tools for managing fits and doctrines:
-- add: Add a new fit from an EFT file or pasted text
-- update: Update an existing fit's items from file or pasted text
-- remove: Completely remove a fit from all doctrines and targets
-- assign-market: Assign market flags to fits
-- unassign-market: Remove a fit from one or all markets
-- list-fits: List all fits
-- list-doctrines: List doctrines assigned to the market
-- create-doctrine: Create a new doctrine
-- doctrine-add-fit: Add existing fit(s) to a doctrine
-- doctrine-remove-fit: Remove fit(s) from a doctrine
-- update-target: Update the target quantity for a fit
-- update-lead-ship: Set or change the lead ship for a doctrine
-- update-friendly-name: Update the friendly_name for a doctrine
-- populate-friendly-names: Bulk-populate friendly_names from a JSON map
-
-Supports --paste mode for pasting EFT text directly via multiline prompt
-instead of requiring a file path.
+``fit_manager.py`` owns the CLI surface (subcommands, options, help) and
+calls the ``*_command`` functions here. Each writer pushes the replicas it
+touched before it returns.
 """
 
-import sys
 from collections import defaultdict
 from typing import List, Optional
 from rich.console import Console
@@ -58,7 +42,6 @@ from mkts_backend.utils.doctrine_update import (
 )
 from mkts_backend.utils.parse_fits import (
     update_fit_workflow,
-    parse_fit_metadata,
     create_doctrine,
     get_next_doctrine_id,
     ensure_doctrine_link,
@@ -66,7 +49,6 @@ from mkts_backend.utils.parse_fits import (
     remove_all_doctrine_links_for_fit,
     get_doctrine_ids_for_fit,
 )
-from mkts_backend.cli_tools.prompter import get_multiline_input
 from mkts_backend.cli_tools.push import push_or_log
 from mkts_backend.utils.db_utils import add_missing_items_to_watchlist
 
@@ -961,6 +943,35 @@ def _get_doctrine_fits_rows(
         }
         for r in result
     ]
+
+
+def find_tracked_fit(fit_id: int) -> tuple[List[str], Optional[dict]]:
+    """Find the markets that track ``fit_id`` and the metadata they store.
+
+    Returns ``(db_aliases, metadata)``: the database alias of every configured
+    market whose ``doctrine_fits`` has the fit, and ``FitMetadata`` fields
+    built from the first of those markets. ``metadata`` is ``None`` when no
+    market tracks the fit.
+    """
+    db_aliases: List[str] = []
+    rows: List[dict] = []
+    for alias in _configured_market_db_aliases():
+        alias_rows = _get_doctrine_fits_rows(fit_id, alias)
+        if alias_rows:
+            db_aliases.append(alias)
+            rows = rows or alias_rows
+    if not rows:
+        return [], None
+
+    fit_name = rows[0]["fit_name"] or f"Fit {fit_id}"
+    target = rows[0]["target"]
+    return db_aliases, {
+        "fit_id": fit_id,
+        "name": fit_name,
+        "description": f"{fit_name} doctrine fit",
+        "doctrine_id": sorted({row["doctrine_id"] for row in rows}),
+        "target": target if target is not None else 100,
+    }
 
 
 def _get_remote_market_flags(
@@ -2299,12 +2310,11 @@ def remove_fit_command(
     fit_id: int,
     remote: bool = False,
     db_alias: str = "wcmkt",
+    keep_doctrine_links: bool = False,
 ) -> bool:
     """
-    Completely remove a fit from the system.
-
-    This is the inverse of the add command — it removes the fit from ALL
-    doctrines, ship_targets, and market data tables.
+    Remove a fit from one market: all of its doctrines, its ship target, and
+    its market data in ``db_alias``. The inverse of the add command.
 
     Tables affected:
         1. doctrines       - market analysis rows for this fit
@@ -2317,6 +2327,9 @@ def remove_fit_command(
         fit_id: The fit ID to remove
         remote: Use remote database
         db_alias: Target market database alias
+        keep_doctrine_links: Skip step 4. The links live in the shared
+            fittings database, so the caller sets this when a market other
+            than the ones being removed still tracks the fit.
 
     Returns:
         True if the fit was successfully removed
@@ -2339,8 +2352,8 @@ def remove_fit_command(
     # Display what will be removed
     console.print(
         Panel(
-            "[bold]Remove fit from ALL doctrines[/bold]\n\n"
-            "This completely removes a fit from the system:\n"
+            f"[bold]Remove fit from {db_alias}[/bold]\n\n"
+            "This removes the fit from this market:\n"
             "  - Removes from all doctrines\n"
             "  - Removes ship target\n"
             "  - Removes market analysis data\n\n"
@@ -2397,10 +2410,17 @@ def remove_fit_command(
         console.print(f"  [dim]doctrine_fits:[/dim] {fits_removed} rows removed")
 
         # Step 4: Remove from fittings_doctrine_fittings (all doctrines)
-        links_removed = remove_all_doctrine_links_for_fit(fit_id, remote=remote)
-        console.print(
-            f"  [dim]fittings_doctrine_fittings:[/dim] {links_removed} rows removed"
-        )
+        if keep_doctrine_links:
+            links_removed = 0
+            console.print(
+                "  [dim]fittings_doctrine_fittings:[/dim] kept "
+                "(another market still tracks this fit)"
+            )
+        else:
+            links_removed = remove_all_doctrine_links_for_fit(fit_id, remote=remote)
+            console.print(
+                f"  [dim]fittings_doctrine_fittings:[/dim] {links_removed} rows removed"
+            )
 
         # Step 5: Remove from ship_targets
         target_removed = remove_ship_target(
@@ -2420,7 +2440,7 @@ def remove_fit_command(
 
         console.print()
         console.print(
-            f"[green]✓ Fit {fit_id} ({fit_info['fit_name']}) completely removed[/green]"
+            f"[green]✓ Fit {fit_id} ({fit_info['fit_name']}) removed from {db_alias}[/green]"
         )
         return True
 
@@ -3006,545 +3026,3 @@ def populate_friendly_names_command(
         console.print("[yellow]No friendly_name rows updated on any configured market[/yellow]")
 
     return True
-
-
-def fit_update_command(
-    subcommand: str,
-    fit_id: Optional[int] = None,
-    fit_ids: Optional[List[int]] = None,
-    file_path: Optional[str] = None,
-    meta_file: Optional[str] = None,
-    market_flag: str = "primary",
-    remote: bool = False,
-    local_only: bool = False,
-    dry_run: bool = False,
-    interactive: bool = False,
-    target_alias: str = "wcmkt",
-    target: Optional[int] = None,
-    skip_targets: bool = False,
-    paste_mode: bool = False,
-    friendly_name: Optional[str] = None,
-    doctrine_id: Optional[int] = None,
-) -> bool:
-    """
-    Main entry point for fit-update commands.
-
-    Subcommands:
-        add                  - Add a NEW fit from an EFT file and assign to doctrine(s)
-        update               - Update an existing fit's items from an EFT file
-        remove               - Completely remove a fit from ALL doctrines and targets
-        assign-market        - Change the market assignment for an existing fit
-        unassign-market      - Remove a fit or doctrine from a specific market
-        list-fits            - List all fits in the doctrine tracking system
-        list-doctrines       - List doctrines assigned to the market
-        create-doctrine      - Create a new doctrine (group of fits)
-        doctrine-add-fit     - Add existing fit(s) to a doctrine (supports multiple)
-        doctrine-remove-fit  - Remove fit(s) from a doctrine (supports multiple)
-        update-target             - Update the target quantity for a fit
-        update-lead-ship          - Set or change the lead ship for a doctrine
-        update-friendly-name      - Set the friendly display name for a fit
-        populate-friendly-names   - Bulk populate friendly names from JSON
-
-    Args:
-        subcommand: The subcommand to run
-        fit_id: Fit ID for update/assign-market commands (single)
-        fit_ids: List of fit IDs for doctrine-add-fit/doctrine-remove-fit (multiple)
-        file_path: Path to EFT fit file
-        meta_file: Path to metadata JSON file
-        market_flag: Market assignment (primary, deployment, all)
-        remote: Use remote database
-        local_only: Use local database only (no Turso sync)
-        dry_run: Preview without committing
-        interactive: Use interactive prompts
-        target_alias: Target database alias
-        target: Target quantity. ``None`` means "not supplied": update-target
-            prompts (TTY) or errors (non-TTY); doctrine-add-fit falls back to 100.
-        skip_targets: Preserve existing targets, skip target prompts (doctrine-add-fit)
-        paste_mode: whether to use pasted fit.
-
-    Returns:
-        True if command succeeded
-    """
-    # Determine remote flag
-    use_remote = remote and not local_only
-
-    if paste_mode and subcommand not in ("add", "update"):
-        eft_text = get_multiline_input()
-        if eft_text:
-            print("EFT text input registered")
-            file_path = "temp_file.txt"
-            with open(file_path, "w") as f:
-                f.write(eft_text)
-
-        else:
-            console.print("[orange]warning: eft_text not recorded")
-
-    if subcommand == "list-fits":
-        list_fits_command(db_alias=target_alias, remote=use_remote)
-        return True
-
-    elif subcommand == "list-doctrines":
-        list_doctrines_command(db_alias=target_alias, remote=use_remote)
-        return True
-
-    elif subcommand == "assign-market":
-        if doctrine_id is not None:
-            return assign_doctrine_market(
-                doctrine_id, market_flag, remote=use_remote, db_alias=target_alias
-            )
-        if fit_id is None:
-            console.print(
-                "[red]Error: --fit-id or --doctrine-id is required for assign-market[/red]"
-            )
-            return False
-        result = assign_market_command(
-            fit_id, market_flag, remote=use_remote, db_alias=target_alias
-        )
-        return (
-            bool(result.get("updated", 0))
-            and not result.get("push_failed")
-            and not result.get("bucket_failures")
-            and not result.get("step_failures")
-        )
-
-    elif subcommand == "unassign-market":
-        if doctrine_id is not None:
-            return unassign_doctrine_market(
-                doctrine_id, market_flag, remote=use_remote, db_alias=target_alias
-            )
-        if fit_id is None:
-            console.print(
-                "[red]Error: --fit-id or --doctrine-id is required for unassign-market[/red]"
-            )
-            return False
-        result = unassign_market_command(
-            fit_id, market_flag, remote=use_remote, db_alias=target_alias
-        )
-        return (
-            bool(result.get("updated", 0) or result.get("deleted", 0))
-            and not result.get("push_failed")
-            and not result.get("bucket_failures")
-            and not result.get("step_failures")
-        )
-
-    elif subcommand == "add":
-        eft_text = None
-        if not file_path:
-            eft_text = get_multiline_input()
-
-        if interactive:
-            return interactive_add_fit(
-                fit_file=file_path,
-                eft_text=eft_text,
-                remote=use_remote,
-                dry_run=dry_run,
-                target_alias=target_alias,
-                market_flag=market_flag,
-            )
-        else:
-            if not meta_file:
-                console.print(
-                    "[red]Error: --meta-file is required for non-interactive add[/red]"
-                )
-                console.print(
-                    "[dim]Use --interactive for prompted input[/dim]")
-                return False
-
-            try:
-                metadata = parse_fit_metadata(meta_file)
-
-                # Determine which databases to update
-                if market_flag in ("both", "all"):
-                    aliases = _configured_market_db_aliases()
-                else:
-                    aliases = [target_alias]
-
-                touched_aliases: set = set()
-                for alias in aliases:
-                    result = update_fit_workflow(
-                        fit_id=metadata.fit_id,
-                        fit_file=file_path,
-                        fit_metadata_file=meta_file,
-                        remote=use_remote,
-                        clear_existing=True,
-                        dry_run=dry_run,
-                        target_alias=alias,
-                        touched_aliases=touched_aliases,
-                    )
-
-                if dry_run:
-                    console.print("[yellow]DRY RUN complete[/yellow]")
-                    console.print(
-                        f"Ship: {result['ship_name']
-                                 } ({result['ship_type_id']})"
-                    )
-                    console.print(f"Items: {len(result['items'])}")
-                else:
-                    for touched_alias in sorted(touched_aliases):
-                        if not push_or_log(touched_alias):
-                            return False
-                    console.print(
-                        f"[green]Successfully added fit {
-                            metadata.fit_id}[/green]"
-                    )
-
-                return True
-
-            except Exception as e:
-                console.print(f"[red]Error: {e}[/red]")
-                logger.exception("Error in fit_update_command add")
-                return False
-
-    elif subcommand == "update":
-        if fit_id is None:
-            console.print(
-                "[red]Error: --fit-id is required for update command[/red]")
-            return False
-
-        if not file_path:
-            eft_text = get_multiline_input()
-            if eft_text:
-                file_path = eft_text_to_file(eft_text)
-
-        if not file_path:
-            console.print(
-                "[red]Error: --file or pasted EFT text is required for update command[/red]")
-            return False
-
-        # Look up existing metadata from doctrine_fits (source of truth)
-        meta_data_dict = None
-        if not meta_file:
-            # Query doctrine_fits from wcmkt (primary source of truth)
-            db = DatabaseConfig("wcmkt")
-            mkt_engine = db.remote_engine if use_remote else db.engine
-            with mkt_engine.connect() as conn:
-                rows = conn.execute(
-                    text("SELECT doctrine_id, fit_name, ship_name, target FROM doctrine_fits WHERE fit_id = :fit_id"),
-                    {"fit_id": fit_id},
-                ).fetchall()
-            mkt_engine.dispose()
-
-            if not rows:
-                # Fallback: check the other configured markets.
-                for fallback in _configured_market_db_aliases():
-                    fb_db = DatabaseConfig(fallback)
-                    fb_engine = fb_db.remote_engine if use_remote else fb_db.engine
-                    with fb_engine.connect() as conn:
-                        rows = conn.execute(
-                            text("SELECT doctrine_id, fit_name, ship_name, target FROM doctrine_fits WHERE fit_id = :fit_id"),
-                            {"fit_id": fit_id},
-                        ).fetchall()
-                    fb_engine.dispose()
-                    if rows:
-                        break
-
-            if not rows:
-                console.print(f"[red]Error: fit {fit_id} not found in doctrine_fits[/red]")
-                return False
-
-            existing_doctrine_ids = list({row[0] for row in rows})
-            fit_name = rows[0][1] or f"Fit {fit_id}"
-            fit_target = rows[0][3] if rows[0][3] is not None else 100
-
-            meta_data_dict = {
-                "fit_id": fit_id,
-                "name": fit_name,
-                "description": f"{fit_name} doctrine fit",
-                "doctrine_id": existing_doctrine_ids,
-                "target": fit_target,
-            }
-
-        try:
-            # Update all markets where the fit currently exists
-            aliases = []
-            for alias in _configured_market_db_aliases():
-                existing = get_fit_target(fit_id, remote=use_remote, db_alias=alias)
-                if existing is not None:
-                    aliases.append(alias)
-            if not aliases:
-                aliases = [target_alias]
-
-            result = None
-            touched_aliases: set = set()
-            for alias in aliases:
-                result = update_fit_workflow(
-                    fit_id=fit_id,
-                    fit_file=file_path,
-                    fit_metadata_file=meta_file,
-                    remote=use_remote,
-                    clear_existing=True,
-                    dry_run=dry_run,
-                    target_alias=alias,
-                    metadata_override=meta_data_dict,
-                    touched_aliases=touched_aliases,
-                )
-
-            if dry_run and result:
-                console.print("[yellow]DRY RUN complete[/yellow]")
-                console.print(f"Ship: {result['ship_name']} ({
-                              result['ship_type_id']})")
-                console.print(f"Items: {len(result['items'])}")
-            else:
-                for touched_alias in sorted(touched_aliases):
-                    if not push_or_log(touched_alias):
-                        return False
-                display_names = []
-                for a in aliases:
-                    resolved = DatabaseConfig(a).alias
-                    label = _market_name_for_db_alias(resolved)
-                    display_names.append(f"{resolved} ({label})")
-                console.print(f"[green]Successfully updated fit {
-                              fit_id} on {', '.join(display_names)}[/green]")
-
-            return True
-
-        except Exception as e:
-            console.print(f"[red]Error: {e}[/red]")
-            logger.exception("Error in fit_update_command update")
-            return False
-
-    elif subcommand == "create-doctrine":
-        return create_doctrine_command(
-            remote=use_remote,
-            interactive=interactive or True,  # Default to interactive
-        )
-
-    elif subcommand == "doctrine-add-fit":
-        # Use fit_ids if provided (comma-separated), otherwise wrap single fit_id
-        if fit_ids is not None:
-            fit_ids_list = fit_ids
-        elif fit_id is not None:
-            fit_ids_list = [fit_id]
-        else:
-            fit_ids_list = None  # Will prompt in interactive mode
-        return doctrine_add_fit_command(
-            doctrine_id=None,  # Will prompt in interactive mode
-            fit_ids=fit_ids_list,
-            target=target if target is not None else 100,
-            market_flag=market_flag,
-            remote=use_remote,
-            interactive=interactive or True,  # Default to interactive
-            db_alias=target_alias,
-            skip_targets=skip_targets,
-        )
-
-    elif subcommand == "remove":
-        if fit_id is None:
-            console.print(
-                "[red]Error: --fit-id is required for remove command[/red]"
-            )
-            return False
-        # Default to all markets unless a specific market was given
-        if market_flag in ("both", "all", "primary"):
-            # "primary" is the default when no --market flag is passed,
-            # so treat it the same as "all" for remove.
-            aliases = _configured_market_db_aliases()
-        else:
-            aliases = [target_alias]
-        success = True
-        for alias in aliases:
-            if not remove_fit_command(
-                fit_id=fit_id,
-                remote=use_remote,
-                db_alias=alias,
-            ):
-                success = False
-        return success
-
-    elif subcommand == "doctrine-remove-fit":
-        # Use fit_ids if provided (comma-separated), otherwise wrap single fit_id
-        if fit_ids is not None:
-            fit_ids_list = fit_ids
-        elif fit_id is not None:
-            fit_ids_list = [fit_id]
-        else:
-            fit_ids_list = None  # Will prompt in interactive mode
-        return doctrine_remove_fit_command(
-            doctrine_id=doctrine_id,
-            fit_ids=fit_ids_list,
-            remote=use_remote,
-            interactive=interactive or True,  # Default to interactive
-            db_alias=target_alias,
-        )
-
-    elif subcommand == "update-target":
-        if fit_id is None:
-            console.print(
-                "[red]Error: --fit-id is required for update-target command[/red]"
-            )
-            return False
-        interactive_tty = sys.stdin.isatty()
-        if target is None:
-            if not interactive_tty:
-                console.print(
-                    "[red]Error: --target is required for update-target command[/red]"
-                )
-                return False
-            target = IntPrompt.ask("[bold]Target quantity[/bold]")
-        if interactive_tty and not Confirm.ask(
-            f"Update target for fit {fit_id} to [yellow]{target}[/yellow]?"
-        ):
-            console.print("[yellow]Aborted: target unchanged[/yellow]")
-            return False
-        return update_target_command(
-            fit_id,
-            target,
-            market_flag=market_flag,
-            remote=use_remote,
-            db_alias=target_alias,
-        )
-    elif subcommand == "update-lead-ship":
-        if doctrine_id is None:
-            console.print("[red]Error: --doctrine-id is required for update-lead-ship[/red]")
-            return False
-        if fit_id is None:
-            console.print("[red]Error: --fit-id is required for update-lead-ship[/red]")
-            return False
-        return update_lead_ship_command(
-            doctrine_id=doctrine_id,
-            fit_id=fit_id,
-            market_flag=market_flag,
-            remote=use_remote,
-        )
-
-    elif subcommand == "update-friendly-name":
-        if doctrine_id is None:
-            console.print("[red]Error: --doctrine-id is required for update-friendly-name[/red]")
-            return False
-        if not friendly_name:
-            console.print("[red]Error: --name is required for update-friendly-name[/red]")
-            return False
-        return update_friendly_name_command(
-            doctrine_id, friendly_name, remote=use_remote, db_alias=target_alias,
-        )
-
-    elif subcommand == "populate-friendly-names":
-        return populate_friendly_names_command(
-            json_path="doctrine_names.json", db_alias=target_alias,
-        )
-
-    else:
-        console.print(f"[red]Unknown subcommand: {subcommand}[/red]")
-        console.print(
-            "[dim]Available: add, update, remove, assign-market, unassign-market, list-fits, "
-            "list-doctrines, create-doctrine, doctrine-add-fit, doctrine-remove-fit, "
-            "update-target, update-lead-ship, update-friendly-name, populate-friendly-names[/dim]"
-        )
-        console.print(
-            "[dim]Use --help for more information about a command.[/dim]")
-        return False
-
-
-def collect_fit_metadata_interactive(
-    fit_id: int, fit_file: str, remote: bool = False
-) -> dict:
-    """
-    Interactively collect metadata for a fit update.
-
-    Args:
-        fit_id: The fit ID being updated
-        fit_file: Path to the EFT fit file (used to extract ship/fit name)
-        remote: Whether to use remote database for doctrine checks
-
-    Returns:
-        Dictionary with metadata fields matching FitMetadata expectations
-    """
-    from mkts_backend.utils.parse_fits import (
-        doctrine_exists,
-        create_doctrine,
-        get_next_doctrine_id,
-    )
-
-    print(f"\n--- Interactive Metadata Collection for fit_id={fit_id} ---\n")
-
-    # Try to extract ship and fit name from the EFT file
-    ship_name = ""
-    fit_name = ""
-    try:
-        with open(fit_file, "r", encoding="utf-8") as f:
-            first_line = f.readline().strip()
-            if first_line.startswith("[") and first_line.endswith("]"):
-                clean_name = first_line.strip("[]")
-                parts = clean_name.split(",")
-                ship_name = parts[0].strip()
-                fit_name = parts[1].strip() if len(parts) > 1 else ""
-                print(f"Detected from fit file: {ship_name}, {fit_name}")
-    except Exception as e:
-        print(f"Could not parse fit file header: {e}")
-
-    # Prompt for fit name (with default from file)
-    default_name = fit_name if fit_name else f"{ship_name} Fit"
-    name_input = input(f"Fit name [{default_name}]: ").strip()
-    name = name_input if name_input else default_name
-
-    # Prompt for description
-    default_desc = f"{name} doctrine fit"
-    desc_input = input(f"Description [{default_desc}]: ").strip()
-    description = desc_input if desc_input else default_desc
-
-    # Prompt for doctrine ID(s)
-    next_id = get_next_doctrine_id(remote=remote)
-    print(f"(Next available doctrine ID: {next_id})")
-    doctrine_input = input(
-        "Doctrine ID(s) (comma-separated for multiple, or 'new' to create): "
-    ).strip()
-
-    if not doctrine_input:
-        raise ValueError("Doctrine ID is required")
-
-    doctrine_ids = []
-    if doctrine_input.lower() == "new":
-        # Create a new doctrine
-        print(f"\n--- Creating New Doctrine (ID: {next_id}) ---")
-        doctrine_name = input(f"Doctrine name [{name}]: ").strip() or name
-        doctrine_desc = input("Doctrine description []: ").strip()
-        create_doctrine(next_id, doctrine_name, doctrine_desc, remote=remote)
-        print(f"Created doctrine {next_id}: {doctrine_name}")
-        doctrine_ids = [next_id]
-    else:
-        doctrine_ids = [int(d.strip())
-                        for d in doctrine_input.split(",") if d.strip()]
-        if not doctrine_ids:
-            raise ValueError("At least one valid doctrine ID is required")
-
-        # Check each doctrine exists, offer to create if not
-        for doc_id in doctrine_ids:
-            if not doctrine_exists(doc_id, remote=remote):
-                print(f"\nDoctrine {
-                      doc_id} does not exist in fittings_doctrine.")
-                create_it = (
-                    input(f"Create doctrine {
-                          doc_id}? (y/n) [n]: ").strip().lower()
-                )
-                if create_it == "y":
-                    doctrine_name = input(
-                        f"Doctrine name [{name}]: ").strip() or name
-                    doctrine_desc = input("Doctrine description []: ").strip()
-                    create_doctrine(doc_id, doctrine_name,
-                                    doctrine_desc, remote=remote)
-                    print(f"Created doctrine {doc_id}: {doctrine_name}")
-                else:
-                    print(f"Warning: Doctrine {
-                          doc_id} will be skipped during linking")
-
-    doctrine_id = doctrine_ids if len(doctrine_ids) > 1 else doctrine_ids[0]
-
-    # Prompt for target quantity
-    target_input = input("Target quantity [100]: ").strip()
-    target = int(target_input) if target_input else 100
-
-    print("\nMetadata collected:")
-    print(f"  fit_id: {fit_id}")
-    print(f"  name: {name}")
-    print(f"  description: {description}")
-    print(f"  doctrine_id: {doctrine_id}")
-    print(f"  target: {target}")
-    print()
-
-    return {
-        "fit_id": fit_id,
-        "name": name,
-        "description": description,
-        "doctrine_id": doctrine_id,
-        "target": target,
-    }

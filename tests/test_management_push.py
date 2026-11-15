@@ -20,8 +20,8 @@ a finding. Line numbers drift; re-run the audit rather than trusting them.
 | `add_watchlist`                  | `db_utils.add_missing_items_to_watchlist` (via `db.engine`, conn.commit()) | one market alias per invocation, e.g. `wcmktnewkeeptest` | none | **Task 7 (this task)**: push once per touched alias in `add_watchlist.py`'s market loop, after `process_add_watchlist()` succeeds |
 | `equiv add` / `equiv remove`     | `equiv_handlers.py` (`db.engine.begin()`), then `sync_equiv_to_remote()` deletes+reinserts via `remote_engine` (no push) | every configured market (`_equiv_add_all` / `_equiv_remove_all`) | none (fake local-only "sync") | **Task 8 (this task)**: deleted `sync_equiv_to_remote` and its 3 call sites (`add_equiv_group` x2, `remove_equiv_group` x1); added a push after each market's write (`push_or_log(alias)` since Task 24) in all three loops that call `add_equiv_group`/`remove_equiv_group` — `_equiv_add_all` (`--all`/default), `_equiv_remove_all` (`--all`/default), and `_equiv_find`'s `--add` branch (single-market via `--market=` or default-all) — the third loop was not named in the brief but writes through the same handlers and was found by the `rg` audit below |
 | `equiv find <id> --add`          | `equiv_handlers.py add_equiv_group` via `equiv_manager._equiv_find`'s `do_add` branch (`equiv_manager.py:270-280`) | target markets from `--market=` or all (same `_get_target_markets` default as add/remove) | none (same fake sync as above, now deleted) | **Task 8 (this task)**: single-market/all-market audit finding — pushes now added at this loop too |
-| `fit-update add` / `update-fit` (shared `fittings` writes via `update_fit_workflow`) | `parse_fits.py`'s `update_fit_workflow` (writes `fittings` + one market replica per call); also calls `add_missing_items_to_watchlist` | shared `fittings` + the resolved target market alias, once per CLI invocation | none | **Task 9 (this task)**: `update_fit_workflow` never pushes itself — it takes an optional `touched_aliases: set` accumulator and adds `"fittings"` and its resolved `target_alias` on success (never on a dry run). Every outer caller (`interactive_add_fit`, `fit_update_command`'s `add` and `update` subcommands in `fit_update.py`, and `command_registry.py`'s `update-fit` handler) owns one set for its whole invocation, threads it through every workflow call, and pushes each distinct alias once at the end (skipped entirely on `--dry-run`; a push failure fails the command). Standalone `create_doctrine_command` pushes `"fittings"` once after `create_doctrine()` succeeds. A source-scan test (`TestUpdateFitWorkflowCallSiteCoverage`) asserts every `update_fit_workflow(` call site passes `touched_aliases=`. Two dead unreachable wrappers, `update_existing_fit`/`update_fit` in `parse_fits.py` (no callers anywhere in `src`/`tests`), were deleted rather than plumbed, per the "minimize codebase size" standing preference. |
-| `fit-update update-target` / `update-friendly-name` / `populate-friendly-names` / `remove` / `doctrine-remove-fit` | `fit_update.py` (many `engine.begin()` / session.commit() sites); also calls `add_missing_items_to_watchlist` at `fit_update.py:1086` (`_prepare_watchlist_for_fit`) | target market alias (`--market`/`--db-alias`) | none | Task 10 — not implemented here; `add_missing_items_to_watchlist`'s push stays at the *command* boundary, not inside the writer, so fit-update's own push (when added) must not double-push |
+| `fit-manager add` / `fit-manager update` (shared `fittings` writes via `update_fit_workflow`) | `parse_fits.py`'s `update_fit_workflow` (writes `fittings` + one market replica per call); also calls `add_missing_items_to_watchlist` | shared `fittings` + the resolved target market alias, once per CLI invocation | none | **Task 9 (this task)**: `update_fit_workflow` never pushes itself — it takes an optional `touched_aliases: set` accumulator and adds `"fittings"` and its resolved `target_alias` on success (never on a dry run). Every outer caller (`interactive_add_fit` in `fit_update.py` and `_write_fit` in `fit_manager.py`, which serves `add` and `update`) owns one set for its whole invocation, threads it through every workflow call, and pushes each distinct alias once at the end (skipped entirely on `--dry-run`; a push failure fails the command). Standalone `create_doctrine_command` pushes `"fittings"` once after `create_doctrine()` succeeds. A source-scan test (`TestUpdateFitWorkflowCallSiteCoverage`) asserts every `update_fit_workflow(` call site passes `touched_aliases=`. Two dead unreachable wrappers, `update_existing_fit`/`update_fit` in `parse_fits.py` (no callers anywhere in `src`/`tests`), were deleted rather than plumbed, per the "minimize codebase size" standing preference. |
+| `fit-manager update-target` / `update-friendly-name` / `populate-friendly-names` / `remove` / `doctrine-remove-fit` | `fit_update.py` (many `engine.begin()` / session.commit() sites); also calls `add_missing_items_to_watchlist` at `fit_update.py:1086` (`_prepare_watchlist_for_fit`) | target market alias (`--market`/`--db-alias`) | none | Task 10 — not implemented here; `add_missing_items_to_watchlist`'s push stays at the *command* boundary, not inside the writer, so fit-update's own push (when added) must not double-push |
 | `add_structure`                  | `build_cost_utils.upsert_structures(local_db.engine, ...)` | `buildcost` | **yes** — **Task 12 (this task)**: deleted the duplicate `remote_engine` call and the now-dead `--local`/`--remote-only` flags/branching; writes once via `local_db.engine`, then `local_db.push()` | Already compliant as of Task 12 |
 | `build-watchlist add/remove/mirror` | `build_watchlist_cli.py` → `builder_costs/repository.py` (`upsert_build_watchlist`, `upsert_builder_costs`, ...) | `buildcost` | **yes** — `repository.py` calls `db.push()` at the end of every writer (`:125`, `:161`, `:193`, `:226`, `:252`); `build_watchlist_cli.py:121` also pushes directly | Already compliant — no action needed |
 | `update-markets` (main pipeline) | `cli.py` (`db.push()` at `:379`, end of run) | all configured markets processed in the run | **yes** | Already compliant (earlier phase) |
@@ -38,6 +38,8 @@ from pathlib import Path
 
 import pandas as pd
 from sqlalchemy import text
+
+from mkts_backend.cli_tools.fit_manager import handle_fit_manager
 
 
 def _fake_type_info(type_id: int = 34, type_name: str = "Tritanium") -> pd.DataFrame:
@@ -565,9 +567,8 @@ def _write_fittings_meta_fixture(tmp_path, fit_id: int, doctrine_id: int, suffix
 
 
 class TestFittingsPush:
-    """Drives ``fit_update.fit_update_command(subcommand="add", ...)`` — the
-    highest-level PUBLIC, non-interactive entry point onto
-    ``update_fit_workflow``. ``interactive_add_fit`` (``interactive=True``)
+    """Drives ``fit-manager add --meta-file`` — the highest-level PUBLIC,
+    non-interactive entry point onto ``update_fit_workflow``. ``interactive_add_fit`` (``interactive=True``)
     prompts via ``rich.prompt`` and cannot be driven headlessly without
     extensively faking stdin, so per the brief's fallback instruction we use
     the non-interactive ``add`` subcommand instead and record that choice
@@ -592,13 +593,10 @@ class TestFittingsPush:
         fit_file = _write_fittings_eft_fixture(tmp_path)
         meta_file = _write_fittings_meta_fixture(tmp_path, fit_id=99001, doctrine_id=501)
 
-        assert fit_update.fit_update_command(
-            subcommand="add",
-            file_path=str(fit_file),
-            meta_file=str(meta_file),
-            market_flag="primary",
-            target_alias="wcmktnewkeeptest",
-            interactive=False,
+        assert handle_fit_manager(
+            ["add", f"--file={fit_file}", f"--meta-file={meta_file}",
+             "--db-alias=wcmktnewkeeptest"],
+            "primary",
         )
 
         assert dbs["fittings"].pushes == 1, "fittings replica never reached Turso"
@@ -646,12 +644,9 @@ class TestFittingsPush:
             tmp_path, fit_id=99002, doctrine_id=502, suffix="_multi"
         )
 
-        assert fit_update.fit_update_command(
-            subcommand="add",
-            file_path=str(fit_file),
-            meta_file=str(meta_file),
-            market_flag="all",
-            interactive=False,
+        assert handle_fit_manager(
+            ["add", f"--file={fit_file}", f"--meta-file={meta_file}", "--market=all"],
+            "all",
         )
 
         assert expected_markets <= set(dbs)
@@ -1704,7 +1699,7 @@ class TestUpdateLeadShipPush:
 
 class TestAssignMarketDispatcherPushGate:
     """The ``assign-market``/``unassign-market`` CLI dispatch branches in
-    ``fit_update_command`` must treat a push failure, a bucket failure, or a
+    ``fit_manager.py`` must treat a push failure, a bucket failure, or a
     non-fatal step failure reported by ``_execute_market_plan`` (via
     ``assign_market_command``/``unassign_market_command``) as command
     failure — ``updated > 0`` alone is not enough, since a later bucket, its
@@ -1730,8 +1725,8 @@ class TestAssignMarketDispatcherPushGate:
             fit_update, "assign_market_command",
             lambda *a, **k: self._base_result(push_failed=True),
         )
-        assert fit_update.fit_update_command(
-            subcommand="assign-market", fit_id=1, market_flag="primary",
+        assert handle_fit_manager(
+            ["assign-market", "--fit-id=1", "--market=primary"], "primary",
         ) is False
 
     def test_bucket_failure_fails_the_dispatched_command(self, monkeypatch):
@@ -1741,8 +1736,8 @@ class TestAssignMarketDispatcherPushGate:
             fit_update, "assign_market_command",
             lambda *a, **k: self._base_result(bucket_failures=1),
         )
-        assert fit_update.fit_update_command(
-            subcommand="assign-market", fit_id=1, market_flag="primary",
+        assert handle_fit_manager(
+            ["assign-market", "--fit-id=1", "--market=primary"], "primary",
         ) is False
 
     def test_step_failures_fail_the_dispatched_assign_command(self, monkeypatch):
@@ -1755,8 +1750,8 @@ class TestAssignMarketDispatcherPushGate:
             fit_update, "assign_market_command",
             lambda *a, **k: self._base_result(step_failures=1),
         )
-        assert fit_update.fit_update_command(
-            subcommand="assign-market", fit_id=1, market_flag="primary",
+        assert handle_fit_manager(
+            ["assign-market", "--fit-id=1", "--market=primary"], "primary",
         ) is False
 
     def test_step_failures_fail_the_dispatched_unassign_command(self, monkeypatch):
@@ -1766,8 +1761,8 @@ class TestAssignMarketDispatcherPushGate:
             fit_update, "unassign_market_command",
             lambda *a, **k: self._base_result(step_failures=1),
         )
-        assert fit_update.fit_update_command(
-            subcommand="unassign-market", fit_id=1, market_flag="primary",
+        assert handle_fit_manager(
+            ["unassign-market", "--fit-id=1", "--market=primary"], "primary",
         ) is False
 
     def test_clean_result_still_succeeds(self, monkeypatch):
@@ -1777,8 +1772,8 @@ class TestAssignMarketDispatcherPushGate:
             fit_update, "assign_market_command",
             lambda *a, **k: self._base_result(),
         )
-        assert fit_update.fit_update_command(
-            subcommand="assign-market", fit_id=1, market_flag="primary",
+        assert handle_fit_manager(
+            ["assign-market", "--fit-id=1", "--market=primary"], "primary",
         ) is True
 
 

@@ -17,12 +17,30 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass, field
-from typing import Callable, TYPE_CHECKING, Any
-
-if TYPE_CHECKING:
-    from mkts_backend.utils.parse_fits import FitMetadata
+from typing import Callable
 
 HandlerFn = Callable[[list[str], str], bool]
+
+# Commands that fit-manager replaced, mapped to what to run instead.
+REMOVED_COMMANDS: dict[str, str] = {
+    "fit-update": "fit-manager <subcommand> (the subcommand names are unchanged)",
+    "update-target": "fit-manager update-target",
+    "update-fit": (
+        "fit-manager update (existing fit) or fit-manager add (new fit), "
+        "with --file in place of --fit-file"
+    ),
+}
+
+
+def removed_command_message(token: str) -> str | None:
+    """Return the replacement notice for a removed command, else ``None``."""
+    replacement = REMOVED_COMMANDS.get(token)
+    if replacement is None:
+        return None
+    return (
+        f"'{token}' was removed. Use: {replacement}\n"
+        "Run 'mkts-backend fit-manager --help' for details."
+    )
 
 
 @dataclass
@@ -163,302 +181,15 @@ def _register_all(reg: CommandRegistry) -> None:
         description="Display market availability for an EFT fit",
     )
 
-    # ── fit-update ──────────────────────────────────────────────
-    def _handle_fit_update(args: list[str], market_alias: str) -> bool:
-        import sys
-        from mkts_backend.cli_tools.arg_utils import ParsedArgs, ArgError
-        from mkts_backend.cli_tools.market_args import (
-            MARKET_DB_MAP,
-            resolve_market_alias,
-            resolve_market_alias_interactive,
-        )
-        from mkts_backend.cli_tools.fit_update import fit_update_command
-        from mkts_backend.config.logging_config import configure_logging
-
-        logger = configure_logging(__name__)
-
-        p = ParsedArgs(args)
-
-        if p.has_help():
-            from mkts_backend.cli_tools.cli_help import display_fit_update_help
-            display_fit_update_help()
-            return True
-
-        # Determine subcommand (first positional arg, ignoring "fit-update"
-        # if the dispatcher left it in place).
-        subcommand = next(
-            (a for a in p.positionals() if a != "fit-update"),
-            None,
-        )
-
-        if not subcommand:
-            print("Error: fit-update requires a subcommand")
-            print("Use 'fit-update --help' for usage information.")
-            return False
-
-        # Resolve the effective market_alias and its single-DB fallback.
-        # Priority: explicit --db-alias > explicit --market (incl. "all") > prompt/default.
-        # Explicit --market=all is preserved as-is; subcommands that iterate
-        # markets use _configured_market_db_aliases(market_flag) and need "all"
-        # intact. db_alias is only the single-DB fallback for subcommands that
-        # require one concrete DB.
-        db_alias_override = p.get_string("db-alias")
-        if db_alias_override:
-            db_alias = db_alias_override
-        else:
-            explicit_market = resolve_market_alias(args)
-            if explicit_market is None:
-                if sys.stdin.isatty():
-                    market_alias = resolve_market_alias_interactive(default="primary")
-                else:
-                    logger.warning(
-                        "fit-update: no --market specified in non-TTY context; "
-                        "defaulting to 'primary'. Pass --market=primary/deployment/all "
-                        "explicitly to silence this warning."
-                    )
-                    market_alias = "primary"
-            else:
-                market_alias = explicit_market
-            db_alias = MARKET_DB_MAP.get(market_alias, MARKET_DB_MAP["primary"])
-        paste_mode = p.has_flag("paste")
-        file_path = None if paste_mode else p.get_string("file", "fit-file")
-        meta_file = p.get_string("meta-file")
-        friendly_name = p.get_string("name")
-
-        if paste_mode:
-            print("***PASTE MODE***")
-
-        try:
-            fit_ids_str = p.get_string("fit-id", "fit_id", "id")
-            doctrine_id = p.get_int("doctrine-id")
-            # No default: update-target must distinguish "missing" (prompt/error)
-            # from an explicit value. doctrine-add-fit falls back to 100 itself.
-            target_qty = p.get_int("target")
-        except ArgError as e:
-            print(f"Error: {e}")
-            return False
-
-        fit_id = None
-        fit_ids = None
-        if fit_ids_str:
-            if "," in fit_ids_str:
-                fit_ids = [int(f.strip()) for f in fit_ids_str.split(",") if f.strip()]
-            else:
-                fit_id = int(fit_ids_str)
-
-        return fit_update_command(
-            subcommand=subcommand,
-            fit_id=fit_id,
-            fit_ids=fit_ids,
-            file_path=file_path,
-            meta_file=meta_file,
-            market_flag=market_alias,
-            remote=p.has_flag("remote"),
-            local_only=p.has_flag("local-only"),
-            dry_run=p.has_flag("dry-run"),
-            interactive=p.has_flag("interactive"),
-            target_alias=db_alias,
-            target=target_qty,
-            skip_targets=p.has_flag("skip-targets"),
-            paste_mode=paste_mode,
-            friendly_name=friendly_name,
-            doctrine_id=doctrine_id,
-        )
+    # ── fit-manager ─────────────────────────────────────────────
+    def _handle_fit_manager(args: list[str], market_alias: str) -> bool:
+        from mkts_backend.cli_tools.fit_manager import handle_fit_manager
+        return handle_fit_manager(args, market_alias)
 
     reg.register(
-        "fit-update",
-        _handle_fit_update,
-        description="Interactive tool for managing fits and doctrines",
-    )
-
-    # ── update-fit ──────────────────────────────────────────────
-    def _handle_update_fit(args: list[str], market_alias: str) -> bool:
-        from mkts_backend.cli_tools.arg_utils import ParsedArgs, ArgError
-        from mkts_backend.cli_tools.market_args import MARKET_DB_MAP
-        from mkts_backend.utils.parse_fits import parse_fit_metadata
-        from mkts_backend.cli_tools.fit_update import update_fit_workflow
-
-        p = ParsedArgs(args)
-
-        if p.has_help():
-            from mkts_backend.cli_tools.cli_help import display_update_fit_help
-            display_update_fit_help()
-            return True
-
-        try:
-            fit_id = p.get_int("fit-id", "fit_id")
-        except ArgError as e:
-            print(f"Error: {e}")
-            return False
-
-        fit_file = p.get_string("fit-file", "file")
-        meta_file = p.get_string("meta-file")
-        interactive = p.has_flag("interactive")
-        update_targets = p.has_flag("update-targets")
-
-        # Legacy bare arg compat (fit=, id=)
-        if fit_id is None:
-            for arg in args:
-                if arg.startswith("fit=") or arg.startswith("id="):
-                    try:
-                        fit_id = int(arg.split("=", 1)[1])
-                    except ValueError:
-                        print("Error: --fit-id must be an integer")
-                        return False
-
-        if not fit_file:
-            print("Error: --fit-file is required for update-fit")
-            print("Use 'update-fit --help' for usage information.")
-            return False
-
-        if not meta_file and fit_id is None:
-            print("Error: Either --meta-file or --fit-id is required")
-            print("Use 'update-fit --help' for usage information.")
-            return False
-
-        if fit_id is not None and not meta_file and not interactive:
-            print("Error: --fit-id requires either --meta-file or --interactive")
-            print("Use 'update-fit --help' for usage information.")
-            return False
-
-        from mkts_backend.cli_tools.market_args import expand_market_alias
-        target_markets = expand_market_alias(market_alias)
-
-        remote = p.has_flag("remote")
-        clear_existing = not p.has_flag("no-clear")
-        dry_run = p.has_flag("dry-run")
-
-        try:
-            metadata: FitMetadata | None = None
-            metadata_dict: dict[str, Any] | None = None
-            if meta_file:
-                metadata = parse_fit_metadata(meta_file)
-                if fit_id is not None and metadata.fit_id != fit_id:
-                    print(
-                        f"Warning: --fit-id={fit_id} overrides "
-                        f"fit_id={metadata.fit_id} from metadata file"
-                    )
-                    metadata_dict = {
-                        "fit_id": fit_id,
-                        "name": metadata.name,
-                        "description": metadata.description,
-                        "doctrine_id": metadata.doctrine_ids
-                        if len(metadata.doctrine_ids) > 1
-                        else metadata.doctrine_id,
-                        "target": metadata.target,
-                    }
-            else:
-                from mkts_backend.cli_tools.fit_update import collect_fit_metadata_interactive
-                metadata_dict = collect_fit_metadata_interactive(fit_id, fit_file)
-
-            touched_aliases: set = set()
-            for target_market in target_markets:
-                target_alias = MARKET_DB_MAP[target_market]
-                print(f"\n--- Processing for {target_market} market ({target_alias}) ---")
-
-                if metadata_dict is not None:
-                    from mkts_backend.utils.parse_fits import FitMetadata
-                    metadata_obj = FitMetadata(**metadata_dict)
-                else:
-                    if metadata is None:
-                        print("Error: No fit metadata available for update-fit")
-                        return False
-                    metadata_obj = metadata
-
-                result = update_fit_workflow(
-                    fit_id=metadata_obj.fit_id,
-                    fit_file=fit_file,
-                    fit_metadata_file=meta_file,
-                    remote=remote,
-                    clear_existing=clear_existing,
-                    dry_run=dry_run,
-                    target_alias=target_alias,
-                    update_targets=update_targets,
-                    metadata_override=metadata_dict,
-                    touched_aliases=touched_aliases,
-                )
-
-                if dry_run:
-                    print("Dry run complete")
-                    print(f"Ship: {result['ship_name']} ({result['ship_type_id']})")
-                    print(f"Items parsed: {len(result['items'])}")
-                    if result["missing_items"]:
-                        print(f"Missing type_ids for: {result['missing_items']}")
-                else:
-                    print(
-                        f"Fit update completed for fit_id {metadata_obj.fit_id} -> "
-                        f"{target_alias} (remote={remote})"
-                    )
-                    if update_targets:
-                        print("  ship_targets updated")
-
-            if not dry_run:
-                from mkts_backend.cli_tools.push import push_or_log
-
-                for touched_alias in sorted(touched_aliases):
-                    if not push_or_log(touched_alias):
-                        return False
-
-            return True
-        except Exception as e:
-            from mkts_backend.config.logging_config import configure_logging
-            logger = configure_logging(__name__)
-            logger.error(f"update-fit failed: {e}")
-            print(f"Error running update-fit: {e}")
-            return False
-
-    reg.register(
-        "update-fit",
-        _handle_update_fit,
-        description="Process an EFT fit file and update doctrine tables",
-    )
-
-    # ── update-target ───────────────────────────────────────────
-    def _handle_update_target(args: list[str], market_alias: str) -> bool:
-        from mkts_backend.cli_tools.arg_utils import ParsedArgs, ArgError
-        from mkts_backend.cli_tools.market_args import MARKET_DB_MAP
-        from mkts_backend.cli_tools.fit_update import update_target_command
-
-        p = ParsedArgs(args)
-
-        if p.has_help():
-            from mkts_backend.cli_tools.cli_help import display_update_target_help
-            display_update_target_help()
-            return True
-
-        try:
-            fit_id = p.get_int("fit-id", "fit")
-            target = p.get_int("target")
-        except ArgError as e:
-            print(f"Error: {e}")
-            return False
-
-        remote = p.has_flag("remote")
-        if p.has_flag("local-only"):
-            remote = False
-        target_alias = p.get_string("db-alias", default=MARKET_DB_MAP.get(market_alias, "wcmkt"))
-
-        if not fit_id or not target:
-            print("Error: --fit-id and --target are required for update-target command")
-            print("Use 'update-target --help' for usage information.")
-            return False
-
-        success = update_target_command(
-            fit_id, target,
-            market_flag=market_alias,
-            remote=remote,
-            db_alias=target_alias,
-        )
-        if success:
-            print("Update target command completed successfully")
-        else:
-            print("Update target command failed")
-        return success
-
-    reg.register(
-        "update-target",
-        _handle_update_target,
-        description="Update the target quantity for a fit",
+        "fit-manager",
+        _handle_fit_manager,
+        description="Manage fits, doctrines, targets, and market assignment",
     )
 
     # ── assets ──────────────────────────────────────────────────

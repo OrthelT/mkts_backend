@@ -11,6 +11,7 @@ from unittest.mock import patch
 import pytest
 
 from mkts_backend.cli_tools import fit_update
+from mkts_backend.cli_tools.fit_manager import handle_fit_manager
 
 
 @pytest.fixture
@@ -175,8 +176,8 @@ class TestListDoctrinesUsesMarketDb:
     def test_subcommand_queries_target_market(self):
         with patch.object(fit_update, "get_market_doctrines", return_value=[]) as market, \
              patch.object(fit_update, "get_available_doctrines") as fittings:
-            fit_update.fit_update_command(
-                subcommand="list-doctrines", target_alias="wcmktnorth",
+            handle_fit_manager(
+                ["list-doctrines", "--db-alias=wcmktnorth"], "primary",
             )
         market.assert_called_once_with(db_alias="wcmktnorth", remote=False)
         fittings.assert_not_called()

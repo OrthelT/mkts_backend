@@ -106,14 +106,51 @@ def test_csv_export(tmp_path):
 def test_handle_module_passes_output_format():
     with patch.object(fit_check_module, "list_low_stock_command") as cmd:
         fit_check_module.handle_module(["--list-all", "--output=markdown"])
-        cmd.assert_called_once_with("primary", "markdown")
+        cmd.assert_called_once_with("primary", "markdown", "all")
         cmd.reset_mock()
         fit_check_module.handle_module(["--list-all"])
-        cmd.assert_called_once_with("primary", "multibuy")
+        cmd.assert_called_once_with("primary", "multibuy", "all")
+        cmd.reset_mock()
+        fit_check_module.handle_module(["--list-all=build"])
+        cmd.assert_called_once_with("primary", "multibuy", "build")
+        cmd.reset_mock()
+        fit_check_module.handle_module(["--list-all=Import", "--output=csv"])
+        cmd.assert_called_once_with("primary", "csv", "import")
 
 
 def test_handle_module_rejects_bad_output():
     with patch.object(fit_check_module, "list_low_stock_command") as cmd:
         fit_check_module.handle_module(["--list-all", "--output=pdf"])
         fit_check_module.handle_module(["--id=11269", "--output=markdown"])
+        fit_check_module.handle_module(["--list-all=buy"])
     cmd.assert_not_called()
+
+
+def _seed_sde(db):
+    with db.engine.begin() as conn:
+        conn.execute(text("CREATE TABLE sdetypes (typeID INT, is_buildable INT)"))
+        conn.execute(text("INSERT INTO sdetypes VALUES (1, 1), (2, 0), (3, NULL)"))
+
+
+def test_filter_by_source(tmp_path, fake_db_factory):
+    db = fake_db_factory(tmp_path / "sde.db")
+    _seed_sde(db)
+    # type_id 4 is missing from the SDE, so it counts as import.
+    items = [_item(f"T{i}", 7, 1, type_id=i) for i in (1, 2, 3, 4)]
+    with patch.object(fit_check_module, "DatabaseConfig", return_value=db):
+        build = fit_check_module._filter_by_source(items, "build")
+        imported = fit_check_module._filter_by_source(items, "import")
+    assert [i["type_id"] for i in build] == [1]
+    assert [i["type_id"] for i in imported] == [2, 3, 4]
+    assert fit_check_module._filter_by_source(items, "all") is items
+
+
+def test_csv_filename_names_source(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    with patch.object(fit_check_module, "MarketContext") as mc, \
+         patch.object(fit_check_module, "_query_low_stock_modules", return_value=[]), \
+         patch.object(fit_check_module, "_filter_by_source", return_value=[]) as f:
+        mc.from_settings.return_value.name = "Test"
+        assert fit_check_module.list_low_stock_command("primary", "csv", "build")
+    f.assert_called_once_with([], "build")
+    assert (tmp_path / "primary_low_stock_build.csv").exists()

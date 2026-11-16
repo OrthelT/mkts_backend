@@ -70,6 +70,7 @@ uv run fitcheck needed --market=deployment # check the deployment market
 | Show restocking needs | `uv run fitcheck needed --market=primary` |
 | Find fits using an item | `uv run fitcheck module --name="Damage Control II" --market=primary` |
 | Find all low-stock items | `uv run fitcheck module --list-all --market=primary` |
+| Find low-stock items to build or import | `uv run fitcheck module --list-all=build --market=primary` (or `=import`) |
 | Post low-stock items to Discord | `uv run fitcheck module --list-all --output=markdown` |
 | Show fit-check help | `uv run fitcheck --help` |
 

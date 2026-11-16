@@ -10,7 +10,7 @@ import csv
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from sqlalchemy import text
+from sqlalchemy import bindparam, text
 
 from mkts_backend.cli_tools.arg_utils import ArgError, ParsedArgs
 from mkts_backend.cli_tools.market_args import expand_market_alias, parse_market_args
@@ -158,6 +158,28 @@ def _query_low_stock_modules(market_ctx: MarketContext) -> List[Dict]:
 
 LIST_ALL_OUTPUTS = ("multibuy", "markdown", "csv")
 
+# ``--list-all=<source>``: "build" keeps items with sdetypes.is_buildable = 1;
+# "import" keeps the rest (is_buildable 0, NULL, or missing from the SDE).
+LIST_ALL_SOURCES = ("all", "build", "import")
+
+
+def _filter_by_source(items: List[Dict], source: str) -> List[Dict]:
+    """Keep the items that match *source* by ``sdetypes.is_buildable``."""
+    if source == "all" or not items:
+        return items
+    with DatabaseConfig("sde").engine.connect() as conn:
+        buildable = {
+            row[0] for row in conn.execute(
+                text(
+                    "SELECT typeID FROM sdetypes "
+                    "WHERE is_buildable = 1 AND typeID IN :ids"
+                ).bindparams(bindparam("ids", expanding=True)),
+                {"ids": [item["type_id"] for item in items]},
+            )
+        }
+    want_buildable = source == "build"
+    return [i for i in items if (i["type_id"] in buildable) == want_buildable]
+
 # SDE category IDs shown as their own markdown section; others go under "Other".
 CATEGORY_HEADINGS = {6: "Ship", 7: "Module", 8: "Charge"}
 
@@ -200,9 +222,9 @@ def write_low_stock_csv(file_path: str, items: List[Dict]) -> str:
     return str(path.absolute())
 
 
-def _print_low_stock_multibuy(market_ctx: MarketContext, items: List[Dict], multi: bool) -> None:
+def _print_low_stock_multibuy(title: str, items: List[Dict], multi: bool) -> None:
     if multi:
-        console.print(f"\n[bold]{market_ctx.name}[/bold]\n")
+        console.print(f"\n[bold]{title}[/bold]\n")
     console.print("\n")
     console.print("Copy items below to JEve Assets stockpile or in-game multi-buy")
     console.print("-------------------------------\n")
@@ -210,15 +232,20 @@ def _print_low_stock_multibuy(market_ctx: MarketContext, items: List[Dict], mult
         print(f"{item['type_name']} {item['needed']}")
     console.print("\n")
     console.print("-------------------------------")
-    console.print(f"[bold]{len(items)} found for {market_ctx.name}")
+    console.print(f"[bold]{len(items)} found for {title}")
     console.print("-------------------------------\n")
 
 
 def list_low_stock_command(
     market_alias: str = "primary",
     output_format: str = "multibuy",
+    source: str = "all",
 ) -> bool:
-    """Print or export low-stock modules for each selected market."""
+    """Print or export low-stock modules for each selected market.
+
+    *source* is one of ``LIST_ALL_SOURCES``; see ``_filter_by_source``.
+    """
+    suffix = "" if source == "all" else f" ({source})"
     markets = expand_market_alias(market_alias)
     markdown_blocks = []
     for alias in markets:
@@ -228,16 +255,18 @@ def list_low_stock_command(
             console.print(f"[red]Error: {e}[/red]")
             console.print(f"Available markets: {', '.join(MarketContext.list_available())}")
             return False
-        items = _query_low_stock_modules(market_ctx)
+        items = _filter_by_source(_query_low_stock_modules(market_ctx), source)
+        title = f"{market_ctx.name}{suffix}"
         if output_format == "markdown":
-            markdown_blocks.append(format_low_stock_markdown(market_ctx.name, items))
+            markdown_blocks.append(format_low_stock_markdown(title, items))
         elif output_format == "csv":
-            csv_path = write_low_stock_csv(f"{alias}_low_stock.csv", items)
+            file_suffix = "" if source == "all" else f"_{source}"
+            csv_path = write_low_stock_csv(f"{alias}_low_stock{file_suffix}.csv", items)
             console.print(
-                f"[green]{len(items)} items for {market_ctx.name} exported to:[/green] {csv_path}"
+                f"[green]{len(items)} items for {title} exported to:[/green] {csv_path}"
             )
         else:
-            _print_low_stock_multibuy(market_ctx, items, multi=len(markets) > 1)
+            _print_low_stock_multibuy(title, items, multi=len(markets) > 1)
 
     if markdown_blocks:
         print_markdown_export("\n\n".join(markdown_blocks))
@@ -365,12 +394,13 @@ def handle_module(sub_args: List[str]) -> None:
 
     try:
         output_format = p.get_choice("output", choices=LIST_ALL_OUTPUTS)
+        source = p.get_choice("list-all", choices=LIST_ALL_SOURCES)
     except ArgError as e:
         console.print(f"[red]Error: {e}[/red]")
         return
 
-    if p.has_flag("list-all"):
-        list_low_stock_command(market_alias, output_format or "multibuy")
+    if source or p.has_flag("list-all"):
+        list_low_stock_command(market_alias, output_format or "multibuy", source or "all")
         return
 
     if output_format:

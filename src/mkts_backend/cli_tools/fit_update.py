@@ -9,6 +9,7 @@ touched before it returns.
 from collections import defaultdict
 from typing import List, Optional
 from rich.console import Console
+from rich.markup import escape
 from rich.table import Table
 from rich.panel import Panel
 from rich.prompt import Prompt, Confirm, IntPrompt
@@ -763,7 +764,7 @@ def assign_doctrine_market(
 
     # Confirmation
     prompt_msg = (
-        f"[bold]Assign doctrine '{doctrine_name}' to "
+        f"[bold]Assign doctrine '{escape(doctrine_name)}' to "
         f"'{market_flag}' market?[/bold]"
     )
     if not Confirm.ask(prompt_msg):
@@ -1654,16 +1655,17 @@ def unassign_doctrine_market(
     for p in all_plans:
         action_counts[p["action"]] = action_counts.get(p["action"], 0) + 1
 
+    # A doctrine name may contain square brackets, which Rich reads as markup.
+    shown_name = escape(doctrine_name)
     if market_to_remove in ("both", "all"):
         prompt_msg = (
-            f"Remove doctrine '{doctrine_name}' from ALL markets? "
-            "This cannot be undone.[/bold red]"
+            f"[bold red]Remove doctrine '{shown_name}' from ALL markets? "
+            "This cannot be undone.[/bold red] "
             "Fits will be maintained for other doctrines that use them."
-
         )
     else:
         prompt_msg = (
-            f"[bold]Remove doctrine '{doctrine_name}' from "
+            f"[bold]Remove doctrine '{shown_name}' from "
             f"'{market_to_remove}' market?[/bold]"
         )
 

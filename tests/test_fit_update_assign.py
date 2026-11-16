@@ -181,3 +181,27 @@ class TestListDoctrinesUsesMarketDb:
             )
         market.assert_called_once_with(db_alias="wcmktnorth", remote=False)
         fittings.assert_not_called()
+
+
+class TestUnassignDoctrineConfirmPrompt:
+    """The `--market=all` prompt had a closing `[/bold red]` with no opening
+    tag, so Rich raised MarkupError before the user could confirm."""
+
+    @pytest.mark.parametrize("market", ["all", "deployment"])
+    def test_prompt_is_valid_markup(self, market):
+        from rich.text import Text
+
+        row = {"fit_id": 1, "doctrine_id": 75}
+        plan = {"action": "remove"}
+        with patch.object(fit_update, "_discover_fits_across_markets",
+                          return_value=([1], ["wcmktprod"], [])), \
+             patch.object(fit_update, "get_available_doctrines",
+                          return_value=[{"id": 75, "name": "WC [shield] Fleet"}]), \
+             patch.object(fit_update, "_get_doctrine_fits_rows", return_value=[row]), \
+             patch.object(fit_update, "_plan_market_action", return_value=plan), \
+             patch.object(fit_update, "_display_market_preview"), \
+             patch.object(fit_update.Confirm, "ask", return_value=False) as ask:
+            assert fit_update.unassign_doctrine_market(75, market) is False
+
+        prompt = ask.call_args.args[0]
+        assert "WC [shield] Fleet" in Text.from_markup(prompt).plain

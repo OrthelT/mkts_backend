@@ -1,5 +1,5 @@
 # EVE Market Tools
-### *ver. 0.2.2* 
+### *ver. 0.2.3* 
 
 Check doctrine stock, find items to restock, and manage fits for WinterCo markets.
 Market collection feeds the [market website](https://github.com/OrthelT/wcmkts_new).

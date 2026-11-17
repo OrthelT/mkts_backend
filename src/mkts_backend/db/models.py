@@ -1,4 +1,4 @@
-from sqlalchemy import String, Integer, DateTime, Float, Boolean, event
+from sqlalchemy import String, Integer, DateTime, Float, Boolean, Index, event
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 from mkts_backend.db._update_log_mixin import UpdateLogMixin
@@ -53,6 +53,9 @@ class MarketOrders(Base):
 
 class MarketHistory(Base):
     __tablename__ = "market_history"
+    # The (date, type_id) primary key can't serve type_id-only lookups, which
+    # the frontend's per-item history page makes; without this they scan ~1M rows.
+    __table_args__ = (Index("ix_market_history_type_id_date", "type_id", "date"),)
     date: Mapped[DateTime] = mapped_column(DateTime, primary_key=True)
     type_id: Mapped[str] = mapped_column(String(10), primary_key=True)
     type_name: Mapped[str] = mapped_column(String(100))

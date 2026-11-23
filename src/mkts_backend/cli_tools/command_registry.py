@@ -290,9 +290,11 @@ def _register_all(reg: CommandRegistry) -> None:
         def pull_one(db, label: str, required: bool) -> bool:
             print(f"Syncing database: {label}")
             try:
-                db.assert_remote_compatible()
-                if not db.heal_metadata():
-                    raise RuntimeError("replica metadata could not be repaired")
+                # verify_db_exists() checks the remote, repairs metadata, and
+                # rebuilds a replica whose .db or -info is missing; pyturso
+                # refuses to pull into either half-present state.
+                if not db.verify_db_exists():
+                    raise RuntimeError("replica could not be initialized or repaired")
                 db.sync()
             except Exception as exc:
                 logger.warning(f"{label} sync failed: {exc}")

@@ -58,11 +58,8 @@ def synced(monkeypatch, stub_credentials):
             self.alias = alias or market_context.database_alias
             self.path = f"{self.alias}.db"
 
-        def heal_metadata(self):
+        def verify_db_exists(self):
             return True
-
-        def assert_remote_compatible(self):
-            return None
 
         def sync(self):
             seen.append(self.alias)
@@ -114,7 +111,7 @@ def test_markets_only_flag_skips_shared(synced, market_aliases):
     assert set(synced) == market_aliases
 
 
-def test_heal_failure_aborts_that_replica(monkeypatch, stub_credentials, capsys):
+def test_verify_failure_aborts_that_replica(monkeypatch, stub_credentials, capsys):
     instances = []
 
     class Broken:
@@ -124,21 +121,18 @@ def test_heal_failure_aborts_that_replica(monkeypatch, stub_credentials, capsys)
             self.pulled = False
             instances.append(self)
 
-        def assert_remote_compatible(self):
-            return None
-
-        def heal_metadata(self):
+        def verify_db_exists(self):
             return False
 
         def sync(self):
             self.pulled = True
-            raise AssertionError("sync must not run after heal_metadata fails")
+            raise AssertionError("sync must not run after verify_db_exists fails")
 
     monkeypatch.setattr("mkts_backend.config.db_config.DatabaseConfig", Broken)
     assert _run([], market_alias="primary") is False
     assert instances, "DatabaseConfig was never constructed for the primary market"
     assert all(inst.pulled is False for inst in instances), (
-        "sync() ran after heal_metadata() returned False"
+        "sync() ran after verify_db_exists() returned False"
     )
 
 
@@ -194,3 +188,52 @@ def test_optional_route_with_no_credentials_warns_and_skips(monkeypatch, synced,
     captured = capsys.readouterr()
     assert "warning" in captured.out.lower()
     assert alias in captured.out
+
+
+def test_missing_db_with_leftover_sidecars_is_rebuilt(
+    monkeypatch, stub_credentials, tmp_path
+):
+    """A deleted .db beside a valid -info must be re-pulled, not fail.
+
+    pyturso refuses to open that state ("main DB file doesn't exists, but
+    metadata is"), and heal_metadata() alone accepts it because the -info
+    is well-formed. sync must nuke the leftover sidecars and pull fresh.
+    """
+    import json
+    from pathlib import Path
+
+    from mkts_backend.config import db_config
+
+    remote = "https://test-db.turso.io"
+
+    class TmpConfig(db_config.DatabaseConfig):
+        def __init__(self, alias=None, market_context=None):
+            self.alias = alias or market_context.database_alias
+            self.path = str(tmp_path / f"{self.alias}.db")
+            self.turso_url = remote
+            self.token = "dummy-token"
+            self._engine = None
+
+        def pull(self):
+            # Mirror pyturso: metadata without its database is fatal.
+            db, info = Path(self.path), Path(f"{self.path}-info")
+            if info.exists() and not db.exists():
+                raise RuntimeError("main DB file doesn't exists, but metadata is")
+            db.write_bytes(b"x")
+            info.write_text(json.dumps({
+                "version": "v1",
+                "client_unique_id": "turso-sync-py-test",
+                "saved_configuration": {"remote_url": remote},
+            }))
+
+    monkeypatch.setattr(db_config, "DatabaseConfig", TmpConfig)
+
+    from mkts_backend.config.market_context import MarketContext
+    alias = MarketContext.from_settings("primary").database_alias
+    leftover = TmpConfig(alias)
+    leftover.pull()
+    Path(leftover.path).unlink()
+    Path(f"{leftover.path}-changes").write_bytes(b"")
+
+    assert _run(["--markets-only"], market_alias="primary") is True
+    assert Path(leftover.path).exists()

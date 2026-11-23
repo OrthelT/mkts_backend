@@ -2,14 +2,14 @@
 
 Reads rows from a Google Sheet (or a local CSV for testing), derives a few
 columns (structure_type_id, and when absent from the sheet, system_id /
-region / region_id), prints a diff against the current ``structures``
-table, and upserts new + changed rows to the local replica, then pushes
-to Turso.
+region / region_id), prints a diff against the current ``structures`` and
+``structure_rigs`` tables, upserts new + changed rows and syncs rig links
+in the local replica, then pushes to Turso.
 
 Flags
 -----
 ``--sheet-url=URL``    Override the sheet URL from ``settings.toml [buildcost]``.
-``--worksheet=NAME``   Worksheet title (defaults to the first sheet).
+``--worksheet=NAME``   Worksheet title (defaults to ``[buildcost].default_worksheet``).
 ``--file=PATH``        Read from a local CSV instead of Google Sheets (testing).
 ``--dry-run``          Print the diff only, make no writes.
 ``--yes``              Skip the confirm prompt (for scripted use).
@@ -28,8 +28,12 @@ from mkts_backend.utils.build_cost_utils import (
     enrich_structure_rows,
     format_diff_for_display,
     load_existing_structures,
+    load_rig_links,
+    load_rig_type_ids,
     read_structures_csv,
     read_structures_sheet,
+    rig_links_from_rows,
+    sync_rig_links,
     upsert_structures,
 )
 
@@ -76,7 +80,12 @@ def add_structure(args: list[str], market_alias: str = "primary") -> bool:
                 print("Error: no sheet URL configured. Set [buildcost].sheet_url or pass --sheet-url=.")
                 return False
             gs_config = GoogleSheetConfig(sheet_url=sheet_url)
-            source_df = read_structures_sheet(gs_config, sheet_url=sheet_url, worksheet_name=worksheet_name)
+            source_df = read_structures_sheet(
+                gs_config,
+                sheet_url=sheet_url,
+                worksheet_name=worksheet_name,
+                header_row=int(buildcost_cfg.get("header_row", 1)),
+            )
             source_label = f"sheet {sheet_url}" + (f" (worksheet: {worksheet_name})" if worksheet_name else "")
     except Exception as e:
         logger.exception("Failed to read source")
@@ -111,7 +120,12 @@ def add_structure(args: list[str], market_alias: str = "primary") -> bool:
 
     # ── 3. Diff against the existing structures table ──────────
     existing_df = load_existing_structures(local_db.engine)
-    diff = diff_structures(existing_df, enriched_df)
+    diff = diff_structures(
+        existing_df,
+        enriched_df,
+        existing_links=load_rig_links(local_db.engine),
+        incoming_links=rig_links_from_rows(enriched_df, load_rig_type_ids(local_db.engine)),
+    )
     print(format_diff_for_display(diff))
 
     if diff.is_empty:
@@ -124,7 +138,8 @@ def add_structure(args: list[str], market_alias: str = "primary") -> bool:
 
     # ── 4. Confirm ─────────────────────────────────────────────
     if not skip_confirm:
-        if not _confirm(f"Write {diff.write_count} rows to structures?"):
+        link_count = len(diff.rig_links_added) + len(diff.rig_links_removed)
+        if not _confirm(f"Write {diff.write_count} structure rows and {link_count} rig-link changes?"):
             print("Aborted by user.")
             return False
 
@@ -138,6 +153,11 @@ def add_structure(args: list[str], market_alias: str = "primary") -> bool:
         count = upsert_structures(local_db.engine, rows_to_write)
         print(f"Wrote {count} rows to {local_db.path}.")
         logger.info(f"Upsert complete: {count} rows; ids={list(rows_to_write['structure_id'])}")
+        sync_rig_links(local_db.engine, diff)
+        print(
+            f"Rig links: {len(diff.rig_links_added)} added, "
+            f"{len(diff.rig_links_removed)} removed."
+        )
     except Exception as e:
         logger.exception("Upsert failed")
         print(f"Error writing structures: {e}")

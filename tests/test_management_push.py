@@ -1788,20 +1788,9 @@ class TestAssignMarketDispatcherPushGate:
 
 def _seed_buildcost_structures_schema(conn) -> None:
     """Minimal buildcost.db schema for add_structure's enrichment + upsert."""
-    conn.execute(text("""
-        CREATE TABLE structures(
-            structure TEXT, rig_1 TEXT, rig_2 TEXT, rig_3 TEXT,
-            structure_type TEXT, system_id BIGINT, structure_id BIGINT,
-            structure_type_id BIGINT, region_id BIGINT, tax FLOAT,
-            region TEXT, system TEXT
-        )
-    """))
-    conn.execute(text(
-        "CREATE UNIQUE INDEX ix_structures_structure_id ON structures(structure_id)"
-    ))
-    conn.execute(text(
-        "CREATE TABLE rigs(type_id INTEGER PRIMARY KEY, type_name TEXT, icon_id INTEGER)"
-    ))
+    from mkts_backend.db.build_cost_models import BuildCostBase, Rig, Structure
+
+    BuildCostBase.metadata.create_all(conn, tables=[Structure.__table__, Rig.__table__])
     conn.execute(text(
         "INSERT INTO rigs VALUES (37146, 'Standup M-Set Basic Medium Ship "
         "Manufacturing Material Efficiency I', 21729)"
@@ -1845,6 +1834,10 @@ class TestStructureAndBuildcostSeams:
             "system_id": 30000240,
             "region": "Vale of the Silent",
             "region_id": 10000003,
+            "has_manufacturing_plant": True,
+            "has_capital_shipyard": False,
+            "has_supercapital_shipyard": False,
+            "is_open": True,
         }]).to_csv(csv_path, index=False)
 
         result = mod.add_structure([f"--file={csv_path}", "--yes"])

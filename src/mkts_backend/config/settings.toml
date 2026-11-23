@@ -120,7 +120,8 @@ enabled = true
 # Source sheet for the `add_structure` CLI (imports rows into buildcost.db structures table).
 [buildcost]
 sheet_url = "https://docs.google.com/spreadsheets/d/1aFuInUsgvI1mb-nFNBSwRCGy9YqauykGRson3Eb0b5A/edit?gid=0#gid=0"
-default_worksheet = ""  # empty = first worksheet in the spreadsheet
+default_worksheet = "Industry_Structures"  # empty = first worksheet in the spreadsheet
+header_row = 2  # row 1 of Industry_Structures is a banner
 
 # ============================================================================
 # UPDATE BEHAVIOR

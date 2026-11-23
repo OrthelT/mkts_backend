@@ -63,6 +63,14 @@ rows, and asks before saving. `--sheet-url` and `--worksheet` override the sourc
 Rows are upserted into shared `structures` data and pushed to Turso. Market
 selection does not change the destination.
 
+The sheet must have `structure_id`, `structure`, `system`, `structure_type`,
+`tax`, and the TRUE/FALSE columns `has_manufacturing_plant`,
+`has_capital_shipyard`, `has_supercapital_shipyard`, and `is_open`. A blank
+TRUE/FALSE cell stops the import. `owner`, `owner_id`, `rig_1`–`rig_3`,
+`system_id`, `region`, and `region_id` are optional. Rig names must match the
+`rigs` table; the import also records each rig in `structure_rigs`.
+Structures missing from the sheet are reported but never deleted.
+
 ## Refresh behavior
 
 The collector upserts successful estimates, including per-unit cost, time, ME,

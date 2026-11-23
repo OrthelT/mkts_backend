@@ -10,17 +10,35 @@ import pandas as pd
 import pytest
 from sqlalchemy import create_engine, text
 
+from mkts_backend.db.build_cost_models import BuildCostBase, Rig, Structure, StructureRig
 from mkts_backend.utils.build_cost_utils import (
     STRUCTURE_COLUMNS,
     STRUCTURE_TYPE_IDS,
     StructureImportError,
+    _coerce_flag,
     _coerce_tax,
     diff_structures,
     enrich_structure_rows,
     format_diff_for_display,
     load_existing_structures,
+    load_rig_links,
+    load_rig_type_ids,
+    rig_links_from_rows,
+    sync_rig_links,
     upsert_structures,
 )
+
+ME_RIG = "Standup M-Set Basic Medium Ship Manufacturing Material Efficiency I"
+TE_RIG = "Standup M-Set Basic Medium Ship Manufacturing Time Efficiency I"
+ME_RIG_ID, TE_RIG_ID = 37146, 37147
+
+# Service-module flags the sheet must carry; matches the seeded 4-HWWF row.
+FLAGS = {
+    "has_manufacturing_plant": True,
+    "has_capital_shipyard": False,
+    "has_supercapital_shipyard": False,
+    "is_open": True,
+}
 
 
 # ── Fixtures ────────────────────────────────────────────────────
@@ -28,38 +46,15 @@ from mkts_backend.utils.build_cost_utils import (
 
 @pytest.fixture
 def buildcost_engine(tmp_path):
-    """Create a file-backed SQLite with the real buildcost schema + seed rows."""
+    """Create a file-backed SQLite with the buildcost schema + seed rows.
+
+    ``structures`` and ``rigs`` come from the ORM models. ``structure_rigs``
+    is left out so tests cover ``sync_rig_links`` creating it.
+    """
     db_path = tmp_path / "buildcost.db"
     engine = create_engine(f"sqlite:///{db_path}")
+    BuildCostBase.metadata.create_all(engine, tables=[Structure.__table__, Rig.__table__])
     with engine.begin() as conn:
-        # Matches production schema (post-migration): no PRIMARY KEY in the
-        # table def, but a UNIQUE INDEX on structure_id (ix_structures_structure_id)
-        # which is what `INSERT ... ON CONFLICT(structure_id)` binds against.
-        conn.execute(text("""
-            CREATE TABLE structures(
-                structure TEXT,
-                rig_1 TEXT, rig_2 TEXT, rig_3 TEXT,
-                structure_type TEXT,
-                system_id BIGINT,
-                structure_id BIGINT,
-                structure_type_id BIGINT,
-                region_id BIGINT,
-                tax FLOAT,
-                region TEXT,
-                system TEXT
-            )
-        """))
-        conn.execute(text(
-            "CREATE UNIQUE INDEX ix_structures_structure_id "
-            "ON structures(structure_id)"
-        ))
-        conn.execute(text("""
-            CREATE TABLE rigs(
-                type_id INTEGER PRIMARY KEY,
-                type_name TEXT,
-                icon_id INTEGER
-            )
-        """))
         # Seed: two Vale systems, two known rig names.
         conn.execute(text(
             "INSERT INTO rigs VALUES (37146, 'Standup M-Set Basic Medium Ship "
@@ -74,10 +69,11 @@ def buildcost_engine(tmp_path):
             INSERT INTO structures
                 (structure_id, system, structure, system_id,
                  rig_1, rig_2, rig_3,
-                 structure_type, structure_type_id, tax, region, region_id)
+                 structure_type, structure_type_id, tax, region, region_id,
+                 has_manufacturing_plant, is_open)
             VALUES (1035603743755, '4-HWWF', '4-HWWF - WinterCo. Construction Center',
                     30000240, NULL, NULL, NULL, 'Sotiyo', 35827, 0.0005,
-                    'Vale of the Silent', 10000003)
+                    'Vale of the Silent', 10000003, 1, 1)
         """))
         # Existing structure in Pure Blind (B-9C24) — seeds the known-systems map.
         conn.execute(text("""
@@ -99,9 +95,10 @@ def _minimal_sheet_df(**overrides) -> pd.DataFrame:
         "system": "4-HWWF",
         "structure_type": "Azbel",
         "tax": 0.0025,
-        "rig_1": "Standup M-Set Basic Medium Ship Manufacturing Material Efficiency I",
+        "rig_1": ME_RIG,
         "rig_2": "",
         "rig_3": "",
+        **FLAGS,
     }
     row.update(overrides)
     return pd.DataFrame([row])
@@ -209,6 +206,7 @@ def test_diff_changed_row(buildcost_engine):
         "system": "4-HWWF",
         "structure_type": "Sotiyo",
         "tax": 0.0010,  # was 0.0005
+        **FLAGS,
     }])
     existing = load_existing_structures(buildcost_engine)
     enriched = enrich_structure_rows(sheet, buildcost_engine)
@@ -229,6 +227,7 @@ def test_diff_unchanged(buildcost_engine):
         "system": "4-HWWF",
         "structure_type": "Sotiyo",
         "tax": 0.0005,
+        **FLAGS,
     }])
     existing = load_existing_structures(buildcost_engine)
     enriched = enrich_structure_rows(sheet, buildcost_engine)
@@ -276,6 +275,7 @@ def test_upsert_updates_existing_row(buildcost_engine):
         "system": "4-HWWF",
         "structure_type": "Sotiyo",
         "tax": 0.0099,
+        **FLAGS,
     }])
     enriched = enrich_structure_rows(sheet, buildcost_engine)
     upsert_structures(buildcost_engine, enriched)
@@ -317,7 +317,13 @@ def test_upsert_rolls_back_on_midbatch_failure(tmp_path):
                 region_id BIGINT,
                 tax FLOAT,
                 region TEXT,
-                system TEXT
+                system TEXT,
+                owner TEXT,
+                owner_id BIGINT,
+                has_manufacturing_plant INTEGER,
+                has_capital_shipyard INTEGER,
+                has_supercapital_shipyard INTEGER,
+                is_open INTEGER
             )
         """))
         conn.execute(text(
@@ -364,18 +370,143 @@ def test_upsert_coerces_nan_to_null(buildcost_engine):
         "tax": 0.01,
         "region": np.nan,
         "region_id": 10000002,
+        "owner_id": np.nan,
+        **{k: 0 for k in FLAGS},
     }
     frame = pd.DataFrame([row])
     upsert_structures(buildcost_engine, frame)
 
     with buildcost_engine.connect() as conn:
         result = conn.execute(text(
-            "SELECT rig_1, rig_2, rig_3, region FROM structures "
+            "SELECT rig_1, rig_2, rig_3, region, owner_id FROM structures "
             "WHERE structure_id = 2000000000001"
         )).fetchone()
-    assert result == (None, None, None, None), (
+    assert result == (None, None, None, None, None), (
         f"NaN should be stored as SQL NULL, got {result!r}"
     )
+
+
+# ── Service-module flags and owners ─────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "value,expected",
+    [(True, 1), (False, 0), (1, 1), (0.0, 0), ("TRUE", 1), (" false ", 0), ("1", 1)],
+)
+def test_coerce_flag_accepts_sheet_booleans(value, expected):
+    assert _coerce_flag(value) == expected
+
+
+@pytest.mark.parametrize("value", ["", "yes", 2, None])
+def test_coerce_flag_rejects_other_values(value):
+    with pytest.raises(ValueError):
+        _coerce_flag(value)
+
+
+def test_enrich_stores_flags_and_owner(buildcost_engine):
+    sheet = _minimal_sheet_df(
+        has_capital_shipyard="TRUE", owner=" Fraternity Building Management ", owner_id=98599770
+    )
+    row = enrich_structure_rows(sheet, buildcost_engine).iloc[0]
+    assert (row["has_manufacturing_plant"], row["has_capital_shipyard"]) == (1, 1)
+    assert (row["has_supercapital_shipyard"], row["is_open"]) == (0, 1)
+    assert row["owner"] == "Fraternity Building Management"
+    assert row["owner_id"] == 98599770 and isinstance(row["owner_id"], int)
+
+
+def test_enrich_rejects_blank_flag(buildcost_engine):
+    with pytest.raises(StructureImportError, match="has_capital_shipyard"):
+        enrich_structure_rows(_minimal_sheet_df(has_capital_shipyard=""), buildcost_engine)
+
+
+def test_enrich_requires_flag_columns(buildcost_engine):
+    sheet = _minimal_sheet_df().drop(columns=["is_open"])
+    with pytest.raises(StructureImportError, match="missing required columns"):
+        enrich_structure_rows(sheet, buildcost_engine)
+
+
+def test_enrich_rejects_non_numeric_owner_id(buildcost_engine):
+    with pytest.raises(StructureImportError, match="owner_id"):
+        enrich_structure_rows(_minimal_sheet_df(owner_id="########"), buildcost_engine)
+
+
+def test_enrich_blank_owner_is_null(buildcost_engine):
+    row = enrich_structure_rows(_minimal_sheet_df(owner="", owner_id=""), buildcost_engine).iloc[0]
+    assert row["owner"] is None and row["owner_id"] is None
+
+
+# ── Rig links ───────────────────────────────────────────────────
+
+
+def _link_diff(engine, sheet):
+    enriched = enrich_structure_rows(sheet, engine)
+    return diff_structures(
+        load_existing_structures(engine),
+        enriched,
+        existing_links=load_rig_links(engine),
+        incoming_links=rig_links_from_rows(enriched, load_rig_type_ids(engine)),
+    )
+
+
+def test_load_rig_links_without_table_is_empty(buildcost_engine):
+    assert load_rig_links(buildcost_engine) == set()
+
+
+def test_rig_links_from_rows_maps_names_to_ids(buildcost_engine):
+    enriched = enrich_structure_rows(_minimal_sheet_df(rig_2=TE_RIG), buildcost_engine)
+    links = rig_links_from_rows(enriched, load_rig_type_ids(buildcost_engine))
+    assert links == {(1039999999999, ME_RIG_ID), (1039999999999, TE_RIG_ID)}
+
+
+def test_sync_rig_links_creates_table_and_inserts(buildcost_engine):
+    diff = _link_diff(buildcost_engine, _minimal_sheet_df())
+    assert diff.rig_links_added == {(1039999999999, ME_RIG_ID)}
+    sync_rig_links(buildcost_engine, diff)
+    assert load_rig_links(buildcost_engine) == {(1039999999999, ME_RIG_ID)}
+
+
+def test_rig_swap_only_touches_changed_pairs(buildcost_engine):
+    """Swapping one rig deletes and inserts only that pair; the kept pair stays put."""
+    sync_rig_links(buildcost_engine, _link_diff(buildcost_engine, _minimal_sheet_df(rig_2=TE_RIG)))
+    with buildcost_engine.connect() as conn:
+        kept_rowid = conn.execute(text(
+            "SELECT rowid FROM structure_rigs WHERE rig_type_id = :r"), {"r": ME_RIG_ID}
+        ).scalar()
+
+    diff = _link_diff(buildcost_engine, _minimal_sheet_df(rig_2=""))
+    assert diff.rig_links_added == set()
+    assert diff.rig_links_removed == {(1039999999999, TE_RIG_ID)}
+    sync_rig_links(buildcost_engine, diff)
+
+    with buildcost_engine.connect() as conn:
+        rows = conn.execute(text("SELECT rowid, rig_type_id FROM structure_rigs")).fetchall()
+    assert rows == [(kept_rowid, ME_RIG_ID)]
+
+
+def test_rig_links_of_structures_absent_from_sheet_are_kept(buildcost_engine):
+    other = (1035603743755, TE_RIG_ID)  # seeded 4-HWWF row, not in this sheet
+    with buildcost_engine.begin() as conn:
+        StructureRig.__table__.create(conn)
+        conn.execute(text("INSERT INTO structure_rigs VALUES (:s, :r)"), {"s": other[0], "r": other[1]})
+    diff = _link_diff(buildcost_engine, _minimal_sheet_df())
+    assert other not in diff.rig_links_removed
+
+
+def test_diff_with_only_link_changes_is_not_empty(buildcost_engine):
+    sheet = pd.DataFrame([{
+        "structure_id": 1035603743755,
+        "structure": "4-HWWF - WinterCo. Construction Center",
+        "system": "4-HWWF",
+        "structure_type": "Sotiyo",
+        "tax": 0.0005,
+        **FLAGS,
+    }])
+    diff = _link_diff(buildcost_engine, sheet)
+    assert diff.write_count == 0 and diff.is_empty
+
+    diff.rig_links_removed.add((1035603743755, ME_RIG_ID))
+    assert not diff.is_empty
+    assert "Rig links: 0 to add, 1 to remove" in format_diff_for_display(diff)
 
 
 # ── CLI handler ─────────────────────────────────────────────────
@@ -429,9 +560,10 @@ def _sample_row(**overrides) -> dict:
         "system": "4-HWWF",
         "structure_type": "Azbel",
         "tax": 0.005,
-        "rig_1": "Standup M-Set Basic Medium Ship Manufacturing Material Efficiency I",
+        "rig_1": ME_RIG,
         "rig_2": "",
         "rig_3": "",
+        **FLAGS,
     }
     row.update(overrides)
     return row
@@ -469,6 +601,7 @@ def test_cli_writes_once_and_pushes(cli_env, buildcost_engine, tmp_path, monkeyp
     assert dbs[0].pushes == 1, (
         "add_structure must push the write to Turso exactly once"
     )
+    assert load_rig_links(buildcost_engine) == {(_sample_row()["structure_id"], ME_RIG_ID)}
 
 
 def test_cli_write_failure_reports_error(cli_env, buildcost_engine, tmp_path, monkeypatch, capsys):

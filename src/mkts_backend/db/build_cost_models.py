@@ -4,13 +4,12 @@ Authoritative schema for the structures / rigs / industry_index tables.
 `STRUCTURE_COLUMNS` in ``build_cost_utils.py`` is derived from ``Structure``
 so column order stays in sync with this model.
 
-The deployed ``structures`` table uses a UNIQUE INDEX on ``structure_id``
-(added via non-destructive migration) rather than a PRIMARY KEY clause in
-CREATE TABLE. Functionally equivalent for SQLite: ``ON CONFLICT(structure_id)``
-works against either.
+``structures`` and ``structure_rigs`` were recreated from these models in
+Nov 2026. ``rig_1..rig_3`` duplicate ``structure_rigs`` for one frontend
+release; drop them once wcmkts_new reads ``structure_rigs``.
 """
 
-from sqlalchemy import Column, DateTime, Float, Integer, String
+from sqlalchemy import Column, DateTime, Float, Integer, String, text
 from sqlalchemy.orm import declarative_base
 
 from mkts_backend.db._update_log_mixin import UpdateLogMixin
@@ -76,6 +75,23 @@ class Structure(BuildCostBase):
     tax = Column(Float, nullable=True)
     region = Column(String, nullable=True)
     region_id = Column(Integer, nullable=True)
+    owner = Column(String, nullable=True)
+    owner_id = Column(Integer, nullable=True)
+    # 1 when the Structure Engineering Service Module is online. The
+    # Supercapital Shipyard also builds capitals (SDE assembly line 176).
+    has_manufacturing_plant = Column(Integer, nullable=False, server_default=text("0"))
+    has_capital_shipyard = Column(Integer, nullable=False, server_default=text("0"))
+    has_supercapital_shipyard = Column(Integer, nullable=False, server_default=text("0"))
+    is_open = Column(Integer, nullable=False, server_default=text("0"))
+
+
+class StructureRig(BuildCostBase):
+    """One row per rig fitted to a structure; names come from a join on ``rigs``."""
+
+    __tablename__ = "structure_rigs"
+
+    structure_id = Column(Integer, primary_key=True)
+    rig_type_id = Column(Integer, primary_key=True)
 
 
 class IndustryIndex(BuildCostBase):

@@ -10,9 +10,11 @@ The flow (driven by ``mkts_backend.cli_tools.add_structure``):
    render a human-readable summary.
 4. Upsert new and changed rows via SQLite's
    ``INSERT ... ON CONFLICT(structure_id) DO UPDATE``.
+5. Sync ``structure_rigs`` links for the sheet's structures from their
+   ``rig_1..rig_3`` names.
 
-Rows present in the DB but missing from the sheet are reported as a
-warning only — this module never deletes.
+Structures present in the DB but missing from the sheet are reported as a
+warning only — this module never deletes them or their rig links.
 """
 
 from __future__ import annotations
@@ -25,7 +27,7 @@ from sqlalchemy import text
 from sqlalchemy.engine import Engine
 
 from mkts_backend.config.logging_config import configure_logging
-from mkts_backend.db.build_cost_models import Structure
+from mkts_backend.db.build_cost_models import Structure, StructureRig
 
 logger = configure_logging(__name__)
 
@@ -47,6 +49,17 @@ STRUCTURE_TYPE_IDS: dict[str, int] = {
 # in sync with `build_cost_models.Structure`.
 STRUCTURE_COLUMNS: list[str] = [c.name for c in Structure.__table__.columns]
 
+# Boolean sheet columns stored as 0/1. Required: a missing column or blank
+# cell would otherwise hide a structure from every build.
+FLAG_COLUMNS: list[str] = [
+    "has_manufacturing_plant",
+    "has_capital_shipyard",
+    "has_supercapital_shipyard",
+    "is_open",
+]
+
+RIG_COLUMNS: list[str] = ["rig_1", "rig_2", "rig_3"]
+
 # Columns that must come from the sheet — the rest can be enriched.
 REQUIRED_SHEET_COLUMNS: list[str] = [
     "structure_id",
@@ -54,15 +67,16 @@ REQUIRED_SHEET_COLUMNS: list[str] = [
     "system",
     "structure_type",
     "tax",
+    *FLAG_COLUMNS,
 ]
 
 # Columns we recognize on the sheet (required + optional). Passed to gspread
 # as ``expected_headers`` so blank/extra columns in row 1 are tolerated.
 KNOWN_SHEET_COLUMNS: list[str] = [
     *REQUIRED_SHEET_COLUMNS,
-    "rig_1",
-    "rig_2",
-    "rig_3",
+    *RIG_COLUMNS,
+    "owner",
+    "owner_id",
     "system_id",
     "region",
     "region_id",
@@ -88,6 +102,9 @@ class StructureDiff:
     change_details: list[dict]  # {structure_id, column, old, new} per field
     unchanged_count: int
     missing_from_sheet: pd.DataFrame  # rows in DB absent from the sheet (warning only)
+    # (structure_id, rig_type_id) pairs to insert into / delete from structure_rigs.
+    rig_links_added: set[tuple[int, int]] = field(default_factory=set)
+    rig_links_removed: set[tuple[int, int]] = field(default_factory=set)
 
     @property
     def write_count(self) -> int:
@@ -95,23 +112,26 @@ class StructureDiff:
 
     @property
     def is_empty(self) -> bool:
-        return self.write_count == 0
+        return self.write_count == 0 and not self.rig_links_added and not self.rig_links_removed
 
 
 # ── Sheet reading ───────────────────────────────────────────────
 
 
-def read_structures_sheet(gs_config, sheet_url: str | None, worksheet_name: str | None) -> pd.DataFrame:
+def read_structures_sheet(
+    gs_config, sheet_url: str | None, worksheet_name: str | None, header_row: int = 1
+) -> pd.DataFrame:
     """Read the configured worksheet and return a DataFrame.
 
     Passes :data:`KNOWN_SHEET_COLUMNS` as ``expected_headers`` so blank or
-    extra header cells in row 1 are tolerated. The caller (``enrich_``) then
+    extra header cells are tolerated. The caller (``enrich_``) then
     validates :data:`REQUIRED_SHEET_COLUMNS` are actually present.
     """
     df = gs_config.get_worksheet_as_dataframe(
         sheet_url=sheet_url,
         worksheet_name=worksheet_name,
         expected_headers=KNOWN_SHEET_COLUMNS,
+        head=header_row,
     )
     logger.info(f"Loaded {len(df)} rows from sheet; columns: {list(df.columns)}")
     return df
@@ -153,11 +173,11 @@ def _load_known_systems(engine: Engine) -> dict[str, tuple[int, str, int]]:
     return known
 
 
-def _load_valid_rig_names(engine: Engine) -> set[str]:
-    """Return the set of valid rig names from the ``rigs`` table."""
+def load_rig_type_ids(engine: Engine) -> dict[str, int]:
+    """Return ``{rig_name: type_id}`` from the ``rigs`` table."""
     with engine.connect() as conn:
-        result = conn.execute(text("SELECT type_name FROM rigs WHERE type_name IS NOT NULL"))
-        return {row[0] for row in result.fetchall()}
+        result = conn.execute(text("SELECT type_name, type_id FROM rigs WHERE type_name IS NOT NULL"))
+        return {name: int(type_id) for name, type_id in result.fetchall()}
 
 
 def _coerce_tax(value) -> float:
@@ -191,6 +211,29 @@ def _normalize_rig_cell(value) -> str | None:
     if not s or s == "0":
         return None
     return s
+
+
+def _coerce_flag(value) -> int:
+    """Parse a sheet boolean (native bool, 0/1, or TRUE/FALSE text) into 0/1."""
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, (int, float)) and value in (0, 1):
+        return int(value)
+    s = str(value).strip().upper()
+    if s in ("TRUE", "1"):
+        return 1
+    if s in ("FALSE", "0"):
+        return 0
+    raise ValueError(f"expected TRUE/FALSE, got {value!r}")
+
+
+def _coerce_owner_id(value) -> int | None:
+    """Blank → None; otherwise an integer corporation ID."""
+    if not _is_truthy(value):
+        return None
+    if isinstance(value, float) and value.is_integer():
+        return int(value)
+    return int(str(value).strip())
 
 
 def _coerce_required_columns(df: pd.DataFrame) -> None:
@@ -232,16 +275,33 @@ def enrich_structure_rows(sheet_df: pd.DataFrame, buildcost_engine: Engine) -> p
     except (ValueError, TypeError) as exc:
         raise StructureImportError(f"tax must be numeric: {exc}") from exc
 
+    for col in FLAG_COLUMNS:
+        try:
+            df[col] = df[col].map(_coerce_flag).astype(int)
+        except (ValueError, TypeError) as exc:
+            raise StructureImportError(f"{col}: {exc}") from exc
+
+    # owner / owner_id are optional.
+    for col in ("owner", "owner_id"):
+        if col not in df.columns:
+            df[col] = None
+    df["owner"] = df["owner"].map(lambda v: str(v).strip() if _is_truthy(v) else None)
+    try:
+        # A plain list keeps ints as ints; Series.map would turn None into NaN floats.
+        df["owner_id"] = pd.Series([_coerce_owner_id(v) for v in df["owner_id"]], index=df.index, dtype=object)
+    except (ValueError, TypeError) as exc:
+        raise StructureImportError(f"owner_id must be an integer corporation ID: {exc}") from exc
+
     # Normalize rig cells.
-    for col in ("rig_1", "rig_2", "rig_3"):
+    for col in RIG_COLUMNS:
         if col not in df.columns:
             df[col] = None
         df[col] = df[col].map(_normalize_rig_cell)
 
     # Validate rig names against the rigs table.
-    valid_rigs = _load_valid_rig_names(buildcost_engine)
+    valid_rigs = load_rig_type_ids(buildcost_engine)
     unknown_rigs: set[str] = set()
-    for col in ("rig_1", "rig_2", "rig_3"):
+    for col in RIG_COLUMNS:
         for value in df[col].dropna().unique():
             if value not in valid_rigs:
                 unknown_rigs.add(value)
@@ -326,6 +386,29 @@ def load_existing_structures(engine: Engine) -> pd.DataFrame:
     return df
 
 
+def load_rig_links(engine: Engine) -> set[tuple[int, int]]:
+    """Read ``structure_rigs`` as ``{(structure_id, rig_type_id)}``; empty if the table is absent."""
+    with engine.connect() as conn:
+        exists = conn.execute(
+            text("SELECT 1 FROM sqlite_master WHERE type='table' AND name='structure_rigs'")
+        ).fetchone()
+        if not exists:
+            return set()
+        rows = conn.execute(text("SELECT structure_id, rig_type_id FROM structure_rigs")).fetchall()
+    return {(int(sid), int(rid)) for sid, rid in rows}
+
+
+def rig_links_from_rows(rows: pd.DataFrame, rig_type_ids: dict[str, int]) -> set[tuple[int, int]]:
+    """Derive ``{(structure_id, rig_type_id)}`` from enriched rows' rig names."""
+    links: set[tuple[int, int]] = set()
+    for _, row in rows.iterrows():
+        for col in RIG_COLUMNS:
+            name = row[col]
+            if _is_truthy(name):
+                links.add((int(row["structure_id"]), rig_type_ids[name]))
+    return links
+
+
 def _cell_equal(a, b) -> bool:
     """Treat NaN/None/'' as equivalent; otherwise compare after string-norm."""
     a_blank = a is None or (isinstance(a, float) and pd.isna(a)) or (isinstance(a, str) and not a.strip())
@@ -342,12 +425,20 @@ def _cell_equal(a, b) -> bool:
     return str(a).strip() == str(b).strip()
 
 
-def diff_structures(existing: pd.DataFrame, incoming: pd.DataFrame) -> StructureDiff:
+def diff_structures(
+    existing: pd.DataFrame,
+    incoming: pd.DataFrame,
+    existing_links: set[tuple[int, int]] = frozenset(),
+    incoming_links: set[tuple[int, int]] = frozenset(),
+) -> StructureDiff:
     """Compare incoming enriched rows against the current DB.
 
     Identity is by ``structure_id``. Returns sets of new rows, changed rows
     (with per-field old/new detail), unchanged count, and a warning set of
     DB rows missing from the incoming sheet.
+
+    Rig links are compared only for structures in ``incoming``, so links of
+    structures absent from the sheet are left alone.
     """
     existing_by_id = {int(row["structure_id"]): row for _, row in existing.iterrows()}
     incoming_by_id = {int(row["structure_id"]): row for _, row in incoming.iterrows()}
@@ -379,12 +470,17 @@ def diff_structures(existing: pd.DataFrame, incoming: pd.DataFrame) -> Structure
     changed_rows = incoming[incoming["structure_id"].isin(changed_ids)].reset_index(drop=True)
     missing_rows = existing[existing["structure_id"].isin(missing_ids)].reset_index(drop=True)
 
+    sheet_ids = set(incoming_by_id)
+    current_links = {link for link in existing_links if link[0] in sheet_ids}
+
     return StructureDiff(
         new_rows=new_rows,
         changed_rows=changed_rows,
         change_details=change_details,
         unchanged_count=unchanged,
         missing_from_sheet=missing_rows,
+        rig_links_added=set(incoming_links) - current_links,
+        rig_links_removed=current_links - set(incoming_links),
     )
 
 
@@ -397,6 +493,10 @@ def format_diff_for_display(diff: StructureDiff) -> str:
         f"{len(diff.new_rows)} new, {len(diff.changed_rows)} changed, "
         f"{diff.unchanged_count} unchanged, "
         f"{len(diff.missing_from_sheet)} in DB but missing from sheet"
+    )
+    lines.append(
+        f"Rig links: {len(diff.rig_links_added)} to add, "
+        f"{len(diff.rig_links_removed)} to remove"
     )
     lines.append("─" * 60)
 
@@ -438,7 +538,7 @@ def upsert_structures(engine: Engine, rows: pd.DataFrame) -> int:
     (``ix_structures_structure_id``) which is what ON CONFLICT binds to.
 
     All writes happen in a single transaction; any exception rolls back
-    and is re-raised. NaN values in optional columns (rig_1..rig_3, region)
+    and is re-raised. NaN values in optional columns (rig_1..rig_3, region, owner_id)
     are coerced to NULL before binding.
     """
     if rows.empty:
@@ -460,6 +560,27 @@ def upsert_structures(engine: Engine, rows: pd.DataFrame) -> int:
             clean = {k: (None if isinstance(v, float) and pd.isna(v) else v) for k, v in record.items()}
             conn.execute(upsert_sql, clean)
     return len(records)
+
+
+def sync_rig_links(engine: Engine, diff: StructureDiff) -> None:
+    """Apply ``diff``'s rig-link changes to ``structure_rigs``, creating it if absent.
+
+    Inserts only new pairs and deletes only removed pairs. Deleting and
+    re-inserting an unchanged pair would make the next pyturso push fail
+    with ``UNIQUE constraint failed``.
+    """
+    with engine.begin() as conn:
+        StructureRig.__table__.create(conn, checkfirst=True)
+        for sid, rid in sorted(diff.rig_links_removed):
+            conn.execute(
+                text("DELETE FROM structure_rigs WHERE structure_id = :sid AND rig_type_id = :rid"),
+                {"sid": sid, "rid": rid},
+            )
+        for sid, rid in sorted(diff.rig_links_added):
+            conn.execute(
+                text("INSERT INTO structure_rigs (structure_id, rig_type_id) VALUES (:sid, :rid)"),
+                {"sid": sid, "rid": rid},
+            )
 
 
 # ── Convenience for tests/callers ───────────────────────────────

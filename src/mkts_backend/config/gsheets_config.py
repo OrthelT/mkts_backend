@@ -200,10 +200,12 @@ class GoogleSheetConfig:
         worksheet_name: Optional[str] = None,
         expected_headers: Optional[List[str]] = None,
         unformatted: bool = True,
+        head: int = 1,
     ) -> pd.DataFrame:
         """Read a worksheet into a pandas DataFrame.
 
-        Row 1 is the header. Empty cells come back as ``""`` (not NaN).
+        Row ``head`` (1-based) is the header; rows above it are ignored.
+        Empty cells come back as ``""`` (not NaN).
 
         Args:
             sheet_url: Override the configured sheet URL.
@@ -217,6 +219,7 @@ class GoogleSheetConfig:
                 as ``0.05%`` comes back as the float ``0.0005``. Integers
                 stay ints, text stays text. Set to False if you need the
                 display-formatted strings (e.g. pre-formatted ISK strings).
+            head: Header row number, for sheets with a banner above the header.
         """
         spreadsheet = self.get_spreadsheet(sheet_url)
         if worksheet_name:
@@ -227,11 +230,11 @@ class GoogleSheetConfig:
         render_opts = {"value_render_option": "UNFORMATTED_VALUE"} if unformatted else {}
 
         if expected_headers:
-            header_row = worksheet.row_values(1)
+            header_row = worksheet.row_values(head)
             logger.info(
                 f"Worksheet '{worksheet.title}' raw header row ({len(header_row)} cols): {header_row}"
             )
-            # Only pass the expected headers that actually appear in row 1.
+            # Only pass the expected headers that actually appear in the header row.
             # Validation of which of those are *required* is up to the caller.
             present = [h for h in expected_headers if h in header_row]
             if not present:
@@ -240,12 +243,13 @@ class GoogleSheetConfig:
                     f"Expected any of: {expected_headers}. Actual headers: {header_row}"
                 )
             rows = worksheet.get_all_records(
+                head=head,
                 default_blank="",
                 expected_headers=present,
                 **render_opts,
             )
         else:
-            rows = worksheet.get_all_records(default_blank="", **render_opts)
+            rows = worksheet.get_all_records(head=head, default_blank="", **render_opts)
 
         logger.info(
             f"Read {len(rows)} rows from worksheet '{worksheet.title}' "

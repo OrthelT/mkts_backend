@@ -140,6 +140,7 @@ def _write_fit(
     metadata_override: dict | None = None,
     clear_existing: bool = True,
     dry_run: bool = False,
+    market_flag: str | None = None,
 ) -> bool:
     """Run ``update_fit_workflow`` across ``db_aliases`` and push each replica once."""
     if dry_run:
@@ -170,6 +171,7 @@ def _write_fit(
             target_aliases=db_aliases,
             metadata_override=metadata_override,
             uow=uow,
+            market_flag=market_flag,
         )
     if not uow.ok:
         return False
@@ -203,6 +205,7 @@ def _run_add(inv: Invocation) -> bool:
         _selected_db_aliases(inv),
         meta_file=meta_file,
         dry_run=dry_run,
+        market_flag=inv.market,
     )
 
 

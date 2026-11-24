@@ -568,6 +568,7 @@ def update_fit_workflow(
     target_aliases: Optional[List[str]] = None,
     metadata_override: Optional[Dict] = None,
     uow: Optional[ReplicaUnitOfWork] = None,
+    market_flag: Optional[str] = None,
 ):
     """End-to-end update for a fit across shared ``fittings`` and target market(s).
 
@@ -648,35 +649,45 @@ def update_fit_workflow(
                     )
                 )
 
+        market_errors: list[tuple[str, Exception]] = []
         with active_uow.read("fittings") as fconn:
             for alias in aliases:
-                with active_uow.tx(alias) as mconn:
-                    for doctrine_fit in doctrine_fits:
-                        upsert_doctrine_fits(mconn, doctrine_fit)
-                        upsert_doctrine_map(mconn, doctrine_fit.doctrine_id, doctrine_fit.fit_id)
+                try:
+                    with active_uow.tx(alias) as mconn:
+                        for doctrine_fit in doctrine_fits:
+                            upsert_doctrine_fits(mconn, doctrine_fit, market_flag=market_flag)
+                            upsert_doctrine_map(mconn, doctrine_fit.doctrine_id, doctrine_fit.fit_id)
 
-                    upsert_ship_target(
-                        mconn,
-                        fit_id=fit_id,
-                        fit_name=parse_result.fit_name,
-                        ship_id=ship_type_id,
-                        ship_name=parse_result.ship_name,
-                        ship_target=metadata.target,
+                        upsert_ship_target(
+                            mconn,
+                            fit_id=fit_id,
+                            fit_name=parse_result.fit_name,
+                            ship_id=ship_type_id,
+                            ship_name=parse_result.ship_name,
+                            ship_target=metadata.target,
+                        )
+                        refresh_doctrines_for_fit(
+                            mconn,
+                            fit_id=fit_id,
+                            ship_id=ship_type_id,
+                            ship_name=parse_result.ship_name,
+                            fittings_conn=fconn,
+                        )
+                        add_missing_items_to_watchlist(type_ids, db_alias=alias, conn=mconn)
+                except Exception as exc:
+                    logger.exception(
+                        f"Failed to update market {alias} for fit_id={fit_id}: {exc}"
                     )
-                    refresh_doctrines_for_fit(
-                        mconn,
-                        fit_id=fit_id,
-                        ship_id=ship_type_id,
-                        ship_name=parse_result.ship_name,
-                        fittings_conn=fconn,
-                    )
-                    add_missing_items_to_watchlist(type_ids, db_alias=alias, conn=mconn)
+                    market_errors.append((alias, exc))
+        return market_errors
 
     if uow is not None:
         _run_with_uow(uow)
     else:
         with ReplicaUnitOfWork() as own_uow:
-            _run_with_uow(own_uow)
+            market_errors = _run_with_uow(own_uow)
+        if market_errors:
+            raise market_errors[0][1]
 
     logger.info(
         f"Completed fit update for fit_id={fit_id}, doctrine_ids={metadata.doctrine_ids}"

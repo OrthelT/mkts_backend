@@ -107,11 +107,7 @@ def add_missing_items_to_watchlist(
         return True
 
     if conn is not None:
-        try:
-            return _insert_into(conn)
-        except Exception as e:
-            logger.error(f"Error adding items to watchlist: {e}")
-            return False
+        return _insert_into(conn)
 
     db = DatabaseConfig(db_alias)
     engine = db.engine

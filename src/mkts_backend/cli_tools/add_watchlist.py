@@ -92,17 +92,18 @@ def add_watchlist(args: list[str], market_alias: str = "primary") -> bool:
         for db_alias in target_aliases:
             print(f"Adding to watchlist on {db_alias}...")
             try:
-                with uow.tx(db_alias) as conn:
+                with uow.tx(db_alias, auto_touch=False) as conn:
                     ok = process_add_watchlist(type_ids, db_alias=db_alias, conn=conn)
-                if not ok:
-                    uow.touched.discard(uow.db(db_alias).alias)
+                if ok:
+                    uow.mark_touched(db_alias)
+                else:
                     all_ok = False
             except Exception as exc:
                 logger.error(f"{db_alias}: watchlist write failed: {exc}")
                 print(f"Error: {db_alias}: {exc}")
                 all_ok = False
 
-    if uow.push_failed:
+    if not uow.ok:
         all_ok = False
 
     if all_ok:
@@ -151,12 +152,14 @@ def process_add_watchlist(
 ):
     """Add ``type_ids`` to the watchlist for ``db_alias``."""
     print("Processing add_watchlist command")
-    try:
-        if not type_ids:
-            logger.error("No valid type IDs provided")
-            print("Error: No valid type IDs provided")
-            return None
+    if not type_ids:
+        logger.error("No valid type IDs provided")
+        print("Error: No valid type IDs provided")
+        return None
+    if conn is not None:
         return add_missing_items_to_watchlist(type_ids, db_alias=db_alias, conn=conn)
+    try:
+        return add_missing_items_to_watchlist(type_ids, db_alias=db_alias, conn=None)
 
     except ValueError as e:
         logger.error(f"Invalid type ID format: {e}")

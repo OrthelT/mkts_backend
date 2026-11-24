@@ -20,10 +20,13 @@ Guarantees:
   alias participates in the active transaction without deadlocking SQLite.
 - ``uow.read(alias)`` opens a read-only connection without marking the alias
   dirty for push (and reuses an active transaction connection if inside one).
-- On clean exit, every opened engine is disposed and every alias whose write
-  transaction committed (excluding aliases that rolled back when
-  ``skip_failed_on_push=True``) is pushed once, in sorted canonical-alias
-  order, using the exact ``DatabaseConfig`` instance that was written.
+- On clean exit, every opened engine is disposed and every alias with at least
+  one committed write transaction (``self.touched``) is pushed once, in sorted
+  canonical-alias order, using the exact ``DatabaseConfig`` instance that was
+  written. An alias whose sole transaction rolled back is never added to
+  ``self.touched`` and is not pushed; an alias with an earlier commit and a
+  later rollback is still pushed so committed local CDC rows converge, while
+  ``uow.failed`` records the rollback and ``uow.ok`` is ``False``.
 - A push failure for one alias is logged and recorded in ``uow.failed_pushes``
   without aborting pushes for the remaining aliases.
 - If an uncaught exception escapes the ``with`` block, all engines are still
@@ -37,9 +40,9 @@ from typing import Callable, Iterator
 
 from sqlalchemy.engine import Connection, Engine
 
-from mkts_backend.cli_tools.push import push_db
 from mkts_backend.config import db_config
 from mkts_backend.config.db_config import DatabaseConfig
+from mkts_backend.db.push import push_db
 
 
 class ReplicaUnitOfWork:
@@ -49,7 +52,7 @@ class ReplicaUnitOfWork:
         self,
         *,
         auto_push: bool = True,
-        skip_failed_on_push: bool = True,
+        skip_failed_on_push: bool = False,
         db_factory: Callable[[str], DatabaseConfig] | None = None,
     ) -> None:
         self._auto_push = auto_push
@@ -114,13 +117,18 @@ class ReplicaUnitOfWork:
             yield conn
 
     @contextmanager
-    def tx(self, alias: str) -> Iterator[Connection]:
+    def tx(self, alias: str, *, auto_touch: bool = True) -> Iterator[Connection]:
         """Open a transactional connection on ``alias`` and mark it for push on commit.
 
         Re-entering ``tx()`` for an alias that already has an active
         transaction yields the existing connection without starting a second
         transaction. If the outermost transaction rolls back, the alias is
         recorded in ``self.failed`` and the exception propagates.
+
+        Pass ``auto_touch=False`` when the transaction may be a no-op and the
+        caller wants to call :meth:`mark_touched` only after confirming rows
+        changed — this avoids ever calling ``touched.discard()`` and erasing
+        an earlier committed transaction on the same alias.
         """
         db = self.db(alias)
         canonical = getattr(db, "alias", alias)
@@ -141,7 +149,8 @@ class ReplicaUnitOfWork:
             self.failed.add(canonical)
             raise
         else:
-            self.touched.add(canonical)
+            if auto_touch:
+                self.touched.add(canonical)
 
     def mark_touched(self, alias: str) -> str:
         """Mark ``alias`` as having committed writes that need pushing."""

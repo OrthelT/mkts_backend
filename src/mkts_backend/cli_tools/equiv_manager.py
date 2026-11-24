@@ -139,15 +139,19 @@ def _equiv_add_all(args: list[str], target_aliases: list[str]) -> bool:
     ok = True
     with ReplicaUnitOfWork() as uow:
         for alias in target_aliases:
-            market_ctx = MarketContext.from_settings(alias)
-            with uow.tx(market_ctx.database_alias) as conn:
-                ensure_equiv_table(market_ctx, conn=conn)
-                new_group_id = add_equiv_group(type_ids, market_ctx, conn=conn)
-            if new_group_id is None:
-                console.print(f"  [yellow]{alias}[/yellow]: already grouped")
+            try:
+                market_ctx = MarketContext.from_settings(alias)
+                with uow.tx(market_ctx.database_alias) as conn:
+                    ensure_equiv_table(market_ctx, conn=conn)
+                    new_group_id = add_equiv_group(type_ids, market_ctx, conn=conn)
+                if new_group_id is None:
+                    console.print(f"  [yellow]{alias}[/yellow]: already grouped")
+                    ok = False
+                else:
+                    console.print(f"  [green]{alias}[/green]: created group {new_group_id}")
+            except Exception as exc:
+                console.print(f"  [red]{alias}[/red]: failed: {exc}")
                 ok = False
-            else:
-                console.print(f"  [green]{alias}[/green]: created group {new_group_id}")
 
     return ok and uow.ok
 
@@ -170,13 +174,17 @@ def _equiv_remove_all(args: list[str], target_aliases: list[str]) -> bool:
     ok = True
     with ReplicaUnitOfWork() as uow:
         for alias in target_aliases:
-            market_ctx = MarketContext.from_settings(alias)
-            with uow.tx(market_ctx.database_alias) as conn:
-                count = remove_equiv_group(group_id, market_ctx, conn=conn)
-            if count > 0:
-                console.print(f"  [green]{alias}[/green]: removed group {group_id} ({count} entries)")
-            else:
-                console.print(f"  [yellow]{alias}[/yellow]: no entries for group {group_id}")
+            try:
+                market_ctx = MarketContext.from_settings(alias)
+                with uow.tx(market_ctx.database_alias) as conn:
+                    count = remove_equiv_group(group_id, market_ctx, conn=conn)
+                if count > 0:
+                    console.print(f"  [green]{alias}[/green]: removed group {group_id} ({count} entries)")
+                else:
+                    console.print(f"  [yellow]{alias}[/yellow]: no entries for group {group_id}")
+            except Exception as exc:
+                console.print(f"  [red]{alias}[/red]: failed: {exc}")
+                ok = False
 
     return ok and uow.ok
 
@@ -277,15 +285,19 @@ def _equiv_find(args: list[str], target_aliases: list[str]) -> bool:
         console.print(f"\n[bold]Adding equivalence group to: {', '.join(target_aliases)}[/bold]")
         with ReplicaUnitOfWork() as uow:
             for alias in target_aliases:
-                market_ctx = MarketContext.from_settings(alias)
-                with uow.tx(market_ctx.database_alias) as conn:
-                    ensure_equiv_table(market_ctx, conn=conn)
-                    new_group_id = add_equiv_group(equiv_type_ids, market_ctx, conn=conn)
-                if new_group_id is None:
-                    console.print(f"  [yellow]{alias}[/yellow]: already grouped")
-                else:
-                    console.print(f"  [green]{alias}[/green]: created group {new_group_id}")
-        ok = uow.ok
+                try:
+                    market_ctx = MarketContext.from_settings(alias)
+                    with uow.tx(market_ctx.database_alias) as conn:
+                        ensure_equiv_table(market_ctx, conn=conn)
+                        new_group_id = add_equiv_group(equiv_type_ids, market_ctx, conn=conn)
+                    if new_group_id is None:
+                        console.print(f"  [yellow]{alias}[/yellow]: already grouped")
+                    else:
+                        console.print(f"  [green]{alias}[/green]: created group {new_group_id}")
+                except Exception as exc:
+                    console.print(f"  [red]{alias}[/red]: failed: {exc}")
+                    ok = False
+        ok = ok and uow.ok
 
     return ok
 

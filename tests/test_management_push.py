@@ -1260,7 +1260,8 @@ class TestMultiAliasPush:
 
         assert result["push_failed"] is False
         assert result["bucket_failures"] == 0
-        assert set(dbs) == {"aliasA", "aliasB"}
+        assert set(dbs) == {"aliasA", "aliasB", "fittings"}
+        assert dbs["fittings"].pushes == 0, "fittings was opened read-only for watchlist prep"
         assert dbs["aliasA"].pushes == 1, {a: d.pushes for a, d in dbs.items()}
         assert dbs["aliasB"].pushes == 1, {a: d.pushes for a, d in dbs.items()}
         assert sorted(applied) == [("aliasA", 1), ("aliasB", 2)]
@@ -1307,7 +1308,8 @@ class TestMultiAliasPush:
         result = fit_update._execute_market_plan(plans, db_alias="aliasA")
 
         assert result["bucket_failures"] == 1
-        assert set(dbs) == {"aliasA", "aliasB"}
+        assert set(dbs) == {"aliasA", "aliasB", "fittings"}
+        assert dbs["fittings"].pushes == 0, "fittings was opened read-only for watchlist prep"
         assert dbs["aliasA"].pushes == 1, "the healthy alias must still be pushed"
         assert dbs["aliasB"].pushes == 0, "a bucket that raised must not be pushed"
         with dbs["aliasB"].engine.connect() as conn:
@@ -1532,10 +1534,15 @@ class TestDoctrineAddFitPush:
                 self.ship_type_id = 587
                 self.ship_name = "Rifter"
 
+            @classmethod
+            def from_connections(cls, fconn, sconn, doctrine_id, fit_id, target):
+                assert fconn is not None and sconn is not None
+                return cls(doctrine_id, fit_id, target)
+
         monkeypatch.setattr(fit_update, "DoctrineFit", _FakeDoctrineFit)
 
     def test_pushes_each_touched_alias_once(self, tmp_path, monkeypatch, fake_db_factory):
-        """Two target aliases plus fittings, one push each."""
+        """Two target aliases plus fittings, one push each (sde is read-only)."""
         from mkts_backend.cli_tools import fit_update
 
         dbs = {}
@@ -1548,7 +1555,8 @@ class TestDoctrineAddFitPush:
         )
 
         assert result is True
-        assert set(dbs) == {"fittings", "aliasA", "aliasB"}
+        assert set(dbs) == {"fittings", "sde", "aliasA", "aliasB"}
+        assert dbs["sde"].pushes == 0, "sde is read-only"
         assert dbs["fittings"].pushes == 1, {a: d.pushes for a, d in dbs.items()}
         assert dbs["aliasA"].pushes == 1, {a: d.pushes for a, d in dbs.items()}
         assert dbs["aliasB"].pushes == 1, {a: d.pushes for a, d in dbs.items()}
@@ -1584,7 +1592,8 @@ class TestDoctrineAddFitPush:
         )
 
         assert result is False
-        assert set(dbs) == {"fittings", "aliasA", "aliasB"}
+        assert set(dbs) == {"fittings", "sde", "aliasA", "aliasB"}
+        assert dbs["sde"].pushes == 0, "sde is read-only"
         assert dbs["fittings"].pushes == 1, "fittings link committed cleanly"
         assert dbs["aliasA"].pushes == 1, "the healthy alias must still be pushed"
         assert dbs["aliasB"].pushes == 0, "a bucket that raised must not be pushed"

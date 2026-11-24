@@ -33,10 +33,14 @@ class DoctrineFit:
     def __post_init__(self) -> None:
         fittings_engine = DatabaseConfig("fittings").engine
         sde_engine = DatabaseConfig("sde").engine
-        with fittings_engine.connect() as fconn, sde_engine.connect() as sconn:
-            resolved = self.from_connections(
-                fconn, sconn, self.doctrine_id, self.fit_id, self.target
-            )
+        try:
+            with fittings_engine.connect() as fconn, sde_engine.connect() as sconn:
+                resolved = self.from_connections(
+                    fconn, sconn, self.doctrine_id, self.fit_id, self.target
+                )
+        finally:
+            fittings_engine.dispose()
+            sde_engine.dispose()
         self.doctrine_name = resolved.doctrine_name
         self.fit_name = resolved.fit_name
         self.ship_type_id = resolved.ship_type_id
@@ -115,52 +119,70 @@ def upsert_doctrine_fits(
     conn,
     doctrine_fit: DoctrineFit,
     *,
-    market_flag: str = "primary",
+    market_flag: str | None = None,
 ) -> None:
-    """Upsert a ``doctrine_fits`` row keyed by ``(doctrine_id, fit_id)``."""
-    if market_flag == "all":
-        market_flag = "both"  # canonical stored value (no DB migration)
+    """Upsert a ``doctrine_fits`` row keyed by ``(doctrine_id, fit_id)``.
+
+    When ``market_flag`` is ``None``, existing rows preserve their stored
+    ``market_flag`` and newly inserted rows default to ``"primary"``.
+    """
+    normalized_flag = "both" if market_flag == "all" else market_flag
 
     existing = conn.execute(
         text("SELECT id FROM doctrine_fits WHERE fit_id = :fit_id AND doctrine_id = :doctrine_id"),
         {"fit_id": doctrine_fit.fit_id, "doctrine_id": doctrine_fit.doctrine_id},
     ).fetchone()
+    params = {
+        "doctrine_name": doctrine_fit.doctrine_name,
+        "fit_name": doctrine_fit.fit_name,
+        "ship_type_id": doctrine_fit.ship_type_id,
+        "doctrine_id": doctrine_fit.doctrine_id,
+        "fit_id": doctrine_fit.fit_id,
+        "ship_name": doctrine_fit.ship_name,
+        "target": doctrine_fit.target,
+    }
     if existing:
-        stmt = text(
-            """
-            UPDATE doctrine_fits
-            SET doctrine_name = :doctrine_name,
-                fit_name = :fit_name,
-                ship_type_id = :ship_type_id,
-                doctrine_id = :doctrine_id,
-                ship_name = :ship_name,
-                target = :target,
-                market_flag = :market_flag
-            WHERE fit_id = :fit_id AND doctrine_id = :doctrine_id
-            """
-        )
+        if normalized_flag is not None:
+            stmt = text(
+                """
+                UPDATE doctrine_fits
+                SET doctrine_name = :doctrine_name,
+                    fit_name = :fit_name,
+                    ship_type_id = :ship_type_id,
+                    doctrine_id = :doctrine_id,
+                    ship_name = :ship_name,
+                    target = :target,
+                    market_flag = :market_flag
+                WHERE fit_id = :fit_id AND doctrine_id = :doctrine_id
+                """
+            )
+            params["market_flag"] = normalized_flag
+        else:
+            stmt = text(
+                """
+                UPDATE doctrine_fits
+                SET doctrine_name = :doctrine_name,
+                    fit_name = :fit_name,
+                    ship_type_id = :ship_type_id,
+                    doctrine_id = :doctrine_id,
+                    ship_name = :ship_name,
+                    target = :target
+                WHERE fit_id = :fit_id AND doctrine_id = :doctrine_id
+                """
+            )
     else:
+        insert_flag = normalized_flag if normalized_flag is not None else "primary"
         stmt = text(
             """
             INSERT INTO doctrine_fits (doctrine_name, fit_name, ship_type_id, doctrine_id, fit_id, ship_name, target, market_flag)
             VALUES (:doctrine_name, :fit_name, :ship_type_id, :doctrine_id, :fit_id, :ship_name, :target, :market_flag)
             """
         )
-    conn.execute(
-        stmt,
-        {
-            "doctrine_name": doctrine_fit.doctrine_name,
-            "fit_name": doctrine_fit.fit_name,
-            "ship_type_id": doctrine_fit.ship_type_id,
-            "doctrine_id": doctrine_fit.doctrine_id,
-            "fit_id": doctrine_fit.fit_id,
-            "ship_name": doctrine_fit.ship_name,
-            "target": doctrine_fit.target,
-            "market_flag": market_flag,
-        },
-    )
+        params["market_flag"] = insert_flag
+    conn.execute(stmt, params)
     logger.info(
-        f"Upserted doctrine_fits for fit_id {doctrine_fit.fit_id} with market_flag={market_flag}"
+        f"Upserted doctrine_fits for fit_id {doctrine_fit.fit_id} "
+        f"(market_flag={params.get('market_flag', 'preserved')})"
     )
 
 

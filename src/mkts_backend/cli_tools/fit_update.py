@@ -13,6 +13,7 @@ import json
 import os
 import tempfile
 from collections import defaultdict
+from contextlib import nullcontext
 from typing import List, Optional
 
 from rich import box
@@ -289,28 +290,44 @@ def _prompt_create_doctrine() -> tuple[Optional[int], Optional[str]]:
         return None, None
     new_doctrine_desc = Prompt.ask("[bold]Description[/bold]", default="")
 
+    existing_name: Optional[str] = None
     with _uow() as uow:
         with uow.read("fittings") as fconn:
-            already_exists = doctrine_exists(new_doctrine_id, conn=fconn)
-        if not already_exists:
-            with uow.tx("fittings") as fconn:
+            existing_row = fconn.execute(
+                text("SELECT name FROM fittings_doctrine WHERE id = :doctrine_id"),
+                {"doctrine_id": new_doctrine_id},
+            ).fetchone()
+        if existing_row is None:
+            with uow.tx("fittings", auto_touch=False) as fconn:
                 success = create_doctrine(
                     doctrine_id=new_doctrine_id,
                     name=new_doctrine_name,
                     description=new_doctrine_desc,
                     conn=fconn,
                 )
+                if not success:
+                    fallback_row = fconn.execute(
+                        text("SELECT name FROM fittings_doctrine WHERE id = :doctrine_id"),
+                        {"doctrine_id": new_doctrine_id},
+                    ).fetchone()
+                    existing_name = fallback_row[0] if fallback_row else None
+            if success:
+                uow.mark_touched("fittings")
         else:
+            existing_name = existing_row[0]
             success = False
 
     if success:
-        if uow.push_failed:
+        if not uow.ok:
             return None, None
         console.print(f"[green]Created doctrine {new_doctrine_id}: {new_doctrine_name}[/green]")
         return new_doctrine_id, new_doctrine_name
 
-    console.print(f"[yellow]Doctrine {new_doctrine_id} already exists, using it[/yellow]")
-    return new_doctrine_id, new_doctrine_name
+    resolved_name = existing_name or new_doctrine_name
+    console.print(
+        f"[yellow]Doctrine {new_doctrine_id} ('{resolved_name}') already exists, using it[/yellow]"
+    )
+    return new_doctrine_id, resolved_name
 
 
 def interactive_add_fit(
@@ -496,23 +513,30 @@ def interactive_add_fit(
             )
 
             for alias in target_aliases:
-                with uow.tx(alias) as conn:
-                    update_fit_market_flag(conn, fit_id, market_flag, db_label=alias)
-                    for did in doctrine_ids:
-                        d_name = doctrine_name_map.get(did, "")
-                        inserted = upsert_lead_ship(
-                            conn,
-                            doctrine_id=did,
-                            doctrine_name=d_name,
-                            fit_id=fit_id,
-                            ship_type_id=parse_result.ship_type_id,
-                        )
-                        if inserted:
-                            console.print(
-                                f"[green]Set lead ship for doctrine {did}: "
-                                f"{parse_result.ship_name}[/green]"
+                canonical = uow.db(alias).alias
+                if canonical in uow.failed:
+                    continue
+                try:
+                    with uow.tx(alias) as conn:
+                        update_fit_market_flag(conn, fit_id, market_flag, db_label=alias)
+                        for did in doctrine_ids:
+                            d_name = doctrine_name_map.get(did, "")
+                            inserted = upsert_lead_ship(
+                                conn,
+                                doctrine_id=did,
+                                doctrine_name=d_name,
+                                fit_id=fit_id,
+                                ship_type_id=parse_result.ship_type_id,
                             )
-                console.print(f"[green]Successfully added fit {fit_id} to {alias}[/green]")
+                            if inserted:
+                                console.print(
+                                    f"[green]Set lead ship for doctrine {did}: "
+                                    f"{parse_result.ship_name}[/green]"
+                                )
+                    console.print(f"[green]Successfully added fit {fit_id} to {alias}[/green]")
+                except Exception as exc:
+                    console.print(f"[red]Error updating market metadata on {alias}: {exc}[/red]")
+                    logger.exception("Error updating market metadata on %s in interactive_add_fit", alias)
 
         return uow.ok
 
@@ -1074,55 +1098,68 @@ def _execute_market_plan(plans: List[dict], db_alias: str = "wcmkt") -> dict:
                 for alias in _flag_to_aliases(p["new_flag"]):
                     buckets[alias].append(("heal_if_needed", p, p["new_flag"]))
 
-        # Phase 2: prepare watchlists (idempotent, per-(fit, alias) error isolation)
-        watchlist_needs: set[tuple[int, str]] = set()
+        # Phase 2: collect watchlist needs per alias (written inside Phase 3's UoW tx)
+        watchlist_needs_by_alias: dict[str, list[int]] = defaultdict(list)
         for alias, steps in buckets.items():
+            seen_w: set[int] = set()
             for step_type, p, _ in steps:
                 if step_type in ("provision", "heal_if_needed", "update_and_heal"):
-                    watchlist_needs.add((p["fit_id"], alias))
-        for fit_id_w, alias_w in watchlist_needs:
-            try:
-                _prepare_watchlist_for_fit(plan_by_fit[fit_id_w], alias_w)
-            except _DB_ERRORS as e:
-                console.print(
-                    f"[yellow]Watchlist prep skipped for fit {fit_id_w} on {alias_w}: {e}[/yellow]"
-                )
-            except Exception as e:
-                console.print(
-                    f"[red]Watchlist prep failed for fit {fit_id_w} on {alias_w}: {e}[/red]"
-                )
-                logger.exception(
-                    "Unexpected error preparing watchlist for fit %s on %s", fit_id_w, alias_w
-                )
+                    fid_w = p["fit_id"]
+                    if fid_w not in seen_w:
+                        seen_w.add(fid_w)
+                        watchlist_needs_by_alias[alias].append(fid_w)
 
-        # Phase 3: execute each bucket in a single transaction
-        for alias, steps in buckets.items():
-            current_fit_id: int | None = None
-            try:
-                with uow.tx(alias) as conn:
-                    for step_type, p, arg in steps:
-                        current_fit_id = p["fit_id"]
-                        try:
-                            did_work = _apply_step(conn, step_type, p, arg, alias=alias)
-                        except _DB_ERRORS:
-                            raise
-                        except Exception as step_err:
-                            console.print(
-                                f"[red]Step {step_type} failed for fit {current_fit_id} on {alias}: "
-                                f"{step_err}[/red] (bucket continues)"
-                            )
-                            logger.exception(
-                                "Non-DB error in %s for fit %s on %s",
-                                step_type, current_fit_id, alias,
-                            )
-                            counters["step_failures"] += 1
-                            continue
-                        if p["action"] == "heal" and did_work:
-                            heal_worked[id(p)] = True
-            except _DB_ERRORS as e:
-                console.print(
-                    f"[yellow]Skipped {alias} (rolled back at fit {current_fit_id}): {e}[/yellow]"
-                )
+        # Phase 3: execute each bucket (including watchlist prep) in a single transaction
+        fittings_cm = uow.read("fittings") if watchlist_needs_by_alias else nullcontext(None)
+        with fittings_cm as fconn:
+            for alias, steps in buckets.items():
+                current_fit_id: int | None = None
+                try:
+                    with uow.tx(alias) as conn:
+                        for fit_id_w in watchlist_needs_by_alias.get(alias, ()):
+                            current_fit_id = fit_id_w
+                            try:
+                                _prepare_watchlist_for_fit(
+                                    plan_by_fit[fit_id_w],
+                                    alias,
+                                    conn=conn,
+                                    fittings_conn=fconn,
+                                )
+                            except _DB_ERRORS:
+                                raise
+                            except Exception as e:
+                                console.print(
+                                    f"[red]Watchlist prep failed for fit {fit_id_w} on {alias}: {e}[/red]"
+                                )
+                                logger.exception(
+                                    "Unexpected error preparing watchlist for fit %s on %s",
+                                    fit_id_w,
+                                    alias,
+                                )
+
+                        for step_type, p, arg in steps:
+                            current_fit_id = p["fit_id"]
+                            try:
+                                did_work = _apply_step(conn, step_type, p, arg, alias=alias)
+                            except _DB_ERRORS:
+                                raise
+                            except Exception as step_err:
+                                console.print(
+                                    f"[red]Step {step_type} failed for fit {current_fit_id} on {alias}: "
+                                    f"{step_err}[/red] (bucket continues)"
+                                )
+                                logger.exception(
+                                    "Non-DB error in %s for fit %s on %s",
+                                    step_type, current_fit_id, alias,
+                                )
+                                counters["step_failures"] += 1
+                                continue
+                            if step_type == "heal_if_needed" and did_work:
+                                heal_worked[id(p)] = True
+                except _DB_ERRORS as e:
+                    console.print(
+                        f"[yellow]Skipped {alias} (rolled back at fit {current_fit_id}): {e}[/yellow]"
+                    )
 
         for did in heal_worked.values():
             if did:
@@ -1357,14 +1394,16 @@ def create_doctrine_command(
                 if doctrine_exists(doctrine_id, conn=fconn):
                     console.print(f"[yellow]Doctrine {doctrine_id} already exists[/yellow]")
                     return False
-            with uow.tx("fittings") as fconn:
+            with uow.tx("fittings", auto_touch=False) as fconn:
                 success = create_doctrine(
                     doctrine_id=doctrine_id,
                     name=name,
                     description=description or "",
                     conn=fconn,
                 )
-        if not success or uow.push_failed:
+            if success:
+                uow.mark_touched("fittings")
+        if not success or not uow.ok:
             return False
         console.print(f"[green]Successfully created doctrine {doctrine_id}: {name}[/green]")
         return True
@@ -1616,59 +1655,63 @@ def doctrine_add_fit_command(
     fit_alias_success: dict[int, int] = {}
 
     with _uow() as uow:
-        # Stage 1: per-fit preparation (fittings DB link + DoctrineFit resolution)
-        for fit_info in valid_fits:
-            fit_id = fit_info["fit_id"]
-            fit_target = fit_targets.get(fit_id, target)
-            try:
-                with uow.tx("fittings") as fconn:
-                    ensure_doctrine_link(doctrine_id, fit_id, conn=fconn)
-                doctrine_fit = DoctrineFit(
-                    doctrine_id=doctrine_id,
-                    fit_id=fit_id,
-                    target=fit_target,
-                )
-                prepared.append((fit_info, doctrine_fit, fit_target))
-            except Exception as e:
-                console.print(f"[red]✗ Failed to prepare fit {fit_id}: {e}[/red]")
-                logger.exception(f"Error preparing fit {fit_id} for doctrine {doctrine_id}")
-                fail_count += 1
+        # Stage 1: per-fit preparation (fittings DB link + DoctrineFit resolution on UoW conns)
+        with uow.read("sde") as sconn:
+            for fit_info in valid_fits:
+                fit_id = fit_info["fit_id"]
+                fit_target = fit_targets.get(fit_id, target)
+                try:
+                    with uow.tx("fittings") as fconn:
+                        ensure_doctrine_link(doctrine_id, fit_id, conn=fconn)
+                        doctrine_fit = DoctrineFit.from_connections(
+                            fconn, sconn, doctrine_id, fit_id, fit_target
+                        )
+                    prepared.append((fit_info, doctrine_fit, fit_target))
+                except Exception as e:
+                    console.print(f"[red]✗ Failed to prepare fit {fit_id}: {e}[/red]")
+                    logger.exception(f"Error preparing fit {fit_id} for doctrine {doctrine_id}")
+                    fail_count += 1
 
-        # Stage 2: watchlist prep per (fit, alias)
-        for alias in target_aliases:
-            for _, doctrine_fit, _ in prepared:
-                _prepare_watchlist_for_fit(
-                    {"fit_id": doctrine_fit.fit_id, "ship_type_id": doctrine_fit.ship_type_id},
-                    alias,
-                )
-
-        # Stage 3: one transaction per market DB
+        # Stage 2 & 3: watchlist prep + provisioning in one transaction per market DB
         fit_alias_success = {df.fit_id: 0 for _, df, _ in prepared}
-        for alias in target_aliases:
-            current_fit_id: int | None = None
-            try:
-                with uow.tx(alias) as conn:
-                    for _, doctrine_fit, fit_target in prepared:
-                        current_fit_id = doctrine_fit.fit_id
-                        p = {
-                            "fit_id": doctrine_fit.fit_id,
-                            "fit_name": doctrine_fit.fit_name,
-                            "ship_type_id": doctrine_fit.ship_type_id,
-                            "ship_name": doctrine_fit.ship_name,
-                            "doctrine_id": doctrine_fit.doctrine_id,
-                            "doctrine_name": doctrine_fit.doctrine_name,
-                            "target": fit_target,
-                        }
-                        adopted = _provision_fit_in_market(conn, p, market_flag=market_flag)
-                        _report_lead_ship(adopted, doctrine_fit.fit_id, doctrine_fit.doctrine_id)
-                for _, doctrine_fit, _ in prepared:
-                    fit_alias_success[doctrine_fit.fit_id] += 1
-            except _DB_ERRORS as e:
-                console.print(
-                    f"[yellow]Bucket {alias} failed "
-                    f"(rolled back at fit {current_fit_id}): {e}[/yellow]"
-                )
-                logger.exception(f"Error provisioning {alias} for doctrine {doctrine_id}")
+        fittings_cm = uow.read("fittings") if prepared else nullcontext(None)
+        with fittings_cm as fconn:
+            for alias in target_aliases:
+                current_fit_id: int | None = None
+                try:
+                    with uow.tx(alias) as conn:
+                        for _, doctrine_fit, _ in prepared:
+                            current_fit_id = doctrine_fit.fit_id
+                            _prepare_watchlist_for_fit(
+                                {
+                                    "fit_id": doctrine_fit.fit_id,
+                                    "ship_type_id": doctrine_fit.ship_type_id,
+                                },
+                                alias,
+                                conn=conn,
+                                fittings_conn=fconn,
+                            )
+                        for _, doctrine_fit, fit_target in prepared:
+                            current_fit_id = doctrine_fit.fit_id
+                            p = {
+                                "fit_id": doctrine_fit.fit_id,
+                                "fit_name": doctrine_fit.fit_name,
+                                "ship_type_id": doctrine_fit.ship_type_id,
+                                "ship_name": doctrine_fit.ship_name,
+                                "doctrine_id": doctrine_fit.doctrine_id,
+                                "doctrine_name": doctrine_fit.doctrine_name,
+                                "target": fit_target,
+                            }
+                            adopted = _provision_fit_in_market(conn, p, market_flag=market_flag)
+                            _report_lead_ship(adopted, doctrine_fit.fit_id, doctrine_fit.doctrine_id)
+                    for _, doctrine_fit, _ in prepared:
+                        fit_alias_success[doctrine_fit.fit_id] += 1
+                except _DB_ERRORS as e:
+                    console.print(
+                        f"[yellow]Bucket {alias} failed "
+                        f"(rolled back at fit {current_fit_id}): {e}[/yellow]"
+                    )
+                    logger.exception(f"Error provisioning {alias} for doctrine {doctrine_id}")
 
     for _, doctrine_fit, fit_target in prepared:
         n_ok = fit_alias_success[doctrine_fit.fit_id]
@@ -1697,7 +1740,7 @@ def doctrine_add_fit_command(
     if fail_count > 0:
         console.print(f"[red]Failed to add {fail_count} fit(s)[/red]")
 
-    return success_count > 0 and uow.ok
+    return success_count > 0 and fail_count == 0 and uow.ok
 
 
 def remove_fit_command(
@@ -1776,13 +1819,17 @@ def remove_fit_command(
                     "(another market still tracks this fit)"
                 )
             else:
-                with uow.tx("fittings") as fconn:
-                    links_removed = remove_all_doctrine_links_for_fit(fit_id, conn=fconn)
-                if links_removed == 0:
-                    uow.touched.discard(uow.db("fittings").alias)
-                console.print(
-                    f"  [dim]fittings_doctrine_fittings:[/dim] {links_removed} rows removed"
-                )
+                try:
+                    with uow.tx("fittings", auto_touch=False) as fconn:
+                        links_removed = remove_all_doctrine_links_for_fit(fit_id, conn=fconn)
+                    if links_removed > 0:
+                        uow.mark_touched("fittings")
+                    console.print(
+                        f"  [dim]fittings_doctrine_fittings:[/dim] {links_removed} rows removed"
+                    )
+                except Exception as e:
+                    console.print(f"[red]✗ Error removing fittings links for fit {fit_id}: {e}[/red]")
+                    logger.exception(f"Error removing fittings links for fit_id {fit_id}")
 
         if not uow.ok:
             return False
@@ -2005,10 +2052,10 @@ def doctrine_remove_fit_command(
                     for other_alias in other_aliases
                 )
                 if not still_in_other_market:
-                    with uow.tx("fittings") as fconn:
+                    with uow.tx("fittings", auto_touch=False) as fconn:
                         link_removed = remove_doctrine_link(doctrine_id, fit_id, conn=fconn)
-                    if not link_removed:
-                        uow.touched.discard(uow.db("fittings").alias)
+                    if link_removed:
+                        uow.mark_touched("fittings")
                 else:
                     logger.info(
                         f"Fit {fit_id} still in doctrine {doctrine_id} on another market; "
@@ -2033,7 +2080,7 @@ def doctrine_remove_fit_command(
     if fail_count > 0:
         console.print(f"[red]Failed to remove {fail_count} fit(s)[/red]")
 
-    return success_count > 0 and not uow.push_failed
+    return success_count > 0 and fail_count == 0 and uow.ok
 
 
 def update_target_command(
@@ -2105,20 +2152,28 @@ def update_friendly_name_command(
     target_aliases = sorted({db_alias} | set(_configured_market_db_aliases()))
 
     any_success = False
+    failures = 0
     with _uow() as uow:
         for alias in target_aliases:
-            with uow.tx(alias) as conn:
-                ensure_friendly_name_column(conn, db_label=alias)
-                ok = update_doctrine_friendly_name(conn, doctrine_id, friendly_name)
-            if not ok:
-                uow.touched.discard(uow.db(alias).alias)
-                console.print(f"[yellow]No rows found for doctrine_id {doctrine_id} on {alias}[/yellow]")
-                continue
-            console.print(
-                f"[green]Updated friendly_name for doctrine_id {doctrine_id} "
-                f"to '{friendly_name}' ({alias})[/green]"
-            )
-            any_success = True
+            try:
+                with uow.tx(alias, auto_touch=False) as conn:
+                    ensure_friendly_name_column(conn, db_label=alias)
+                    ok = update_doctrine_friendly_name(conn, doctrine_id, friendly_name)
+                if not ok:
+                    console.print(
+                        f"[yellow]No rows found for doctrine_id {doctrine_id} on {alias}[/yellow]"
+                    )
+                    continue
+                uow.mark_touched(alias)
+                console.print(
+                    f"[green]Updated friendly_name for doctrine_id {doctrine_id} "
+                    f"to '{friendly_name}' ({alias})[/green]"
+                )
+                any_success = True
+            except Exception as exc:
+                console.print(f"[red]Failed to update friendly_name on {alias}: {exc}[/red]")
+                logger.exception("Error in update_friendly_name_command for %s", alias)
+                failures += 1
 
     if not any_success:
         console.print(
@@ -2126,7 +2181,7 @@ def update_friendly_name_command(
         )
         return False
 
-    return not uow.push_failed
+    return failures == 0 and uow.ok
 
 
 def populate_friendly_names_command(
@@ -2141,18 +2196,24 @@ def populate_friendly_names_command(
     target_aliases = sorted({db_alias} | set(_configured_market_db_aliases()))
 
     any_success = False
+    failures = 0
     with _uow() as uow:
         for alias in target_aliases:
-            with uow.tx(alias) as conn:
-                ensure_friendly_name_column(conn, db_label=alias)
-                count = populate_friendly_names_from_json(conn, json_path)
-            console.print(f"[green]Updated {count} rows ({alias})[/green]")
-            if count <= 0:
-                uow.touched.discard(uow.db(alias).alias)
-                continue
-            any_success = True
+            try:
+                with uow.tx(alias, auto_touch=False) as conn:
+                    ensure_friendly_name_column(conn, db_label=alias)
+                    count = populate_friendly_names_from_json(conn, json_path)
+                console.print(f"[green]Updated {count} rows ({alias})[/green]")
+                if count <= 0:
+                    continue
+                uow.mark_touched(alias)
+                any_success = True
+            except Exception as exc:
+                console.print(f"[red]Failed to populate friendly_names on {alias}: {exc}[/red]")
+                logger.exception("Error in populate_friendly_names_command for %s", alias)
+                failures += 1
 
     if not any_success:
         console.print("[yellow]No friendly_name rows updated on any configured market[/yellow]")
 
-    return not uow.push_failed
+    return failures == 0 and uow.ok

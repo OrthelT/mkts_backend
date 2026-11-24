@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import subprocess
+import sys
+
 import pytest
 from sqlalchemy import text
 
@@ -98,7 +101,7 @@ class TestReplicaUnitOfWork:
         with db.engine.connect() as conn:
             assert conn.execute(text("SELECT COUNT(*) FROM items")).scalar() == 2
 
-    def test_rolled_back_alias_is_excluded_from_push_while_sibling_pushes(
+    def test_sole_rolled_back_tx_is_not_pushed_while_sibling_pushes(
         self, tmp_path, fake_db_factory
     ):
         dbs = {
@@ -112,9 +115,6 @@ class TestReplicaUnitOfWork:
             with uow.tx("good") as conn:
                 conn.execute(text("INSERT INTO items VALUES (1, 'ok')"))
 
-            # First tx on bad commits, second tx on bad fails -> bad must NOT push.
-            with uow.tx("bad") as conn:
-                conn.execute(text("INSERT INTO items VALUES (1, 'first')"))
             with pytest.raises(RuntimeError, match="boom"):
                 with uow.tx("bad") as conn:
                     conn.execute(text("INSERT INTO items VALUES (2, 'rolled-back')"))
@@ -125,10 +125,82 @@ class TestReplicaUnitOfWork:
         assert uow.pushed == {"good"}
         assert dbs["good"].pushes == 1
         assert dbs["bad"].pushes == 0
-        # The rolled-back row must not exist.
+        with dbs["bad"].engine.connect() as conn:
+            assert conn.execute(text("SELECT COUNT(*) FROM items")).scalar() == 0
+
+    def test_earlier_commit_still_pushes_after_later_rollback_on_same_alias(
+        self, tmp_path, fake_db_factory
+    ):
+        """A later rolled-back tx cannot undo an earlier commit in the local
+        CDC queue, so the alias must still push while uow.ok stays False."""
+        dbs = {
+            "good": fake_db_factory(tmp_path / "good.db", alias="good"),
+            "bad": fake_db_factory(tmp_path / "bad.db", alias="bad"),
+        }
+        for db in dbs.values():
+            _init_items_table(db)
+
+        with ReplicaUnitOfWork(db_factory=dbs.__getitem__) as uow:
+            with uow.tx("good") as conn:
+                conn.execute(text("INSERT INTO items VALUES (1, 'ok')"))
+
+            with uow.tx("bad") as conn:
+                conn.execute(text("INSERT INTO items VALUES (1, 'first')"))
+            with pytest.raises(RuntimeError, match="boom"):
+                with uow.tx("bad") as conn:
+                    conn.execute(text("INSERT INTO items VALUES (2, 'rolled-back')"))
+                    raise RuntimeError("boom")
+
+        assert uow.ok is False
+        assert uow.failed == {"bad"}
+        assert uow.pushed == {"good", "bad"}
+        assert dbs["good"].pushes == 1
+        assert dbs["bad"].pushes == 1
+        # The rolled-back row must not exist, while the committed row does.
         with dbs["bad"].engine.connect() as conn:
             rows = conn.execute(text("SELECT id FROM items")).fetchall()
             assert [r[0] for r in rows] == [1]
+
+    def test_auto_touch_false_never_drops_prior_committed_work(
+        self, tmp_path, fake_db_factory
+    ):
+        dbs = {
+            "noop": fake_db_factory(tmp_path / "noop.db", alias="noop"),
+            "mixed": fake_db_factory(tmp_path / "mixed.db", alias="mixed"),
+        }
+        for db in dbs.values():
+            _init_items_table(db)
+
+        with ReplicaUnitOfWork(db_factory=dbs.__getitem__) as uow:
+            with uow.tx("noop", auto_touch=False) as conn:
+                conn.execute(text("SELECT 1"))
+
+            with uow.tx("mixed", auto_touch=False) as conn:
+                conn.execute(text("INSERT INTO items VALUES (1, 'first')"))
+            uow.mark_touched("mixed")
+
+            # A subsequent no-op tx does not call mark_touched and must not
+            # erase the earlier mark_touched("mixed").
+            with uow.tx("mixed", auto_touch=False) as conn:
+                conn.execute(text("SELECT 1"))
+
+        assert uow.pushed == {"mixed"}
+        assert dbs["noop"].pushes == 0
+        assert dbs["mixed"].pushes == 1
+
+    def test_standalone_import_has_no_circular_import(self):
+        """Importing unit_of_work or parse_fits before cli_tools must succeed."""
+        proc = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                "import mkts_backend.db.unit_of_work; import mkts_backend.utils.parse_fits",
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert proc.returncode == 0, proc.stderr
 
     def test_push_failure_does_not_abort_remaining_aliases(
         self, tmp_path, fake_db_factory

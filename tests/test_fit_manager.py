@@ -33,15 +33,50 @@ ALL_DBS = list(dict.fromkeys(MARKET_DB_MAP.values()))
 
 @pytest.fixture
 def workflow():
-    """Stub the fit write: record each workflow call, skip the pushes."""
+    """Stub the fit write: record each workflow call, capture UoW pushes."""
+    from unittest.mock import MagicMock
+
+    push_spy = MagicMock(return_value=True)
+
+    class _FakeDb:
+        def __init__(self, alias):
+            self.alias = alias
+
+    class _StubUoW:
+        def __init__(self):
+            self.touched: set[str] = set()
+            self.failed: set[str] = set()
+            self.failed_pushes: set[str] = set()
+
+        def mark_touched(self, alias: str) -> str:
+            self.touched.add(alias)
+            return alias
+
+        @property
+        def ok(self) -> bool:
+            return not self.failed and not self.failed_pushes
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc_val, exc_tb):
+            if exc_type is None:
+                for alias in sorted(self.touched):
+                    if not push_spy(alias):
+                        self.failed_pushes.add(alias)
+            return False
+
     def fake_workflow(**kwargs):
-        if kwargs["touched_aliases"] is not None:
-            kwargs["touched_aliases"].update({"fittings", kwargs["target_alias"]})
+        uow = kwargs.get("uow")
+        if uow is not None and not kwargs.get("dry_run"):
+            uow.mark_touched("fittings")
+            for alias in kwargs.get("target_aliases") or [kwargs.get("target_alias")]:
+                uow.mark_touched(alias)
         return {"ship_name": "Rifter", "ship_type_id": 587, "items": [], "missing_items": []}
 
     with patch.object(fit_manager, "update_fit_workflow", side_effect=fake_workflow) as spy, \
-         patch.object(fit_manager, "push_or_log", return_value=True) as push:
-        spy.push = push
+         patch.object(fit_manager, "ReplicaUnitOfWork", side_effect=_StubUoW):
+        spy.push = push_spy
         yield spy
 
 
@@ -193,7 +228,7 @@ class TestAdd:
              "--market=deployment"],
             "deployment",
         ) is True
-        assert [c.kwargs["target_alias"] for c in workflow.call_args_list] == [DEPLOYMENT_DB]
+        assert workflow.call_args.kwargs["target_aliases"] == [DEPLOYMENT_DB]
         assert workflow.call_args.kwargs["fit_id"] == 313
         assert workflow.call_args.kwargs["clear_existing"] is True
 
@@ -240,7 +275,7 @@ class TestUpdate:
             assert handle_fit_manager(
                 ["update", "--fit-id=313", "--file=fit.txt"], "primary"
             ) is True
-        assert [c.kwargs["target_alias"] for c in workflow.call_args_list] == [
+        assert workflow.call_args.kwargs["target_aliases"] == [
             PRIMARY_DB, DEPLOYMENT_DB,
         ]
         # No --meta-file: keep the metadata the market already stores.
@@ -359,9 +394,11 @@ class TestFindTrackedFit:
                 engines[alias] = engine
 
             class FakeDb:
-                engine = remote_engine = engines[alias]
+                def __init__(self, a):
+                    self.alias = a
+                    self.engine = engines[a]
 
-            return FakeDb()
+            return FakeDb(alias)
 
         with patch.object(fit_update, "DatabaseConfig", fake_db):
             db_aliases, metadata = fit_update.find_tracked_fit(313)

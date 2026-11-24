@@ -120,7 +120,7 @@ def read_source_rows(src: DatabaseConfig, table: str, cols: list[str]) -> list[d
 
 def backup_table(dest: DatabaseConfig, table: str) -> Path | None:
     """CSV-dump the destination table's current rows. Returns None if empty."""
-    with dest.remote_engine.connect() as conn:
+    with dest.engine.connect() as conn:
         df = pd.read_sql_query(f"SELECT * FROM {table}", conn)
     if df.empty:
         return None
@@ -134,9 +134,9 @@ def backup_table(dest: DatabaseConfig, table: str) -> Path | None:
 
 def dest_count(dest: DatabaseConfig, table: str) -> int | None:
     """Destination row count, or None if the table does not exist yet."""
-    if not table_exists(dest.remote_engine, table):
+    if not table_exists(dest.engine, table):
         return None
-    with dest.remote_engine.connect() as conn:
+    with dest.engine.connect() as conn:
         return conn.execute(text(f"SELECT COUNT(*) FROM {table}")).scalar()
 
 
@@ -183,7 +183,7 @@ def seed_table(
     insert_sql = text(f"INSERT INTO {table} ({col_list}) VALUES ({placeholders})")
 
     # Wipe + insert + verify as one transaction; a mismatch rolls everything back.
-    with dest.remote_engine.begin() as conn:
+    with dest.engine.begin() as conn:
         conn.execute(text(f"DELETE FROM {table}"))
         if rows:
             conn.execute(insert_sql, rows)
@@ -260,7 +260,7 @@ def main() -> int:
     # leaves existing tables untouched and creates only what's missing.
     if args.apply:
         Base.metadata.create_all(
-            dest.remote_engine,
+            dest.engine,
             tables=[m.__table__ for m in models],
             checkfirst=True,
         )

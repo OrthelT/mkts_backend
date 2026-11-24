@@ -9,6 +9,7 @@ Requires database credentials in .env or environment variables.
 
 from mkts_backend.cli_tools.add_watchlist import process_add_watchlist
 from mkts_backend.cli_tools.market_args import MARKET_DB_MAP
+from mkts_backend.db.unit_of_work import ReplicaUnitOfWork
 
 # Type IDs resolved from ESI API for the requested item names.
 # fmt: off
@@ -68,20 +69,22 @@ NEW_ITEMS = {
 
 
 def main():
-    type_ids_str = ",".join(str(tid) for tid in NEW_ITEMS)
+    type_ids = list(NEW_ITEMS.keys())
     print(f"Adding {len(NEW_ITEMS)} items to watchlist (both primary and deployment):\n")
     for tid, name in NEW_ITEMS.items():
         print(f"  {tid:>6}  {name}")
     print()
 
-    for market in ("primary", "deployment"):
-        db_alias = MARKET_DB_MAP[market]
-        print(f"--- Adding to {market} ({db_alias}) ---")
-        success = process_add_watchlist(type_ids_str, remote=True, db_alias=db_alias)
-        if success:
-            print(f"Successfully added items to {market} watchlist\n")
-        else:
-            print(f"Failed to add items to {market} watchlist\n")
+    with ReplicaUnitOfWork() as uow:
+        for market in ("primary", "deployment"):
+            db_alias = MARKET_DB_MAP[market]
+            print(f"--- Adding to {market} ({db_alias}) ---")
+            with uow.tx(db_alias) as conn:
+                success = process_add_watchlist(type_ids, db_alias=db_alias, conn=conn)
+            if success:
+                print(f"Successfully added items to {market} watchlist\n")
+            else:
+                print(f"Failed to add items to {market} watchlist\n")
 
 
 if __name__ == "__main__":

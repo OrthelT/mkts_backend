@@ -1,7 +1,7 @@
 import csv
 
-from mkts_backend.config.db_config import DatabaseConfig
 from mkts_backend.config.logging_config import configure_logging
+from mkts_backend.db.unit_of_work import ReplicaUnitOfWork
 from mkts_backend.utils.db_utils import add_missing_items_to_watchlist
 from mkts_backend.cli_tools.arg_utils import ParsedArgs
 from mkts_backend.cli_tools.market_args import MARKET_DB_MAP, expand_market_alias
@@ -79,29 +79,31 @@ def add_watchlist(args: list[str], market_alias: str = "primary") -> bool:
         print("       mkts-backend add_watchlist --type_id=12345 --all")
         return False
 
-    # Default to remote database, use --local flag for local database
-    remote = not p.has_flag("local")
-
     # Determine target database(s) from market alias
     if market_alias in ("both", "all"):
         target_aliases = [MARKET_DB_MAP[m] for m in expand_market_alias(market_alias)]
     else:
         target_aliases = [MARKET_DB_MAP.get(market_alias, "wcmkt")]
 
-    type_ids = [int(tid.strip()) for tid in type_ids_str.split(',') if tid.strip()]
+    type_ids = [int(tid.strip()) for tid in type_ids_str.split(",") if tid.strip()]
 
     all_ok = True
-    for db_alias in target_aliases:
-        print(f"Adding to watchlist on {db_alias} (remote={remote})...")
-        if not process_add_watchlist(type_ids, remote=remote, db_alias=db_alias):
-            all_ok = False
-            continue
-        try:
-            DatabaseConfig(db_alias).push()
-        except Exception as exc:
-            logger.error(f"{db_alias}: push failed: {exc}")
-            print(f"Error: {db_alias}: push failed: {exc}")
-            all_ok = False
+    with ReplicaUnitOfWork() as uow:
+        for db_alias in target_aliases:
+            print(f"Adding to watchlist on {db_alias}...")
+            try:
+                with uow.tx(db_alias) as conn:
+                    ok = process_add_watchlist(type_ids, db_alias=db_alias, conn=conn)
+                if not ok:
+                    uow.touched.discard(uow.db(db_alias).alias)
+                    all_ok = False
+            except Exception as exc:
+                logger.error(f"{db_alias}: watchlist write failed: {exc}")
+                print(f"Error: {db_alias}: {exc}")
+                all_ok = False
+
+    if uow.push_failed:
+        all_ok = False
 
     if all_ok:
         label = " + ".join(target_aliases)
@@ -141,23 +143,20 @@ def _mirror_to_build_watchlist(type_ids: list[int]) -> None:
         logger.warning(f"build_watchlist mirror failed (market write succeeded): {exc}")
         print(f"Warning: build_watchlist mirror failed: {exc}")
 
-def process_add_watchlist(type_ids: list[int], remote: bool = False, db_alias: str = "wcmkt"):
-    """
-    Process the add_watchlist command to add items to the watchlist.
-
-    Args:
-        type_ids_str: Comma-separated string of type IDs
-        remote: Whether to use remote database
-        db_alias: Target database alias
-    """
+def process_add_watchlist(
+    type_ids: list[int],
+    db_alias: str = "wcmkt",
+    *,
+    conn=None,
+):
+    """Add ``type_ids`` to the watchlist for ``db_alias``."""
     print("Processing add_watchlist command")
     try:
-        # Parse comma-separated type IDs
         if not type_ids:
             logger.error("No valid type IDs provided")
             print("Error: No valid type IDs provided")
             return None
-        return add_missing_items_to_watchlist(type_ids, remote=remote, db_alias=db_alias)
+        return add_missing_items_to_watchlist(type_ids, db_alias=db_alias, conn=conn)
 
     except ValueError as e:
         logger.error(f"Invalid type ID format: {e}")

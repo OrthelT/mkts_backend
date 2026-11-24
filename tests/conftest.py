@@ -15,13 +15,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 class FakeDatabaseConfig:
     """Explicit stand-in for DatabaseConfig, backed by a real SQLite file.
 
-    ``engine`` and ``remote_engine`` are the SAME engine, as they are in
-    DatabaseConfig since the pyturso migration. This is deliberately not a
-    MagicMock: a mock invents whatever attribute the code asks for, so when
-    the writers switched from ``remote_engine`` to ``engine`` their tests kept
-    passing while every write went to an auto-created attribute instead of a
-    database. ``MagicMock(spec=DatabaseConfig)`` would not have caught it
-    either — ``remote_engine`` is a real property on the class.
+    Deliberately not a MagicMock so tests fail loudly if production code
+    reaches for a nonexistent attribute (such as the removed ``remote_engine``).
 
     push/pull/sync are counted rather than performed, so tests can assert that
     local writes were flushed to Turso without needing a remote.
@@ -36,10 +31,6 @@ class FakeDatabaseConfig:
         self.pushes = 0
         self.pulls = 0
         self.syncs = 0
-
-    @property
-    def remote_engine(self):
-        return self.engine
 
     def push(self) -> None:
         self.pushes += 1

@@ -10,7 +10,6 @@ from unittest.mock import patch, MagicMock
 import pytest
 
 from mkts_backend.cli_tools import fit_update
-from mkts_backend.utils.doctrine_update import _require_single_context
 
 
 class TestFlagToAliasesShim:
@@ -43,21 +42,6 @@ class TestFlagToAliasesShim:
         assert fit_update._flag_to_aliases("bogus") == set()
 
 
-class TestRequireSingleContext:
-    def test_raises_when_both_conn_and_engine_non_none(self):
-        with pytest.raises(ValueError, match="conn= or engine="):
-            _require_single_context(conn=object(), engine=object())
-
-    def test_accepts_neither(self):
-        _require_single_context(conn=None, engine=None)
-
-    def test_accepts_conn_only(self):
-        _require_single_context(conn=object(), engine=None)
-
-    def test_accepts_engine_only(self):
-        _require_single_context(conn=None, engine=object())
-
-
 class TestExecuteMarketPlanZeroAliasGuard:
     def test_aborts_with_skipped_count_when_no_markets_configured(self, capsys):
         plans = [
@@ -66,14 +50,14 @@ class TestExecuteMarketPlanZeroAliasGuard:
             {"fit_id": 2, "doctrine_id": 10, "action": "remove"},
         ]
         with patch.object(fit_update, "_configured_market_db_aliases", return_value=[]):
-            result = fit_update._execute_market_plan(plans, remote=False, db_alias="wcmkt")
+            result = fit_update._execute_market_plan(plans, db_alias="wcmkt")
         assert result == {"updated": 0, "deleted": 0, "skipped": 2, "step_failures": 0}
         captured = capsys.readouterr().out
         assert "no markets configured" in captured.lower()
 
     def test_empty_plan_list_still_returns_counters_shape(self):
         with patch.object(fit_update, "_configured_market_db_aliases", return_value=[]):
-            result = fit_update._execute_market_plan([], remote=False, db_alias="wcmkt")
+            result = fit_update._execute_market_plan([], db_alias="wcmkt")
         assert result == {"updated": 0, "deleted": 0, "skipped": 0, "step_failures": 0}
 
 

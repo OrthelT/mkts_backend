@@ -86,11 +86,11 @@ class TestWatchlistPush:
                 "type_name TEXT, group_id INTEGER, group_name TEXT, "
                 "category_id INTEGER, category_name TEXT)"
             ))
+        monkeypatch.setattr("mkts_backend.config.db_config.DatabaseConfig", lambda *a, **k: db)
         monkeypatch.setattr("mkts_backend.utils.db_utils.DatabaseConfig", lambda *a, **k: db)
-        monkeypatch.setattr(add_watchlist, "DatabaseConfig", lambda *a, **k: db)
         monkeypatch.setattr(
             "mkts_backend.utils.db_utils.get_type_info",
-            lambda type_ids, remote=False: _fake_type_info(),
+            lambda type_ids: _fake_type_info(),
         )
         mirror_calls: list[list[int]] = []
         monkeypatch.setattr(
@@ -128,11 +128,11 @@ class TestWatchlistPush:
             raise RuntimeError("turso unreachable")
 
         db.push = boom
+        monkeypatch.setattr("mkts_backend.config.db_config.DatabaseConfig", lambda *a, **k: db)
         monkeypatch.setattr("mkts_backend.utils.db_utils.DatabaseConfig", lambda *a, **k: db)
-        monkeypatch.setattr(add_watchlist, "DatabaseConfig", lambda *a, **k: db)
         monkeypatch.setattr(
             "mkts_backend.utils.db_utils.get_type_info",
-            lambda type_ids, remote=False: _fake_type_info(),
+            lambda type_ids: _fake_type_info(),
         )
         mirror_calls: list[list[int]] = []
         monkeypatch.setattr(
@@ -152,7 +152,7 @@ class TestWatchlistPush:
             "mirror must not run when a market write's push failed"
         )
         captured = capsys.readouterr()
-        assert "push failed" in captured.out, (
+        assert "Push failed" in captured.out, (
             "push() must actually have been called and raised for this test to be meaningful"
         )
 
@@ -197,6 +197,7 @@ class TestEquivPush:
         dbs = {}
         factory = _equiv_dbs_factory(tmp_path, fake_db_factory, dbs)
 
+        monkeypatch.setattr("mkts_backend.config.db_config.DatabaseConfig", factory)
         monkeypatch.setattr(equiv_handlers, "DatabaseConfig", factory)
         monkeypatch.setattr("mkts_backend.cli_tools.push.DatabaseConfig", factory)
         monkeypatch.setattr(equiv_handlers, "resolve_type_name", lambda tid: f"Module {tid}")
@@ -234,6 +235,7 @@ class TestEquivPush:
             raise RuntimeError("turso unreachable")
         broken.push = boom
 
+        monkeypatch.setattr("mkts_backend.config.db_config.DatabaseConfig", factory)
         monkeypatch.setattr(equiv_handlers, "DatabaseConfig", factory)
         monkeypatch.setattr("mkts_backend.cli_tools.push.DatabaseConfig", factory)
         monkeypatch.setattr(equiv_handlers, "resolve_type_name", lambda tid: f"Module {tid}")
@@ -266,6 +268,7 @@ class TestEquivPush:
         dbs = {}
         factory = _equiv_dbs_factory(tmp_path, fake_db_factory, dbs)
 
+        monkeypatch.setattr("mkts_backend.config.db_config.DatabaseConfig", factory)
         monkeypatch.setattr(equiv_handlers, "DatabaseConfig", factory)
         monkeypatch.setattr("mkts_backend.cli_tools.push.DatabaseConfig", factory)
         monkeypatch.setattr(equiv_handlers, "resolve_type_name", lambda tid: f"Module {tid}")
@@ -300,6 +303,7 @@ class TestEquivPush:
         dbs = {}
         factory = _equiv_dbs_factory(tmp_path, fake_db_factory, dbs)
 
+        monkeypatch.setattr("mkts_backend.config.db_config.DatabaseConfig", factory)
         monkeypatch.setattr(equiv_handlers, "DatabaseConfig", factory)
         monkeypatch.setattr("mkts_backend.cli_tools.push.DatabaseConfig", factory)
         monkeypatch.setattr(equiv_handlers, "resolve_type_name", lambda tid: f"Module {tid}")
@@ -673,7 +677,6 @@ class TestCreateDoctrineCommandPush:
             name="Test Doctrine",
             description="desc",
             doctrine_id=777,
-            remote=False,
             interactive=False,
         )
 
@@ -733,8 +736,9 @@ class TestDoctrinePush:
                 "(39, 'Test Fit', 587, 'Rifter', 10, 'primary')"
             ))
 
-        assert fit_update._update_target_single(
-            fit_id=39, target=20, remote=False, market_flag="primary",
+        monkeypatch.setattr(fit_update, "_flag_to_aliases", lambda flag: {"wcmktnewkeeptest"})
+        assert fit_update.update_target_command(
+            fit_id=39, target=20, market_flag="primary",
             db_alias="wcmktnewkeeptest",
         )
 
@@ -772,8 +776,9 @@ class TestDoctrinePush:
             raise RuntimeError("turso unreachable")
         db.push = boom
 
-        result = fit_update._update_target_single(
-            fit_id=39, target=20, remote=False, market_flag="primary",
+        monkeypatch.setattr(fit_update, "_flag_to_aliases", lambda flag: {"wcmktnewkeeptest"})
+        result = fit_update.update_target_command(
+            fit_id=39, target=20, market_flag="primary",
             db_alias="wcmktnewkeeptest",
         )
 
@@ -827,14 +832,12 @@ class TestDoctrinePush:
         monkeypatch.setattr("mkts_backend.cli_tools.push.DatabaseConfig", factory)
         monkeypatch.setattr("mkts_backend.utils.doctrine_update.DatabaseConfig", factory)
 
-        update_calls: list[str] = []
+        update_calls: list[int] = []
         original_update = fit_update.update_doctrine_friendly_name
 
-        def counted_update(doctrine_id, friendly_name, db_alias="wcmkt", remote=False):
-            update_calls.append(db_alias)
-            return original_update(
-                doctrine_id, friendly_name, db_alias=db_alias, remote=remote
-            )
+        def counted_update(conn, doctrine_id, friendly_name):
+            update_calls.append(doctrine_id)
+            return original_update(conn, doctrine_id, friendly_name)
 
         monkeypatch.setattr(fit_update, "update_doctrine_friendly_name", counted_update)
 
@@ -843,10 +846,8 @@ class TestDoctrinePush:
         )
 
         assert set(dbs) == expected_markets
-        # Each alias updated exactly once — the old code updated db_alias
-        # twice (once as "local", once as "remote" whenever db_alias also
-        # appeared in the configured markets).
-        assert sorted(update_calls) == sorted(expected_markets), update_calls
+        # Each configured market updated exactly once (no duplicate local/remote write).
+        assert len(update_calls) == len(expected_markets), update_calls
         for alias in expected_markets:
             assert dbs[alias].pushes == 1, {a: d.pushes for a, d in dbs.items()}
             with dbs[alias].engine.connect() as conn:
@@ -997,7 +998,7 @@ class TestDoctrinePush:
             conn.execute(text("INSERT INTO ship_targets (fit_id) VALUES (501)"))
 
         assert fit_update.remove_fit_command(
-            fit_id=501, remote=False, db_alias=market_alias,
+            fit_id=501, db_alias=market_alias,
         )
 
         assert dbs[market_alias].pushes == 1, "market replica never reached Turso"
@@ -1059,7 +1060,7 @@ class TestDoctrinePush:
         market_db.push = boom
 
         result = fit_update.remove_fit_command(
-            fit_id=502, remote=False, db_alias=market_alias,
+            fit_id=502, db_alias=market_alias,
         )
 
         assert result is False
@@ -1068,9 +1069,9 @@ class TestDoctrinePush:
             assert conn.execute(
                 text("SELECT count(*) FROM doctrines WHERE fit_id = 502")
             ).scalar() == 0
-        # fittings must not be pushed either — the command fails on the
-        # market push before it ever reaches the fittings push.
-        assert dbs["fittings"].pushes == 0
+        # ReplicaUnitOfWork pushes every committed alias independently so one
+        # failed push never strands sibling writes, while still failing the command.
+        assert dbs["fittings"].pushes == 1
         captured = capsys.readouterr()
         assert "turso unreachable" in captured.out
 
@@ -1110,7 +1111,7 @@ class TestDoctrinePush:
             ))
 
         assert fit_update.doctrine_remove_fit_command(
-            doctrine_id=12, fit_ids=[503], remote=False, interactive=False,
+            doctrine_id=12, fit_ids=[503], interactive=False,
             db_alias=market_alias,
         )
 
@@ -1123,14 +1124,10 @@ class TestDoctrinePush:
 
 
 class TestUpdateFitWorkflowCallSiteCoverage:
-    """Guard against a new caller silently omitting the accumulator.
+    """Guard against a non-dry-run caller omitting ``uow=`` (which would push
+    per-call rather than participating in the command's single unit of work)."""
 
-    This is a source scan, not a runtime check: whether a call site passes
-    ``touched_aliases=`` is a static property of the call site, not something
-    a single execution path exercises.
-    """
-
-    def test_every_call_site_passes_touched_aliases(self):
+    def test_every_write_call_site_passes_uow(self):
         import re
         from pathlib import Path
 
@@ -1161,9 +1158,9 @@ class TestUpdateFitWorkflowCallSiteCoverage:
         assert call_sites, "expected at least one update_fit_workflow(...) call site"
         missing = [
             f"{path}:{line_no}" for path, line_no, call_text in call_sites
-            if "touched_aliases" not in call_text
+            if "dry_run=True" not in call_text and "uow=" not in call_text
         ]
-        assert not missing, f"update_fit_workflow call sites missing touched_aliases=: {missing}"
+        assert not missing, f"update_fit_workflow write call sites missing uow=: {missing}"
 
 
 # ---------------------------------------------------------------------------
@@ -1259,7 +1256,7 @@ class TestMultiAliasPush:
              "market_flag": "flagB", "new_flag": "flagB", "doctrine_name": "D"},
         ]
 
-        result = fit_update._execute_market_plan(plans, remote=False, db_alias="aliasA")
+        result = fit_update._execute_market_plan(plans, db_alias="aliasA")
 
         assert result["push_failed"] is False
         assert result["bucket_failures"] == 0
@@ -1307,7 +1304,7 @@ class TestMultiAliasPush:
              "market_flag": "flagB", "new_flag": "flagB", "doctrine_name": "D"},
         ]
 
-        result = fit_update._execute_market_plan(plans, remote=False, db_alias="aliasA")
+        result = fit_update._execute_market_plan(plans, db_alias="aliasA")
 
         assert result["bucket_failures"] == 1
         assert set(dbs) == {"aliasA", "aliasB"}
@@ -1345,9 +1342,9 @@ class TestMultiAliasPush:
             return True
 
         monkeypatch.setattr(fit_update, "_apply_step", fake_apply_step)
-        monkeypatch.setattr(fit_update, "_check_fit_orphaned", lambda fid, conn=None: True)
+        monkeypatch.setattr(fit_update, "_check_fit_orphaned", lambda conn, fid: True)
 
-        def fake_remove_doctrines_for_fit(fid, conn=None, **kwargs):
+        def fake_remove_doctrines_for_fit(conn, fid):
             conn.execute(
                 text("INSERT INTO marker (alias, fit_id) VALUES ('orphan-cleanup', :f)"),
                 {"f": fid},
@@ -1355,7 +1352,7 @@ class TestMultiAliasPush:
             return 1
 
         monkeypatch.setattr(fit_update, "remove_doctrines_for_fit", fake_remove_doctrines_for_fit)
-        monkeypatch.setattr(fit_update, "remove_ship_target", lambda fid, conn=None, **k: 0)
+        monkeypatch.setattr(fit_update, "remove_ship_target", lambda conn, fid: 0)
 
         # A single "remove" plan: Phase 3 only ever writes the canonical
         # alias (aliasA). aliasB is untouched until Phase 4's orphan-cleanup
@@ -1364,7 +1361,7 @@ class TestMultiAliasPush:
             {"fit_id": 3, "doctrine_id": 20, "action": "remove", "doctrine_name": "D"},
         ]
 
-        result = fit_update._execute_market_plan(plans, remote=False, db_alias="aliasA")
+        result = fit_update._execute_market_plan(plans, db_alias="aliasA")
 
         assert result["bucket_failures"] == 0
         assert result["push_failed"] is False
@@ -1428,7 +1425,7 @@ class TestMultiAliasPush:
             raise RuntimeError("turso unreachable")
         broken.push = boom
 
-        result = fit_update._execute_market_plan(plans, remote=False, db_alias="aliasA")
+        result = fit_update._execute_market_plan(plans, db_alias="aliasA")
 
         assert result["push_failed"] is True
         assert result["bucket_failures"] == 0
@@ -1474,7 +1471,7 @@ class TestMultiAliasPush:
              "market_flag": "flagA", "new_flag": "flagA", "doctrine_name": "D"},
         ]
 
-        result = fit_update._execute_market_plan(plans, remote=False, db_alias="aliasA")
+        result = fit_update._execute_market_plan(plans, db_alias="aliasA")
 
         assert result["step_failures"] == 1
         assert result["bucket_failures"] == 0
@@ -1512,21 +1509,21 @@ class TestDoctrineAddFitPush:
         monkeypatch.setattr(fit_update, "get_doctrine_fits_from_market", lambda *a, **k: [])
         monkeypatch.setattr(
             fit_update, "get_available_doctrines",
-            lambda remote=False: [{"id": 10, "name": "Test Doctrine"}],
+            lambda: [{"id": 10, "name": "Test Doctrine"}],
         )
         monkeypatch.setattr(
             fit_update, "get_fit_info",
-            lambda fid, remote=False: {
+            lambda fid: {
                 "fit_id": fid, "fit_name": "Test Fit", "ship_name": "Rifter",
                 "ship_type_id": 587,
             },
         )
-        monkeypatch.setattr(fit_update, "get_fit_target", lambda *a, **k: None)
+        monkeypatch.setattr(fit_update, "_lookup_fit_target", lambda *a, **k: None)
         monkeypatch.setattr(fit_update, "ensure_doctrine_link", lambda *a, **k: None)
         monkeypatch.setattr(fit_update, "_prepare_watchlist_for_fit", lambda *a, **k: None)
 
         class _FakeDoctrineFit:
-            def __init__(self, doctrine_id, fit_id, target, remote=False):
+            def __init__(self, doctrine_id, fit_id, target):
                 self.doctrine_id = doctrine_id
                 self.fit_id = fit_id
                 self.target = target
@@ -1538,7 +1535,7 @@ class TestDoctrineAddFitPush:
         monkeypatch.setattr(fit_update, "DoctrineFit", _FakeDoctrineFit)
 
     def test_pushes_each_touched_alias_once(self, tmp_path, monkeypatch, fake_db_factory):
-        """Two target aliases, two pushes, one each."""
+        """Two target aliases plus fittings, one push each."""
         from mkts_backend.cli_tools import fit_update
 
         dbs = {}
@@ -1547,11 +1544,12 @@ class TestDoctrineAddFitPush:
 
         result = fit_update.doctrine_add_fit_command(
             doctrine_id=10, fit_ids=[1], target=100, market_flag="all",
-            remote=False, interactive=False, db_alias="aliasA",
+            interactive=False, db_alias="aliasA",
         )
 
         assert result is True
-        assert set(dbs) == {"aliasA", "aliasB"}
+        assert set(dbs) == {"fittings", "aliasA", "aliasB"}
+        assert dbs["fittings"].pushes == 1, {a: d.pushes for a, d in dbs.items()}
         assert dbs["aliasA"].pushes == 1, {a: d.pushes for a, d in dbs.items()}
         assert dbs["aliasB"].pushes == 1, {a: d.pushes for a, d in dbs.items()}
 
@@ -1582,11 +1580,12 @@ class TestDoctrineAddFitPush:
 
         result = fit_update.doctrine_add_fit_command(
             doctrine_id=10, fit_ids=[1], target=100, market_flag="all",
-            remote=False, interactive=False, db_alias="aliasA",
+            interactive=False, db_alias="aliasA",
         )
 
         assert result is False
-        assert set(dbs) == {"aliasA", "aliasB"}
+        assert set(dbs) == {"fittings", "aliasA", "aliasB"}
+        assert dbs["fittings"].pushes == 1, "fittings link committed cleanly"
         assert dbs["aliasA"].pushes == 1, "the healthy alias must still be pushed"
         assert dbs["aliasB"].pushes == 0, "a bucket that raised must not be pushed"
 
@@ -1617,11 +1616,11 @@ class TestUpdateLeadShipPush:
         )
         monkeypatch.setattr(
             fit_update, "get_available_doctrines",
-            lambda remote=False: [{"id": 10, "name": "Test Doctrine"}],
+            lambda: [{"id": 10, "name": "Test Doctrine"}],
         )
         monkeypatch.setattr(
             fit_update, "get_fit_info",
-            lambda fid, remote=False: {
+            lambda fid: {
                 "fit_id": fid, "fit_name": "Test Fit", "ship_name": "Rifter",
                 "ship_type_id": 587,
             },
@@ -1633,10 +1632,10 @@ class TestUpdateLeadShipPush:
 
         dbs = {}
         self._patch_common(monkeypatch, fit_update, dbs, tmp_path, fake_db_factory)
-        monkeypatch.setattr(fit_update, "set_lead_ship", lambda **k: None)
+        monkeypatch.setattr(fit_update, "set_lead_ship", lambda *a, **k: None)
 
         result = fit_update.update_lead_ship_command(
-            doctrine_id=10, fit_id=1, market_flag="all", remote=False,
+            doctrine_id=10, fit_id=1, market_flag="all",
         )
 
         assert result is True
@@ -1654,7 +1653,7 @@ class TestUpdateLeadShipPush:
 
         calls: list[dict] = []
 
-        def fake_set_lead_ship(**kwargs):
+        def fake_set_lead_ship(conn, **kwargs):
             calls.append(kwargs)
             if len(calls) == 2:
                 raise ConnectionError("simulated turso outage")
@@ -1662,7 +1661,7 @@ class TestUpdateLeadShipPush:
         monkeypatch.setattr(fit_update, "set_lead_ship", fake_set_lead_ship)
 
         result = fit_update.update_lead_ship_command(
-            doctrine_id=10, fit_id=1, market_flag="all", remote=False,
+            doctrine_id=10, fit_id=1, market_flag="all",
         )
 
         assert result is False
@@ -1681,7 +1680,7 @@ class TestUpdateLeadShipPush:
 
         calls: list[dict] = []
 
-        def fake_set_lead_ship(**kwargs):
+        def fake_set_lead_ship(conn, **kwargs):
             calls.append(kwargs)
             if len(calls) == 2:
                 raise RuntimeError("unexpected error")
@@ -1689,7 +1688,7 @@ class TestUpdateLeadShipPush:
         monkeypatch.setattr(fit_update, "set_lead_ship", fake_set_lead_ship)
 
         result = fit_update.update_lead_ship_command(
-            doctrine_id=10, fit_id=1, market_flag="all", remote=False,
+            doctrine_id=10, fit_id=1, market_flag="all",
         )
 
         assert result is False
@@ -1917,19 +1916,19 @@ class TestStructureAndBuildcostSeams:
                 "type_name TEXT, group_id INTEGER, group_name TEXT, "
                 "category_id INTEGER, category_name TEXT)"
             ))
-        monkeypatch.setattr("mkts_backend.utils.db_utils.DatabaseConfig", lambda *a, **k: market_db)
-        monkeypatch.setattr(add_watchlist, "DatabaseConfig", lambda *a, **k: market_db)
-        monkeypatch.setattr(
-            "mkts_backend.utils.db_utils.get_type_info",
-            lambda type_ids, remote=False: _fake_type_info(),
-        )
-
-        def boom(*a, **k):
-            raise RuntimeError("buildcost unreachable")
+        def factory(alias=None, *a, **k):
+            if alias == "buildcost":
+                raise RuntimeError("buildcost unreachable")
+            return market_db
 
         # Exercise the real _mirror_to_build_watchlist (not stubbed out, as
         # in TestWatchlistPush above) so its own try/except is what's tested.
-        monkeypatch.setattr("mkts_backend.config.db_config.DatabaseConfig", boom)
+        monkeypatch.setattr("mkts_backend.config.db_config.DatabaseConfig", factory)
+        monkeypatch.setattr("mkts_backend.utils.db_utils.DatabaseConfig", factory)
+        monkeypatch.setattr(
+            "mkts_backend.utils.db_utils.get_type_info",
+            lambda type_ids: _fake_type_info(),
+        )
 
         result = add_watchlist.add_watchlist(["--type-id=34"], market_alias="primary")
 

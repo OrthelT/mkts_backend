@@ -156,27 +156,31 @@ def list_equiv_groups(market_ctx: Optional["MarketContext"] = None) -> list[dict
     ]
 
 
-def get_next_equiv_group_id(market_ctx: Optional["MarketContext"] = None) -> int:
+def get_next_equiv_group_id(
+    market_ctx: Optional["MarketContext"] = None,
+    *,
+    conn=None,
+) -> int:
     """Get the next available equiv_group_id."""
-    db = _get_db(market_ctx)
     query = text("SELECT COALESCE(MAX(equiv_group_id), 0) + 1 FROM module_equivalents")
-    with db.engine.connect() as conn:
-        result = conn.execute(query).fetchone()
-        return result[0]
+    if conn is not None:
+        return conn.execute(query).fetchone()[0]
+    db = _get_db(market_ctx)
+    with db.engine.connect() as c:
+        return c.execute(query).fetchone()[0]
 
 
 def find_overlapping_group(
     type_ids: list[int],
     market_ctx: Optional["MarketContext"] = None,
+    *,
+    conn=None,
 ) -> Optional[int]:
-    """
-    Check if any existing group contains any of the given type_ids.
+    """Check if any existing group contains any of the given type_ids.
 
     Returns the equiv_group_id if any type_id is already in a group,
     or None if none of them are grouped yet.
     """
-    db = _get_db(market_ctx)
-    # Build a parameterized IN clause
     placeholders = ", ".join(f":tid_{i}" for i in range(len(type_ids)))
     query = text(f"""
         SELECT DISTINCT equiv_group_id
@@ -185,98 +189,92 @@ def find_overlapping_group(
     """)
     params = {f"tid_{i}": tid for i, tid in enumerate(type_ids)}
 
-    with db.engine.connect() as conn:
+    if conn is not None:
         rows = conn.execute(query, params).fetchall()
+    else:
+        db = _get_db(market_ctx)
+        with db.engine.connect() as c:
+            rows = c.execute(query, params).fetchall()
 
-    if rows:
-        return rows[0][0]
-    return None
+    return rows[0][0] if rows else None
 
 
 def add_equiv_group(
     type_ids: list[int],
     market_ctx: Optional["MarketContext"] = None,
+    *,
+    conn=None,
 ) -> int | None:
-    """
-    Add a new equivalence group.
+    """Add a new equivalence group.
 
     Resolves type names from SDE, inserts rows into module_equivalents.
     Returns None if any of the type_ids already belong to an existing group.
-
-    Args:
-        type_ids: List of EVE type IDs to group as equivalents
-        market_ctx: Optional market context
-
-    Returns:
-        The new equiv_group_id, or None if blocked by overlap
     """
-    # Guard against duplicates
-    existing_gid = find_overlapping_group(type_ids, market_ctx)
-    if existing_gid is not None:
-        logger.warning(
-            f"Type IDs overlap with existing group {existing_gid}, skipping"
-        )
-        return None
+    def _do(c) -> int | None:
+        existing_gid = find_overlapping_group(type_ids, market_ctx, conn=c)
+        if existing_gid is not None:
+            logger.warning(
+                f"Type IDs overlap with existing group {existing_gid}, skipping"
+            )
+            return None
 
-    db = _get_db(market_ctx)
-    equiv_group_id = get_next_equiv_group_id(market_ctx)
-
-    insert_query = text("""
-        INSERT INTO module_equivalents (equiv_group_id, type_id, type_name)
-        VALUES (:equiv_group_id, :type_id, :type_name)
-    """)
-
-    with db.engine.begin() as conn:
+        equiv_group_id = get_next_equiv_group_id(market_ctx, conn=c)
+        insert_query = text("""
+            INSERT INTO module_equivalents (equiv_group_id, type_id, type_name)
+            VALUES (:equiv_group_id, :type_id, :type_name)
+        """)
         for type_id in type_ids:
             type_name = resolve_type_name(type_id)
             if type_name is None:
                 logger.warning(f"Could not resolve type_id {type_id}, skipping")
                 continue
 
-            conn.execute(insert_query, {
+            c.execute(insert_query, {
                 "equiv_group_id": equiv_group_id,
                 "type_id": type_id,
                 "type_name": type_name,
             })
             logger.info(f"Added {type_name} ({type_id}) to group {equiv_group_id}")
+        return equiv_group_id
 
-    return equiv_group_id
+    if conn is not None:
+        return _do(conn)
+
+    db = _get_db(market_ctx)
+    with db.engine.begin() as c:
+        return _do(c)
 
 
 def remove_equiv_group(
     equiv_group_id: int,
     market_ctx: Optional["MarketContext"] = None,
+    *,
+    conn=None,
 ) -> int:
-    """
-    Remove an equivalence group.
-
-    Args:
-        equiv_group_id: The group ID to remove
-
-    Returns:
-        Number of rows deleted
-    """
-    db = _get_db(market_ctx)
+    """Remove an equivalence group. Returns the number of rows deleted."""
     delete_query = text(
         "DELETE FROM module_equivalents WHERE equiv_group_id = :equiv_group_id"
     )
-
-    with db.engine.begin() as conn:
+    if conn is not None:
         result = conn.execute(delete_query, {"equiv_group_id": equiv_group_id})
         count = result.rowcount
         logger.info(f"Removed {count} rows from equiv group {equiv_group_id}")
+        return count
 
+    db = _get_db(market_ctx)
+    with db.engine.begin() as c:
+        result = c.execute(delete_query, {"equiv_group_id": equiv_group_id})
+        count = result.rowcount
+        logger.info(f"Removed {count} rows from equiv group {equiv_group_id}")
     return count
 
 
-def ensure_equiv_table(market_ctx: Optional["MarketContext"] = None) -> bool:
-    """
-    Ensure the module_equivalents table exists.
-
-    Returns:
-        True if table exists or was created
-    """
-    db = _get_db(market_ctx)
+def ensure_equiv_table(
+    market_ctx: Optional["MarketContext"] = None,
+    *,
+    conn=None,
+) -> bool:
+    """Ensure the module_equivalents table exists."""
     create_query = text("""
         CREATE TABLE IF NOT EXISTS module_equivalents (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -287,8 +285,12 @@ def ensure_equiv_table(market_ctx: Optional["MarketContext"] = None) -> bool:
     """)
 
     try:
-        with db.engine.begin() as conn:
+        if conn is not None:
             conn.execute(create_query)
+            return True
+        db = _get_db(market_ctx)
+        with db.engine.begin() as c:
+            c.execute(create_query)
         return True
     except Exception as e:
         logger.error(f"Failed to create module_equivalents table: {e}")

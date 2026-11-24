@@ -34,11 +34,10 @@ def assert_table_matches_model(engine, model) -> None:
 
 
 class _FakeDB:
-    """Stand-in for DatabaseConfig exposing only ``.engine`` / ``.remote_engine``."""
+    """Stand-in for DatabaseConfig exposing ``.engine``."""
 
     def __init__(self, engine, alias: str = "fake"):
         self.engine = engine
-        self.remote_engine = engine
         self.alias = alias
         self.path = ":memory:"
 
@@ -141,7 +140,7 @@ def test_restore_watchlist_from_csv_preserves_pk(
     )
     from mkts_backend.utils.db_utils import restore_watchlist_from_csv
 
-    restore_watchlist_from_csv(csv_file=str(watchlist_csv), remote=False)
+    restore_watchlist_from_csv(csv_file=str(watchlist_csv))
 
     assert_table_matches_model(base_engine, Watchlist)
     with base_engine.connect() as conn:
@@ -189,7 +188,7 @@ def test_restore_watchlist_from_csv_refuses_empty_csv(
     from mkts_backend.utils.db_utils import restore_watchlist_from_csv
 
     with pytest.raises(ValueError, match="empty CSV"):
-        restore_watchlist_from_csv(csv_file=str(empty_watchlist_csv), remote=False)
+        restore_watchlist_from_csv(csv_file=str(empty_watchlist_csv))
 
     with base_engine.connect() as conn:
         count = conn.execute(text("SELECT COUNT(*) FROM watchlist")).scalar()
@@ -238,7 +237,7 @@ def test_add_missing_items_to_watchlist_skips_existing_type_id(
     )
     monkeypatch.setattr(
         "mkts_backend.utils.db_utils.get_type_info",
-        lambda type_ids, remote=False: pd.DataFrame([
+        lambda type_ids: pd.DataFrame([
             {"type_id": 1, "type_name": "from_sde", "group_id": 10,
              "group_name": "g", "category_id": 100, "category_name": "c"},
             {"type_id": 2, "type_name": "new", "group_id": 20,
@@ -252,7 +251,7 @@ def test_add_missing_items_to_watchlist_skips_existing_type_id(
 
     from mkts_backend.utils.db_utils import add_missing_items_to_watchlist
 
-    add_missing_items_to_watchlist([1, 2], remote=False, db_alias="wcmkt")
+    add_missing_items_to_watchlist([1, 2], db_alias="wcmkt")
 
     with base_engine.connect() as conn:
         rows = conn.execute(text(

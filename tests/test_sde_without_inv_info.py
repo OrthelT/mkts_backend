@@ -43,11 +43,10 @@ def sde_without_legacy(tmp_path, monkeypatch):
         assert conn.execute('PRAGMA integrity_check').fetchone()[0] == 'ok'
     # Any accidental access to a configured replica is a hard failure.
     monkeypatch.setattr(DatabaseConfig, 'engine', PropertyMock(side_effect=AssertionError('Live replica access')))
-    monkeypatch.setattr(DatabaseConfig, 'remote_engine', PropertyMock(side_effect=AssertionError('Live replica access')))
     for method in ('push', 'pull', 'sync', 'verify_db_exists'):
         monkeypatch.setattr(DatabaseConfig, method, lambda *a, **kw: pytest.fail('Live replica operation'))
     engine = create_engine(f'sqlite:///{path}')
-    fake = SimpleNamespace(engine=engine, remote_engine=engine)
+    fake = SimpleNamespace(engine=engine)
     monkeypatch.setattr(get_type_info, 'DatabaseConfig', lambda *a, **kw: fake)
     monkeypatch.setattr(db_utils, 'sde_db', fake)
     monkeypatch.setattr(eft_parser, '_sde_db', fake)
@@ -63,9 +62,8 @@ def test_type_info_by_id_name_and_list(sde_without_legacy):
         get_type_info.TypeInfo('Deliberately nonexistent test type')
 
 
-@pytest.mark.parametrize('remote', [False, True])
-def test_watchlist_metadata_lookup(sde_without_legacy, remote):
-    result = db_utils.get_type_info([587, 2048], remote=remote)
+def test_watchlist_metadata_lookup(sde_without_legacy):
+    result = db_utils.get_type_info([587, 2048])
     assert set(result.type_name) == {'Rifter', 'Damage Control II'}
     assert set(result.category_id) == {6, 7}
 

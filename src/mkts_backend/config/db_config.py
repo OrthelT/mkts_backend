@@ -14,7 +14,6 @@ from mkts_backend.config.replica_metadata import (
     metadata_remote_url,
 )
 from mkts_backend.config.settings_service import SettingsService
-from datetime import datetime
 from time import perf_counter
 from pathlib import Path
 
@@ -132,6 +131,12 @@ class DatabaseConfig:
                 # connections: a plain connection auto-checkpoints the WAL at
                 # 1000 frames, destroying the baseline conn.pull() needs and
                 # panicking turso core (wal.rs frame_watermark assertion).
+                db_path = Path(self.path)
+                if not db_path.exists() or db_path.stat().st_size == 0:
+                    logger.info(
+                        f"Local replica {self.alias} ({self.path}) is missing or empty; "
+                        "bootstrapping from Turso on first connect..."
+                    )
                 self._engine = create_engine(
                     self.sync_url,
                     connect_args={
@@ -142,12 +147,6 @@ class DatabaseConfig:
             else:
                 self._engine = create_engine(self.url)
         return self._engine
-
-    @property
-    def remote_engine(self):
-        # Writes land locally and reach Turso via push(), so the local and
-        # "remote" engines are the same sync-dialect engine.
-        return self.engine
 
     @property
     def turso_sync_connection(self) -> tursosync.ConnectionSync:
@@ -202,60 +201,36 @@ class DatabaseConfig:
         )
 
 
-    def get_table_list(self, local_only: bool = True) -> list[tuple]:
-        if local_only:
-            engine = self.engine
-            with engine.connect() as conn:
-                stmt = text("PRAGMA table_list")
-                result = conn.execute(stmt)
-                tables = result.fetchall()
-                table_list = [
-                    table.name for table in tables if "sqlite" not in table.name
-                ]
-                return table_list
-        else:
-            engine = self.remote_engine
-            with engine.connect() as conn:
-                stmt = text("PRAGMA table_list")
-                result = conn.execute(stmt)
-                tables = result.fetchall()
-                table_list = [
-                    table.name for table in tables if "sqlite" not in table.name
-                ]
-                return table_list
+    def get_table_list(self) -> list[str]:
+        with self.engine.connect() as conn:
+            result = conn.execute(text("PRAGMA table_list"))
+            tables = result.fetchall()
+            return [
+                table.name for table in tables if "sqlite" not in table.name
+            ]
 
     def get_table_columns(
-        self, table_name: str, local_only: bool = True, full_info: bool = False
-    ) -> list[dict]:
-        if local_only:
-            engine = self.engine
-        else:
-            engine = self.remote_engine
-
-        with engine.connect() as conn:
-            stmt = text(f"PRAGMA table_info({table_name})")
-            result = conn.execute(stmt)
+        self, table_name: str, full_info: bool = False
+    ) -> list:
+        with self.engine.connect() as conn:
+            result = conn.execute(text(f"PRAGMA table_info({table_name})"))
             columns = result.fetchall()
             if full_info:
-                column_info = []
-                for col in columns:
-                    column_info.append(
-                        {
-                            "cid": col.cid,
-                            "name": col.name,
-                            "type": col.type,
-                            "notnull": col.notnull,
-                            "dflt_value": col.dflt_value,
-                            "pk": col.pk,
-                        }
-                    )
-            else:
-                column_info = [col.name for col in columns]
-
-            return column_info
+                return [
+                    {
+                        "cid": col.cid,
+                        "name": col.name,
+                        "type": col.type,
+                        "notnull": col.notnull,
+                        "dflt_value": col.dflt_value,
+                        "pk": col.pk,
+                    }
+                    for col in columns
+                ]
+            return [col.name for col in columns]
 
     def get_table_length(self, table: str):
-        with self.remote_engine.connect() as conn:
+        with self.engine.connect() as conn:
             result = conn.execute(text(f"SELECT COUNT(*) FROM {table}")).fetchone()
             if result is None:
                 return 0

@@ -516,10 +516,8 @@ def test_diff_with_only_link_changes_is_not_empty(buildcost_engine):
 def cli_env(monkeypatch, buildcost_engine, tmp_path):
     """Wire the add_structure handler to use a test DB instead of Turso.
 
-    Monkeypatches DatabaseConfig inside the handler module so both
-    `engine` and `remote_engine` point at the same in-test SQLite DB — under
-    pyturso they always are the same engine (see db_config.DatabaseConfig).
-    Skips the `_ensure_buildcost_ready` bootstrap path entirely.
+    Monkeypatches DatabaseConfig inside the handler module so `engine` points
+    at the in-test SQLite DB. Skips the `_ensure_buildcost_ready` bootstrap path.
     """
     from mkts_backend.cli_tools import add_structure as mod
 
@@ -530,7 +528,6 @@ def cli_env(monkeypatch, buildcost_engine, tmp_path):
         def __init__(self, *_a, **_kw):
             type(self).created.append(self)
             self.engine = buildcost_engine
-            self.remote_engine = buildcost_engine
             self.path = str(tmp_path / "buildcost.db")
             self.turso_url = "libsql://fake"
             self.token = "fake-token"
@@ -579,8 +576,7 @@ def test_cli_dry_run_writes_nothing(cli_env, buildcost_engine, tmp_path):
 
 
 def test_cli_writes_once_and_pushes(cli_env, buildcost_engine, tmp_path, monkeypatch):
-    """A normal run must call upsert_structures exactly once (engine and
-    remote_engine are the same replica under pyturso) and push the result."""
+    """A normal run must call upsert_structures once and push the result."""
     from mkts_backend.cli_tools import add_structure as mod
 
     called_engines: list[object] = []

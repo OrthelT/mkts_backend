@@ -204,7 +204,7 @@ class TestDeleteOrphanBuilderCosts:
             }
             for tid in type_ids
         ]
-        with db.remote_engine.begin() as conn:
+        with db.engine.begin() as conn:
             conn.execute(sqlite_insert(BuilderCosts.__table__).values(rows))
 
     @staticmethod

@@ -55,28 +55,28 @@ class TestDiscoverFitsAcrossMarkets:
         """Same fit_id returned by both markets appears once."""
         with patch.object(fit_update, "get_doctrine_fits_from_market",
                           return_value=[101, 102]):
-            fit_ids, queried, skipped = fit_update._discover_fits_across_markets(7, False)
+            fit_ids, queried, skipped = fit_update._discover_fits_across_markets(7)
         assert fit_ids == [101, 102]
         assert queried == ["wcmktprod", "wcmktnorth"]
         assert skipped == []
 
     def test_finds_fits_in_non_destination_market(self, patched_aliases):
         """Fits live only in wcmktnorth -> still discovered."""
-        def fake(doctrine_id, alias, remote):
+        def fake(doctrine_id, alias):
             return [201, 202] if alias == "wcmktnorth" else []
         with patch.object(fit_update, "get_doctrine_fits_from_market", side_effect=fake):
-            fit_ids, queried, _ = fit_update._discover_fits_across_markets(7, False)
+            fit_ids, queried, _ = fit_update._discover_fits_across_markets(7)
         assert fit_ids == [201, 202]
         assert set(queried) == {"wcmktprod", "wcmktnorth"}
 
     def test_one_unreachable_market_skipped_not_fatal(self, patched_aliases):
         """If one DB raises, discovery continues with the other."""
-        def fake(doctrine_id, alias, remote):
+        def fake(doctrine_id, alias):
             if alias == "wcmktprod":
                 raise RuntimeError("connection refused")
             return [301]
         with patch.object(fit_update, "get_doctrine_fits_from_market", side_effect=fake):
-            fit_ids, queried, skipped = fit_update._discover_fits_across_markets(7, False)
+            fit_ids, queried, skipped = fit_update._discover_fits_across_markets(7)
         assert fit_ids == [301]
         assert queried == ["wcmktnorth"]
         assert len(skipped) == 1
@@ -88,13 +88,13 @@ class TestAssignDoctrineMarketCrossMarket:
     def test_proceeds_when_fits_only_in_non_target_db(self, patched_aliases):
         """Regression guard: pre-fix code bailed here because it searched
         only the destination DB. Assert the function makes it past discovery."""
-        def fake_fits(doctrine_id, alias, remote):
+        def fake_fits(doctrine_id, alias):
             return [42] if alias == "wcmktnorth" else []
         with patch.object(fit_update, "get_doctrine_fits_from_market", side_effect=fake_fits), \
              patch.object(fit_update, "get_available_doctrines", return_value=[{"id": 7, "name": "Test"}]), \
              patch.object(fit_update, "_get_doctrine_fits_rows", return_value=[]):
             result = fit_update.assign_doctrine_market(
-                doctrine_id=7, market_flag="primary", remote=False,
+                doctrine_id=7, market_flag="primary",
                 db_alias="wcmktprod",
             )
         # Returns False because _get_doctrine_fits_rows is empty, but importantly
@@ -104,13 +104,13 @@ class TestAssignDoctrineMarketCrossMarket:
 
 class TestUnassignDoctrineMarketCrossMarket:
     def test_proceeds_when_fits_only_in_non_target_db(self, patched_aliases):
-        def fake_fits(doctrine_id, alias, remote):
+        def fake_fits(doctrine_id, alias):
             return [42] if alias == "wcmktnorth" else []
         with patch.object(fit_update, "get_doctrine_fits_from_market", side_effect=fake_fits), \
              patch.object(fit_update, "get_available_doctrines", return_value=[{"id": 7, "name": "Test"}]), \
              patch.object(fit_update, "_get_doctrine_fits_rows", return_value=[]):
             result = fit_update.unassign_doctrine_market(
-                doctrine_id=7, market_to_remove="primary", remote=False,
+                doctrine_id=7, market_to_remove="primary",
                 db_alias="wcmktprod",
             )
         assert result is False
@@ -179,7 +179,7 @@ class TestListDoctrinesUsesMarketDb:
             handle_fit_manager(
                 ["list-doctrines", "--db-alias=wcmktnorth"], "primary",
             )
-        market.assert_called_once_with(db_alias="wcmktnorth", remote=False)
+        market.assert_called_once_with(db_alias="wcmktnorth")
         fittings.assert_not_called()
 
 

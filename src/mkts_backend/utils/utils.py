@@ -196,7 +196,7 @@ def init_databases(aliases: str | list[str] | None = None) -> None:
 
 def check_ship_target(fit_id: int):
     db = DatabaseConfig("wcmkt")
-    engine = db.remote_engine
+    engine = db.engine
     with engine.connect() as conn:
         stmt = text("SELECT * FROM ship_targets WHERE fit_id = :fit_id")
         res = conn.execute(stmt, {"fit_id": fit_id})

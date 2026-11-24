@@ -146,9 +146,7 @@ def add_structure(args: list[str], market_alias: str = "primary") -> bool:
     rows_to_write = _concat_new_and_changed(diff)
 
     # ── 5. Write ───────────────────────────────────────────────
-    # Under pyturso, engine and remote_engine are the same local replica —
-    # there is no separate direct-to-cloud connection. Write once, then push
-    # to reach Turso.
+    # Under pyturso, writes land on the local replica and reach Turso via push().
     try:
         count = upsert_structures(local_db.engine, rows_to_write)
         print(f"Wrote {count} rows to {local_db.path}.")

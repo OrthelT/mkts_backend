@@ -169,8 +169,6 @@ def upsert_database(
     db = _get_db(market_ctx)
     logger.info(f"updating: {db.alias} ({db.path})")
 
-    # TODO "remove remote_db"
-    # remote_engine = db.remote_engine
     engine = db.engine
     session = Session(bind=engine)
 

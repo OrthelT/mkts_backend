@@ -2,69 +2,81 @@
 Fit and doctrine management: the database work behind ``fit-manager``.
 
 ``fit_manager.py`` owns the CLI surface (subcommands, options, help) and
-calls the ``*_command`` functions here. Each writer pushes the replicas it
-touched before it returns.
+calls the ``*_command`` functions here. Writers run through
+:class:`~mkts_backend.db.unit_of_work.ReplicaUnitOfWork`, which owns engine
+lifecycle, per-alias transactions, and pushing every committed replica once.
 """
 
+from __future__ import annotations
+
+import json
+import os
+import tempfile
 from collections import defaultdict
 from typing import List, Optional
+
+from rich import box
 from rich.console import Console
 from rich.markup import escape
-from rich.table import Table
 from rich.panel import Panel
-from rich.prompt import Prompt, Confirm, IntPrompt
-from rich import box
+from rich.prompt import Confirm, IntPrompt, Prompt
+from rich.table import Table
 from sqlalchemy import text
-from sqlalchemy.exc import OperationalError, DatabaseError
+from sqlalchemy.exc import DatabaseError, OperationalError
 
-from mkts_backend.config.logging_config import configure_logging
 from mkts_backend.config import DatabaseConfig
+from mkts_backend.config import db_config as _db_config_module
+from mkts_backend.config.logging_config import configure_logging
 from mkts_backend.config.market_context import MarketContext
-from mkts_backend.utils.eft_parser import parse_eft_file, parse_eft_string
+from mkts_backend.db.unit_of_work import ReplicaUnitOfWork
+from mkts_backend.utils.db_utils import add_missing_items_to_watchlist
 from mkts_backend.utils.doctrine_update import (
-    update_fit_market_flag,
+    DoctrineFit,
+    ensure_friendly_name_column,
     get_fit_target,
-    upsert_doctrine_fits,
-    upsert_doctrine_map,
-    upsert_ship_target,
+    populate_friendly_names_from_json,
     refresh_doctrines_for_fit,
+    remove_all_doctrine_fits_for_fit,
+    remove_all_doctrine_map_for_fit,
     remove_doctrine_fits,
     remove_doctrine_map,
     remove_doctrines_for_fit,
     remove_ship_target,
-    remove_all_doctrine_fits_for_fit,
-    remove_all_doctrine_map_for_fit,
-    upsert_lead_ship,
     set_lead_ship,
-    DoctrineFit,
-    ensure_friendly_name_column,
     update_doctrine_friendly_name,
-    populate_friendly_names_from_json,
+    update_fit_market_flag,
+    upsert_doctrine_fits,
+    upsert_doctrine_map,
+    upsert_lead_ship,
+    upsert_ship_target,
 )
+from mkts_backend.utils.eft_parser import parse_eft_file, parse_eft_string
 from mkts_backend.utils.parse_fits import (
-    update_fit_workflow,
     create_doctrine,
-    get_next_doctrine_id,
+    doctrine_exists,
     ensure_doctrine_link,
-    remove_doctrine_link,
-    remove_all_doctrine_links_for_fit,
     get_doctrine_ids_for_fit,
+    get_next_doctrine_id,
+    remove_all_doctrine_links_for_fit,
+    remove_doctrine_link,
+    update_fit_workflow,
 )
-from mkts_backend.cli_tools.push import push_or_log
-from mkts_backend.utils.db_utils import add_missing_items_to_watchlist
 
 logger = configure_logging(__name__)
 console = Console()
 
+_DB_ERRORS = (OperationalError, DatabaseError, ConnectionError, TimeoutError)
+
+
+def _uow(**kwargs) -> ReplicaUnitOfWork:
+    """Create a ReplicaUnitOfWork honoring monkeypatches on either this module or db_config."""
+    if DatabaseConfig is not _db_config_module.DatabaseConfig:
+        kwargs.setdefault("db_factory", DatabaseConfig)
+    return ReplicaUnitOfWork(**kwargs)
+
 
 def _configured_market_db_aliases(market_flag: Optional[str] = None) -> List[str]:
-    """Return DB aliases for configured markets, optionally filtered by market_flag.
-
-    ``market_flag`` may be ``primary``, ``deployment``, or ``all`` — when
-    provided, aliases are resolved via ``expand_market_alias``. When None
-    (default), returns every configured market's DB alias. Always
-    config-driven so new markets are picked up automatically.
-    """
+    """Return DB aliases for configured markets, optionally filtered by ``market_flag``."""
     if market_flag is None:
         markets = MarketContext.list_available()
     else:
@@ -85,11 +97,7 @@ def _configured_market_db_aliases(market_flag: Optional[str] = None) -> List[str
 
 
 def _market_name_for_db_alias(db_alias: str) -> str:
-    """Map a resolved DB alias back to its market name (primary, market3, …).
-
-    Config-driven so a new ``[markets.*]`` block is labelled correctly with no
-    code change. Falls back to the DB alias when it belongs to no market.
-    """
+    """Map a resolved DB alias back to its market name (primary, market3, …)."""
     for market in MarketContext.list_available():
         try:
             if MarketContext.from_settings(market).database_alias == db_alias:
@@ -100,21 +108,15 @@ def _market_name_for_db_alias(db_alias: str) -> str:
 
 
 def _discover_fits_across_markets(
-    doctrine_id: int, remote: bool
+    doctrine_id: int,
 ) -> tuple[List[int], List[str], List[tuple[str, str]]]:
-    """Query every configured market for fits in ``doctrine_id``.
-
-    Returns ``(fit_ids, queried_aliases, skipped)`` where ``skipped`` pairs an
-    alias with the error message that caused it to be excluded. Per-alias
-    failures are logged and skipped so a single unreachable DB does not
-    abort an otherwise-serviceable assign/unassign.
-    """
+    """Query every configured market for fits in ``doctrine_id``."""
     fit_ids: List[int] = []
     queried: List[str] = []
     skipped: List[tuple[str, str]] = []
     for source_alias in _configured_market_db_aliases():
         try:
-            rows = get_doctrine_fits_from_market(doctrine_id, source_alias, remote)
+            rows = get_doctrine_fits_from_market(doctrine_id, source_alias)
         except Exception as e:
             logger.warning(
                 "Skipping market '%s' during fit discovery for doctrine %s: %s",
@@ -129,7 +131,9 @@ def _discover_fits_across_markets(
     return fit_ids, queried, skipped
 
 
-def _render_no_fits_message(doctrine_id: int, queried: List[str], skipped: List[tuple[str, str]]) -> None:
+def _render_no_fits_message(
+    doctrine_id: int, queried: List[str], skipped: List[tuple[str, str]]
+) -> None:
     """Render the 'no fits found' warning, distinguishing queried vs skipped."""
     parts = [f"No fits found for doctrine {doctrine_id}"]
     if queried:
@@ -140,53 +144,37 @@ def _render_no_fits_message(doctrine_id: int, queried: List[str], skipped: List[
     console.print(f"[yellow]{' '.join(parts)}[/yellow]")
 
 
-def get_available_doctrines(remote: bool = False) -> List[dict]:
+def get_available_doctrines() -> List[dict]:
     """Get list of available doctrines from fittings database."""
-    db = DatabaseConfig("fittings")
-    engine = db.remote_engine if remote else db.engine
-
-    doctrines = []
-    with engine.connect() as conn:
-        result = conn.execute(
-            text("SELECT id, name, description FROM fittings_doctrine ORDER BY name")
-        )
-        for row in result:
-            doctrines.append(
-                {
-                    "id": row[0],
-                    "name": row[1],
-                    "description": row[2] or "",
-                }
+    with _uow(auto_push=False) as uow:
+        with uow.read("fittings") as conn:
+            result = conn.execute(
+                text("SELECT id, name, description FROM fittings_doctrine ORDER BY name")
             )
+            return [
+                {"id": row[0], "name": row[1], "description": row[2] or ""}
+                for row in result
+            ]
 
-    engine.dispose()
-    return doctrines
 
-
-def get_market_doctrines(db_alias: str, remote: bool = False) -> List[dict]:
-    """Get doctrines assigned to a market from its doctrine_fits table.
-
-    unassign-market removes rows from doctrine_fits but leaves the fittings
-    database untouched, so this reflects current market membership.
-    """
-    db = DatabaseConfig(db_alias)
-    engine = db.remote_engine if remote else db.engine
-
-    with engine.connect() as conn:
-        result = conn.execute(
-            text("""
-            SELECT doctrine_id, MIN(TRIM(doctrine_name)) AS name, COUNT(DISTINCT fit_id)
-            FROM doctrine_fits
-            GROUP BY doctrine_id
-            ORDER BY name
-        """)
-        )
-        doctrines = [
-            {"id": row[0], "name": row[1] or "", "fit_count": row[2]}
-            for row in result
-        ]
-
-    return doctrines
+def get_market_doctrines(db_alias: str) -> List[dict]:
+    """Get doctrines assigned to a market from its ``doctrine_fits`` table."""
+    with _uow(auto_push=False) as uow:
+        with uow.read(db_alias) as conn:
+            result = conn.execute(
+                text(
+                    """
+                    SELECT doctrine_id, MIN(TRIM(doctrine_name)) AS name, COUNT(DISTINCT fit_id)
+                    FROM doctrine_fits
+                    GROUP BY doctrine_id
+                    ORDER BY name
+                    """
+                )
+            )
+            return [
+                {"id": row[0], "name": row[1] or "", "fit_count": row[2]}
+                for row in result
+            ]
 
 
 def eft_text_to_file(eft_text: str) -> str:
@@ -197,53 +185,46 @@ def eft_text_to_file(eft_text: str) -> str:
     return file_path
 
 
-def get_fits_list(db_alias: str, remote: bool = False) -> List[dict]:
-    """Get list of fits from doctrine_fits table."""
-    db = DatabaseConfig(db_alias)
-    engine = db.remote_engine if remote else db.engine
+def get_fits_list(db_alias: str) -> List[dict]:
+    """Get list of fits from ``doctrine_fits`` table."""
+    with _uow(auto_push=False) as uow:
+        with uow.read(db_alias) as conn:
+            try:
+                result = conn.execute(
+                    text(
+                        """
+                        SELECT fit_id, TRIM(fit_name), ship_name, TRIM(doctrine_name),
+                               target, market_flag, friendly_name
+                        FROM doctrine_fits
+                        ORDER BY ship_name, doctrine_name, fit_name
+                        """
+                    )
+                )
+                has_market_flag = True
+            except Exception:
+                result = conn.execute(
+                    text(
+                        """
+                        SELECT fit_id, fit_name, ship_name, doctrine_name, target
+                        FROM doctrine_fits
+                        ORDER BY doctrine_name, fit_name
+                        """
+                    )
+                )
+                has_market_flag = False
 
-    fits = []
-    with engine.connect() as conn:
-        # Check if market_flag column exists
-        try:
-            result = conn.execute(
-                text("""
-                SELECT fit_id, TRIM(fit_name), ship_name, TRIM(doctrine_name), target, market_flag, friendly_name
-                FROM doctrine_fits
-                ORDER BY ship_name, doctrine_name, fit_name
-            """)
-            )
-            has_market_flag = True
-        except Exception:
-            # Fallback query without market_flag/friendly_name
-            result = conn.execute(
-                text("""
-                SELECT fit_id, fit_name, ship_name, doctrine_name, target
-                FROM doctrine_fits
-                ORDER BY doctrine_name, fit_name
-            """)
-            )
-            has_market_flag = False
-
-        for row in result:
-            fits.append(
+            return [
                 {
                     "fit_id": row[0],
                     "fit_name": row[1],
                     "ship_name": row[2],
                     "doctrine_name": row[3],
                     "target": row[4],
-                    "market_flag": row[5]
-                    if has_market_flag and len(row) > 5
-                    else "primary",
-                    "friendly_name": row[6]
-                    if has_market_flag and len(row) > 6
-                    else None,
+                    "market_flag": row[5] if has_market_flag and len(row) > 5 else "primary",
+                    "friendly_name": row[6] if has_market_flag and len(row) > 6 else None,
                 }
-            )
-
-    engine.dispose()
-    return fits
+                for row in result
+            ]
 
 
 def display_fits_table(fits: List[dict]) -> None:
@@ -291,42 +272,55 @@ def display_doctrines_table(doctrines: List[dict]) -> None:
     table.add_column("ID", style="dim", justify="right", width=6)
     table.add_column("Name", style="white", min_width=30)
 
-    # Filter out deprecated doctrines (names starting with "zz")
-    active_doctrines = [
-        d for d in doctrines if not d["name"].lower().startswith("zz")]
-
+    active_doctrines = [d for d in doctrines if not d["name"].lower().startswith("zz")]
     for doctrine in active_doctrines:
-        table.add_row(
-            str(doctrine["id"]),
-            doctrine["name"],
-        )
+        table.add_row(str(doctrine["id"]), doctrine["name"])
 
     console.print(table)
 
 
+def _prompt_create_doctrine() -> tuple[Optional[int], Optional[str]]:
+    """Interactive prompt to create a new doctrine in ``fittings`` and push it."""
+    next_id = get_next_doctrine_id()
+    new_doctrine_id = IntPrompt.ask("[bold]New doctrine ID[/bold]", default=next_id)
+    new_doctrine_name = Prompt.ask("[bold]New doctrine name[/bold]")
+    if not new_doctrine_name:
+        console.print("[red]Error: Doctrine name is required[/red]")
+        return None, None
+    new_doctrine_desc = Prompt.ask("[bold]Description[/bold]", default="")
+
+    with _uow() as uow:
+        with uow.read("fittings") as fconn:
+            already_exists = doctrine_exists(new_doctrine_id, conn=fconn)
+        if not already_exists:
+            with uow.tx("fittings") as fconn:
+                success = create_doctrine(
+                    doctrine_id=new_doctrine_id,
+                    name=new_doctrine_name,
+                    description=new_doctrine_desc,
+                    conn=fconn,
+                )
+        else:
+            success = False
+
+    if success:
+        if uow.push_failed:
+            return None, None
+        console.print(f"[green]Created doctrine {new_doctrine_id}: {new_doctrine_name}[/green]")
+        return new_doctrine_id, new_doctrine_name
+
+    console.print(f"[yellow]Doctrine {new_doctrine_id} already exists, using it[/yellow]")
+    return new_doctrine_id, new_doctrine_name
+
+
 def interactive_add_fit(
-    fit_file: str = None,
-    eft_text: str = None,
-    remote: bool = False,
+    fit_file: Optional[str] = None,
+    eft_text: Optional[str] = None,
     dry_run: bool = False,
     target_alias: str = "wcmkt",
     market_flag: str = "primary",
 ) -> bool:
-    """
-    Interactively add a new fit with prompts for metadata.
-
-    Args:
-        fit_file: Path to EFT fit file (optional; None when using paste mode)
-        eft_text: Raw EFT text from paste mode (used when fit_file is None)
-        remote: Use remote database
-        dry_run: Preview without committing
-        target_alias: Target database alias
-        market_flag: Market assignment
-
-    Returns:
-        True if successful
-    """
-    # Parse the fit file or pasted text
+    """Interactively add a new fit with prompts for metadata."""
     try:
         if fit_file:
             parse_result = parse_eft_file(fit_file)
@@ -342,33 +336,28 @@ def interactive_add_fit(
         console.print(f"[red]Error parsing fit: {e}[/red]")
         return False
 
-    # Display parsed fit info
     console.print(
         Panel(
             f"[bold]Ship:[/bold] {parse_result.ship_name}\n"
             f"[bold]Fit Name:[/bold] {parse_result.fit_name}\n"
-            f"[bold]Items:[/bold] {len(parse_result.items)}\n"
-            f"[bold]Remote:[/bold] {remote}\n",
+            f"[bold]Items:[/bold] {len(parse_result.items)}\n",
             title="[bold cyan]Parsed Fit[/bold cyan]",
             border_style="blue",
         )
     )
 
     if parse_result.has_missing_types:
-        console.print(
-            "[yellow]Warning: Some items could not be resolved:[/yellow]")
+        console.print("[yellow]Warning: Some items could not be resolved:[/yellow]")
         for item in parse_result.missing_types[:5]:
             console.print(f"  • {item}", style="yellow")
         if not Confirm.ask("Continue anyway?"):
             return False
 
-    # Get fit description
     description = Prompt.ask(
         "[bold]Fit description[/bold]",
         default=f"{parse_result.fit_name} for {parse_result.ship_name}",
     )
 
-    # Show available doctrines and select
     console.print()
     console.print(
         Panel(
@@ -379,9 +368,8 @@ def interactive_add_fit(
         )
     )
 
-    doctrines = get_available_doctrines(remote=remote)
-    doctrine_ids = []
-    # Track doctrine names for lead_ship population (includes newly created)
+    doctrines = get_available_doctrines()
+    doctrine_ids: list[int] = []
     doctrine_name_map = {d["id"]: d["name"] for d in doctrines} if doctrines else {}
 
     if doctrines:
@@ -389,7 +377,6 @@ def interactive_add_fit(
         display_doctrines_table(doctrines)
         console.print()
 
-        # Ask if they want to use existing or create new
         action = Prompt.ask(
             "[bold]Choose action[/bold]",
             choices=["existing", "new", "skip"],
@@ -401,108 +388,41 @@ def interactive_add_fit(
                 "[bold]Enter doctrine ID(s)[/bold] (comma-separated for multiple)"
             )
             if doctrine_input:
-                doctrine_ids = [
-                    int(d.strip()) for d in doctrine_input.split(",") if d.strip()
-                ]
-                # Validate doctrine IDs exist
+                doctrine_ids = [int(d.strip()) for d in doctrine_input.split(",") if d.strip()]
                 existing_ids = {d["id"] for d in doctrines}
-                invalid_ids = [
-                    did for did in doctrine_ids if did not in existing_ids]
+                invalid_ids = [did for did in doctrine_ids if did not in existing_ids]
                 if invalid_ids:
-                    console.print(
-                        f"[yellow]Warning: Doctrine ID(s) {
-                            invalid_ids
-                        } not found[/yellow]"
-                    )
+                    console.print(f"[yellow]Warning: Doctrine ID(s) {invalid_ids} not found[/yellow]")
                     if not Confirm.ask("Continue with only valid IDs?"):
                         return False
-                    doctrine_ids = [
-                        did for did in doctrine_ids if did in existing_ids]
-
+                    doctrine_ids = [did for did in doctrine_ids if did in existing_ids]
         elif action == "new":
             console.print("\n[cyan]Creating a new doctrine:[/cyan]")
-            next_id = get_next_doctrine_id(remote=remote)
-            new_doctrine_id = IntPrompt.ask(
-                "[bold]New doctrine ID[/bold]", default=next_id
-            )
-            new_doctrine_name = Prompt.ask("[bold]New doctrine name[/bold]")
-            if not new_doctrine_name:
-                console.print("[red]Error: Doctrine name is required[/red]")
+            new_id, new_name = _prompt_create_doctrine()
+            if new_id is None:
                 return False
-            new_doctrine_desc = Prompt.ask(
-                "[bold]Description[/bold]", default="")
-
-            # Create the doctrine
-            success = create_doctrine(
-                doctrine_id=new_doctrine_id,
-                name=new_doctrine_name,
-                description=new_doctrine_desc,
-                remote=remote,
-            )
-            if success:
-                console.print(
-                    f"[green]Created doctrine {new_doctrine_id}: {
-                        new_doctrine_name
-                    }[/green]"
-                )
-                doctrine_ids = [new_doctrine_id]
-                doctrine_name_map[new_doctrine_id] = new_doctrine_name
-            else:
-                console.print(
-                    f"[yellow]Doctrine {
-                        new_doctrine_id
-                    } already exists, using it[/yellow]"
-                )
-                doctrine_ids = [new_doctrine_id]
-
-        else:  # skip
+            doctrine_ids = [new_id]
+            if new_name:
+                doctrine_name_map[new_id] = new_name
+        else:
             console.print("[yellow]Skipping doctrine assignment[/yellow]")
             if not Confirm.ask("Continue without doctrine assignment?"):
                 return False
-
     else:
         console.print("[yellow]No doctrines found in database[/yellow]")
         if Confirm.ask("Create a new doctrine now?"):
-            next_id = get_next_doctrine_id(remote=remote)
-            new_doctrine_id = IntPrompt.ask(
-                "[bold]New doctrine ID[/bold]", default=next_id
-            )
-            new_doctrine_name = Prompt.ask("[bold]New doctrine name[/bold]")
-            if not new_doctrine_name:
-                console.print("[red]Error: Doctrine name is required[/red]")
+            new_id, new_name = _prompt_create_doctrine()
+            if new_id is None:
                 return False
-            new_doctrine_desc = Prompt.ask(
-                "[bold]Description[/bold]", default="")
-
-            success = create_doctrine(
-                doctrine_id=new_doctrine_id,
-                name=new_doctrine_name,
-                description=new_doctrine_desc,
-                remote=remote,
-            )
-            if success:
-                console.print(
-                    f"[green]Created doctrine {new_doctrine_id}: {
-                        new_doctrine_name
-                    }[/green]"
-                )
-                doctrine_ids = [new_doctrine_id]
-                doctrine_name_map[new_doctrine_id] = new_doctrine_name
-            else:
-                console.print(f"[red]Failed to create doctrine[/red]")
-                return False
+            doctrine_ids = [new_id]
+            if new_name:
+                doctrine_name_map[new_id] = new_name
         else:
-            console.print(
-                "[yellow]Warning: Continuing without doctrine assignment[/yellow]"
-            )
+            console.print("[yellow]Warning: Continuing without doctrine assignment[/yellow]")
 
-    # Get target quantity
     target = IntPrompt.ask("[bold]Target quantity[/bold]", default=100)
-
-    # Get fit ID
     fit_id = IntPrompt.ask("[bold]Fit ID[/bold] (unique identifier)")
 
-    # Market assignment
     market_choices = ["primary", "deployment", "all"]
     market_flag = Prompt.ask(
         "[bold]Market assignment[/bold]",
@@ -510,7 +430,6 @@ def interactive_add_fit(
         default="all" if market_flag in ("both", "all") else (market_flag or "primary"),
     )
 
-    # Show summary
     console.print()
     console.print(
         Panel(
@@ -521,7 +440,6 @@ def interactive_add_fit(
             f"[bold]Doctrine(s):[/bold] {doctrine_ids or 'None'}\n"
             f"[bold]Target:[/bold] {target}\n"
             f"[bold]Market:[/bold] {market_flag}\n"
-            f"[bold]Remote:[/bold] {remote}\n"
             f"[bold]Database:[/bold] {target_alias}",
             title="[bold green]Fit Summary[/bold green]",
             border_style="green",
@@ -536,18 +454,15 @@ def interactive_add_fit(
         console.print("[yellow]Cancelled[/yellow]")
         return False
 
-    # Create temporary metadata file for the workflow
-    import json
-    import tempfile
-    import os
-
     metadata = {
         "fit_id": fit_id,
         "name": parse_result.fit_name,
         "description": description,
-        "doctrine_id": doctrine_ids
-        if len(doctrine_ids) > 1
-        else (doctrine_ids[0] if doctrine_ids else 1),
+        "doctrine_id": (
+            doctrine_ids
+            if len(doctrine_ids) > 1
+            else (doctrine_ids[0] if doctrine_ids else 1)
+        ),
         "target": target,
     }
 
@@ -555,69 +470,51 @@ def interactive_add_fit(
         json.dump(metadata, f)
         meta_path = f.name
 
-    # If paste mode, write EFT text to a temp file for the downstream pipeline
     eft_temp_path = None
     if not fit_file and eft_text:
-        eft_temp = tempfile.NamedTemporaryFile(
-            mode="w", suffix=".txt", delete=False
-        )
+        eft_temp = tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False)
         eft_temp.write(eft_text)
         eft_temp.close()
         eft_temp_path = eft_temp.name
         fit_file = eft_temp_path
 
-    touched_aliases: set = set()
     try:
-        # Determine which databases to update
         if market_flag in ("both", "all"):
             target_aliases = _configured_market_db_aliases()
         else:
             target_aliases = [target_alias]
 
-        for alias in target_aliases:
-            # Call the existing workflow for each target database
+        with _uow() as uow:
             update_fit_workflow(
                 fit_id=fit_id,
                 fit_file=fit_file,
                 fit_metadata_file=meta_path,
-                remote=remote,
                 clear_existing=True,
                 dry_run=False,
-                target_alias=alias,
-                touched_aliases=touched_aliases,
+                target_aliases=target_aliases,
+                uow=uow,
             )
 
-            # Set market flag on this database
-            update_fit_market_flag(
-                fit_id, market_flag, remote=remote, db_alias=alias
-            )
+            for alias in target_aliases:
+                with uow.tx(alias) as conn:
+                    update_fit_market_flag(conn, fit_id, market_flag, db_label=alias)
+                    for did in doctrine_ids:
+                        d_name = doctrine_name_map.get(did, "")
+                        inserted = upsert_lead_ship(
+                            conn,
+                            doctrine_id=did,
+                            doctrine_name=d_name,
+                            fit_id=fit_id,
+                            ship_type_id=parse_result.ship_type_id,
+                        )
+                        if inserted:
+                            console.print(
+                                f"[green]Set lead ship for doctrine {did}: "
+                                f"{parse_result.ship_name}[/green]"
+                            )
+                console.print(f"[green]Successfully added fit {fit_id} to {alias}[/green]")
 
-            console.print(
-                f"[green]Successfully added fit {fit_id} to {alias}[/green]"
-            )
-
-            # Populate lead_ship for each doctrine (first fit becomes default)
-            for did in doctrine_ids:
-                d_name = doctrine_name_map.get(did, "")
-                inserted = upsert_lead_ship(
-                    doctrine_id=did,
-                    doctrine_name=d_name,
-                    fit_id=fit_id,
-                    ship_type_id=parse_result.ship_type_id,
-                    remote=remote,
-                    db_alias=alias,
-                )
-                if inserted:
-                    console.print(
-                        f"[green]Set lead ship for doctrine {did}: "
-                        f"{parse_result.ship_name}[/green]"
-                    )
-
-        for touched_alias in sorted(touched_aliases):
-            if not push_or_log(touched_alias):
-                return False
-
-        return True
+        return uow.ok
 
     except Exception as e:
         console.print(f"[red]Error adding fit: {e}[/red]")
@@ -630,32 +527,33 @@ def interactive_add_fit(
             os.unlink(eft_temp_path)
 
 
+def _find_doctrine_fits_rows_with_fallback(
+    fit_id: int,
+    db_alias: str,
+    doctrine_id: Optional[int] = None,
+) -> List[dict]:
+    """Query ``doctrine_fits`` in ``db_alias``, falling back to other configured markets."""
+    rows = _get_doctrine_fits_rows(fit_id, db_alias, doctrine_id)
+    if rows:
+        return rows
+    for fallback in _configured_market_db_aliases():
+        if fallback == db_alias:
+            continue
+        rows = _get_doctrine_fits_rows(fit_id, fallback, doctrine_id)
+        if rows:
+            logger.info(f"Fit {fit_id} not in {db_alias}, found in {fallback}")
+            return rows
+    return []
+
+
 def assign_market_command(
     fit_id: int,
     market_flag: str,
-    remote: bool = False,
     db_alias: str = "wcmkt",
     doctrine_id: Optional[int] = None,
     skip_confirm: bool = False,
 ) -> dict:
-    """
-    Assign a market flag to a fit with preview and confirmation.
-
-    When doctrine_id is provided, only the specific doctrine_fits row is affected.
-    Without doctrine_id, ALL doctrine_fits rows for the fit are processed.
-
-    Args:
-        fit_id: The fit ID to assign
-        market_flag: Market to assign ('primary', 'deployment', or 'all')
-        remote: Use remote database
-        db_alias: Database alias
-        doctrine_id: Optionally target a specific doctrine row only
-        skip_confirm: Skip the confirmation prompt
-
-    Returns:
-        Dict with counts: {"updated": int, "skipped": int}
-        Empty dict on error or cancellation.
-    """
+    """Assign a market flag to a fit with preview and confirmation."""
     if market_flag not in ("primary", "deployment", "both", "all"):
         console.print(
             f"[red]Error: invalid market '{market_flag}'. "
@@ -664,38 +562,24 @@ def assign_market_command(
         return {}
 
     try:
-        rows = _get_doctrine_fits_rows(fit_id, db_alias, False, doctrine_id)
+        rows = _find_doctrine_fits_rows_with_fallback(fit_id, db_alias, doctrine_id)
         if not rows:
-            # Fit may live in the other market database — search all aliases
-            for fallback in _configured_market_db_aliases():
-                if fallback == db_alias:
-                    continue
-                rows = _get_doctrine_fits_rows(fit_id, fallback, False, doctrine_id)
-                if rows:
-                    logger.info(
-                        f"Fit {fit_id} not in {db_alias}, found in {fallback}"
-                    )
-                    break
-        if not rows:
-            console.print(f"[yellow]No doctrine_fits rows found for fit {fit_id}"
-                           + (f" in doctrine {doctrine_id}" if doctrine_id else "") + "[/yellow]")
+            console.print(
+                f"[yellow]No doctrine_fits rows found for fit {fit_id}"
+                + (f" in doctrine {doctrine_id}" if doctrine_id else "")
+                + "[/yellow]"
+            )
             return {}
 
-        # Plan phase — check remote flags when remote=True
-        plans = []
-        for row in rows:
-            rf = _get_remote_market_flags(row["fit_id"], row["doctrine_id"]) if remote else None
-            plans.append(_plan_market_action(row, market_flag, mode="assign", remote_flags=rf))
+        plans = [_plan_market_action(row, market_flag, mode="assign") for row in rows]
 
-        # Preview and confirm
         if not skip_confirm:
             _display_market_preview(plans, market_flag, mode="assign")
             if not Confirm.ask("[bold]Proceed with these changes?[/bold]"):
                 console.print("[yellow]Cancelled[/yellow]")
                 return {}
 
-        # Execute
-        return _execute_market_plan(plans, remote, db_alias)
+        return _execute_market_plan(plans, db_alias=db_alias)
 
     except Exception as e:
         console.print(f"[red]Error in assign-market: {e}[/red]")
@@ -706,18 +590,9 @@ def assign_market_command(
 def assign_doctrine_market(
     doctrine_id: int,
     market_flag: str,
-    remote: bool = False,
     db_alias: str = "wcmkt",
 ) -> bool:
-    """
-    Assign a market flag to all fits in a doctrine.
-
-    Args:
-        doctrine_id: The doctrine to assign
-        market_flag: Market to assign ('primary', 'deployment', or 'all')
-        remote: Use remote database
-        db_alias: Database alias
-    """
+    """Assign a market flag to all fits in a doctrine."""
     if market_flag not in ("primary", "deployment", "both", "all"):
         console.print(
             f"[red]Error: invalid market '{market_flag}'. "
@@ -725,44 +600,28 @@ def assign_doctrine_market(
         )
         return False
 
-    # Discover fits across every configured market, not just the destination,
-    # so assign works when the doctrine exists only in a non-target DB.
-    fit_ids, queried_aliases, skipped = _discover_fits_across_markets(doctrine_id, remote)
+    fit_ids, queried_aliases, skipped = _discover_fits_across_markets(doctrine_id)
     if not fit_ids:
         _render_no_fits_message(doctrine_id, queried_aliases, skipped)
         return False
 
-    # Get doctrine name for display
-    all_doctrines = get_available_doctrines(remote=remote)
+    all_doctrines = get_available_doctrines()
     doctrine_name = next(
         (d["name"] for d in all_doctrines if d["id"] == doctrine_id),
         f"ID {doctrine_id}",
     )
 
-    # Gather all rows and build the full plan
     all_plans = []
     for fid in fit_ids:
-        rows = _get_doctrine_fits_rows(fid, db_alias, False, doctrine_id)
-        if not rows:
-            for fallback in _configured_market_db_aliases():
-                if fallback == db_alias:
-                    continue
-                rows = _get_doctrine_fits_rows(fid, fallback, False, doctrine_id)
-                if rows:
-                    logger.info(f"Fit {fid} not in {db_alias}, found in {fallback}")
-                    break
-        for row in rows:
-            rf = _get_remote_market_flags(row["fit_id"], row["doctrine_id"]) if remote else None
-            all_plans.append(_plan_market_action(row, market_flag, mode="assign", remote_flags=rf))
+        for row in _find_doctrine_fits_rows_with_fallback(fid, db_alias, doctrine_id):
+            all_plans.append(_plan_market_action(row, market_flag, mode="assign"))
 
     if not all_plans:
         console.print(f"[yellow]No doctrine_fits rows found for doctrine {doctrine_id}[/yellow]")
         return False
 
-    # Preview table showing every fit and its planned action
     _display_market_preview(all_plans, market_flag, mode="assign", doctrine_name=doctrine_name)
 
-    # Confirmation
     prompt_msg = (
         f"[bold]Assign doctrine '{escape(doctrine_name)}' to "
         f"'{market_flag}' market?[/bold]"
@@ -772,9 +631,7 @@ def assign_doctrine_market(
         return False
 
     console.print()
-
-    # Execute — skip per-fit confirmation since we just confirmed the whole batch
-    result = _execute_market_plan(all_plans, remote, db_alias)
+    result = _execute_market_plan(all_plans, db_alias=db_alias)
 
     summary = (
         f"\n[bold]Summary:[/bold] {result['updated']} updated, "
@@ -792,12 +649,11 @@ def assign_doctrine_market(
 
 
 def _flag_to_aliases(flag: str) -> set[str]:
-    """Return the set of explicit database aliases a market_flag implies.
+    """Return the set of explicit database aliases a ``market_flag`` implies.
 
-    Config-driven (aliases resolved from settings.toml, not hard-coded). market3
-    is shimmed to primary — a fit stocked in ``primary`` is also stocked in
-    market3 — so the ``primary`` set includes market3's alias. ``both`` (legacy)
-    and ``all`` both cover every configured market.
+    ``market3`` is shimmed to ``primary`` — a fit stocked in ``primary`` is also
+    stocked in ``market3``. ``both`` (legacy) and ``all`` cover every configured
+    market.
     """
     available = set(MarketContext.list_available())
 
@@ -810,7 +666,7 @@ def _flag_to_aliases(flag: str) -> set[str]:
     all_markets = set(_configured_market_db_aliases())
 
     flag_map: dict[str, set[str]] = {
-        "primary": {a for a in (primary, market3) if a},  # shim: market3 mirrors primary
+        "primary": {a for a in (primary, market3) if a},
         "deployment": {a for a in (deployment,) if a},
         "market3": {a for a in (market3,) if a},
         "both": all_markets,
@@ -821,139 +677,93 @@ def _flag_to_aliases(flag: str) -> set[str]:
     return flag_map.get(flag, set())
 
 
-def _needs_provisioning(
-    fit_id: int,
-    db_alias: str,
-    remote: bool = False,
-    engine=None,
-    conn=None,
-    doctrine_id: int | None = None,
-) -> bool:
-    """Return True if a fit is missing doctrine_fits, doctrines, ship_targets, or lead_ships rows.
-
-    ``doctrine_id`` is required to evaluate the lead_ships check (lead_ships
-    is keyed on doctrine_id, not fit_id). If ``doctrine_id`` is None, the
-    lead_ships check is skipped and this function cannot detect a missing
-    lead_ships row. All in-tree callers in fit_update.py pass doctrine_id.
-    """
-    def _check(c) -> bool:
-        if doctrine_id is not None:
-            df = c.execute(
-                text(
-                    "SELECT 1 FROM doctrine_fits "
-                    "WHERE fit_id = :fit_id AND doctrine_id = :doctrine_id"
-                ),
-                {"fit_id": fit_id, "doctrine_id": doctrine_id},
-            ).fetchone()
-        else:
-            df = c.execute(
-                text("SELECT 1 FROM doctrine_fits WHERE fit_id = :fit_id"),
-                {"fit_id": fit_id},
-            ).fetchone()
-        doc_count = c.execute(
-            text("SELECT COUNT(*) FROM doctrines WHERE fit_id = :fit_id"),
-            {"fit_id": fit_id},
-        ).fetchone()[0]
-        st = c.execute(
-            text("SELECT 1 FROM ship_targets WHERE fit_id = :fit_id"),
+def _needs_provisioning(conn, fit_id: int, doctrine_id: int | None = None) -> bool:
+    """Return True if a fit is missing doctrine_fits, doctrines, ship_targets, or lead_ships rows."""
+    if doctrine_id is not None:
+        df = conn.execute(
+            text(
+                "SELECT 1 FROM doctrine_fits "
+                "WHERE fit_id = :fit_id AND doctrine_id = :doctrine_id"
+            ),
+            {"fit_id": fit_id, "doctrine_id": doctrine_id},
+        ).fetchone()
+    else:
+        df = conn.execute(
+            text("SELECT 1 FROM doctrine_fits WHERE fit_id = :fit_id"),
             {"fit_id": fit_id},
         ).fetchone()
-        ls_missing = False
-        if doctrine_id is not None:
-            ls = c.execute(
-                text("SELECT 1 FROM lead_ships WHERE doctrine_id = :doctrine_id"),
-                {"doctrine_id": doctrine_id},
-            ).fetchone()
-            ls_missing = ls is None
-        return df is None or doc_count == 0 or st is None or ls_missing
-
-    if conn is not None:
-        return _check(conn)
-    _engine = engine if engine is not None else (
-        DatabaseConfig(db_alias).remote_engine if remote else DatabaseConfig(db_alias).engine
-    )
-    try:
-        with _engine.connect() as c:
-            return _check(c)
-    finally:
-        if engine is None:
-            _engine.dispose()
+    doc_count = conn.execute(
+        text("SELECT COUNT(*) FROM doctrines WHERE fit_id = :fit_id"),
+        {"fit_id": fit_id},
+    ).fetchone()[0]
+    st = conn.execute(
+        text("SELECT 1 FROM ship_targets WHERE fit_id = :fit_id"),
+        {"fit_id": fit_id},
+    ).fetchone()
+    ls_missing = False
+    if doctrine_id is not None:
+        ls = conn.execute(
+            text("SELECT 1 FROM lead_ships WHERE doctrine_id = :doctrine_id"),
+            {"doctrine_id": doctrine_id},
+        ).fetchone()
+        ls_missing = ls is None
+    return df is None or doc_count == 0 or st is None or ls_missing
 
 
-def _check_fit_orphaned(
-    fit_id: int,
-    db_alias: str = "wcmkt",
-    remote: bool = False,
-    engine=None,
-    conn=None,
-) -> bool:
-    """Return True if fit_id has no remaining doctrine_fits rows."""
-    def _do(c):
-        return c.execute(
+def _check_fit_orphaned(conn, fit_id: int) -> bool:
+    """Return True if ``fit_id`` has no remaining ``doctrine_fits`` rows."""
+    return (
+        conn.execute(
             text("SELECT COUNT(*) FROM doctrine_fits WHERE fit_id = :fit_id"),
             {"fit_id": fit_id},
-        ).fetchone()[0] == 0
-
-    if conn is not None:
-        return _do(conn)
-    _engine = engine if engine is not None else (
-        DatabaseConfig(db_alias).remote_engine if remote else DatabaseConfig(db_alias).engine
+        ).fetchone()[0]
+        == 0
     )
-    try:
-        with _engine.connect() as c:
-            return _do(c)
-    finally:
-        if engine is None:
-            _engine.dispose()
 
 
 def _get_doctrine_fits_rows(
     fit_id: int,
     db_alias: str = "wcmkt",
-    remote: bool = False,
     doctrine_id: Optional[int] = None,
 ) -> List[dict]:
-    """Get doctrine_fits rows for a fit, optionally filtered by doctrine_id."""
-    db = DatabaseConfig(db_alias)
-    engine = db.remote_engine if remote else db.engine
-    with engine.connect() as conn:
-        if doctrine_id is not None:
-            result = conn.execute(
-                text(
-                    "SELECT doctrine_id, fit_id, market_flag, doctrine_name, "
-                    "fit_name, ship_name, ship_type_id, target "
-                    "FROM doctrine_fits WHERE fit_id = :fit_id AND doctrine_id = :doctrine_id"
-                ),
-                {"fit_id": fit_id, "doctrine_id": doctrine_id},
-            ).fetchall()
-        else:
-            result = conn.execute(
-                text(
-                    "SELECT doctrine_id, fit_id, market_flag, doctrine_name, "
-                    "fit_name, ship_name, ship_type_id, target "
-                    "FROM doctrine_fits WHERE fit_id = :fit_id"
-                ),
-                {"fit_id": fit_id},
-            ).fetchall()
-    engine.dispose()
+    """Get ``doctrine_fits`` rows for a fit, optionally filtered by ``doctrine_id``."""
+    with _uow(auto_push=False) as uow:
+        with uow.read(db_alias) as conn:
+            if doctrine_id is not None:
+                result = conn.execute(
+                    text(
+                        "SELECT doctrine_id, fit_id, market_flag, doctrine_name, "
+                        "fit_name, ship_name, ship_type_id, target "
+                        "FROM doctrine_fits WHERE fit_id = :fit_id AND doctrine_id = :doctrine_id"
+                    ),
+                    {"fit_id": fit_id, "doctrine_id": doctrine_id},
+                ).fetchall()
+            else:
+                result = conn.execute(
+                    text(
+                        "SELECT doctrine_id, fit_id, market_flag, doctrine_name, "
+                        "fit_name, ship_name, ship_type_id, target "
+                        "FROM doctrine_fits WHERE fit_id = :fit_id"
+                    ),
+                    {"fit_id": fit_id},
+                ).fetchall()
     return [
         {
-            "doctrine_id": r[0], "fit_id": r[1], "market_flag": r[2],
-            "doctrine_name": r[3], "fit_name": r[4], "ship_name": r[5],
-            "ship_type_id": r[6], "target": r[7],
+            "doctrine_id": r[0],
+            "fit_id": r[1],
+            "market_flag": r[2],
+            "doctrine_name": r[3],
+            "fit_name": r[4],
+            "ship_name": r[5],
+            "ship_type_id": r[6],
+            "target": r[7],
         }
         for r in result
     ]
 
 
 def find_tracked_fit(fit_id: int) -> tuple[List[str], Optional[dict]]:
-    """Find the markets that track ``fit_id`` and the metadata they store.
-
-    Returns ``(db_aliases, metadata)``: the database alias of every configured
-    market whose ``doctrine_fits`` has the fit, and ``FitMetadata`` fields
-    built from the first of those markets. ``metadata`` is ``None`` when no
-    market tracks the fit.
-    """
+    """Find the markets that track ``fit_id`` and the metadata they store."""
     db_aliases: List[str] = []
     rows: List[dict] = []
     for alias in _configured_market_db_aliases():
@@ -975,89 +785,25 @@ def find_tracked_fit(fit_id: int) -> tuple[List[str], Optional[dict]]:
     }
 
 
-def _get_remote_market_flags(
-    fit_id: int,
-    doctrine_id: int,
-) -> List[str]:
-    """Fetch market_flag for a (fit_id, doctrine_id) from all configured remote markets.
-
-    Returns a list of flag values found (one per market that has the fit).
-    """
-    flags = []
-    for target in _configured_market_db_aliases():
-        try:
-            db = DatabaseConfig(target)
-            engine = db.remote_engine
-            with engine.connect() as conn:
-                result = conn.execute(
-                    text(
-                        "SELECT market_flag FROM doctrine_fits "
-                        "WHERE fit_id = :fit_id AND doctrine_id = :doctrine_id"
-                    ),
-                    {"fit_id": fit_id, "doctrine_id": doctrine_id},
-                ).fetchone()
-            engine.dispose()
-            if result:
-                flags.append(result[0])
-        except Exception:
-            pass  # remote unavailable — will be handled at execute time
-    return flags
-
-
-def _cleanup_orphaned_fit(fit_id: int, db_alias: str, remote: bool, engine=None) -> None:
-    """Remove doctrines and ship_targets rows for a fit that has no remaining doctrine_fits."""
-    removed = remove_doctrines_for_fit(fit_id, remote=remote, db_alias=db_alias, engine=engine)
-    if removed:
-        console.print(f"  [dim]Cleaned up {removed} orphaned doctrines rows for fit {fit_id}[/dim]")
-    remove_ship_target(fit_id, remote=remote, db_alias=db_alias, engine=engine)
-    console.print(f"  [dim]Cleaned up ship_targets for fit {fit_id}[/dim]")
-
-
 def _plan_market_action(
     row: dict,
     target_market: str,
     mode: str = "unassign",
-    remote_flags: Optional[List[str]] = None,
 ) -> dict:
-    """Compute the planned action for a single doctrine_fits row.
-
-    Works for both assign and unassign operations.
-
-    Args:
-        row: doctrine_fits row dict
-        target_market: 'primary', 'deployment', or 'all'
-        mode: "assign" or "unassign"
-        remote_flags: market_flag values from remote databases (assign only).
-            When provided, a row is only skipped if local AND all remotes
-            already match the target.
-
-    Returns a dict with the original row data plus:
-        action: "update", "remove", or "skip"
-        new_flag: the resulting market_flag
-        reason: human-readable explanation
-    """
+    """Compute the planned action for a single ``doctrine_fits`` row."""
     current_flag = row["market_flag"]
     plan = {**row}
 
     if mode == "assign":
-        all_flags = [current_flag] + (remote_flags or [])
-        all_match = all(f == target_market for f in all_flags)
-        if all_match:
+        if current_flag == target_market:
             plan["action"] = "skip"
             plan["new_flag"] = current_flag
             plan["reason"] = f"Already '{current_flag}'"
         else:
-            mismatched = [f for f in all_flags if f != target_market]
             plan["action"] = "update"
             plan["new_flag"] = target_market
             plan["reason"] = f"Change '{current_flag}' → '{target_market}'"
-            if remote_flags and current_flag == target_market:
-                plan["reason"] = (
-                    f"Local '{current_flag}' OK, "
-                    f"remote {'/' .join(mismatched)} → '{target_market}'"
-                )
     else:
-        # unassign logic (unchanged)
         if target_market in ("both", "all"):
             plan["action"] = "remove"
             plan["new_flag"] = None
@@ -1114,8 +860,7 @@ def _display_market_preview(
 
     console.print(table)
 
-    # Summary line
-    counts = {}
+    counts: dict[str, int] = {}
     for p in plans:
         counts[p["action"]] = counts.get(p["action"], 0) + 1
     parts = []
@@ -1128,44 +873,39 @@ def _display_market_preview(
     console.print(f"  Planned: {', '.join(parts)}\n")
 
 
-def _prepare_watchlist_for_fit(p: dict, alias: str, remote: bool) -> None:
-    """Ensure all component type_ids for a fit are present in the market DB's watchlist.
-
-    Runs outside the provisioning transaction because it touches a separate
-    table on the same DB and is idempotent — keeping it standalone avoids
-    lock contention with the caller's engine.begin() block.
-    """
-    fittings_db = DatabaseConfig("fittings")
-    fittings_engine = fittings_db.engine
-    try:
-        with fittings_engine.connect() as conn:
-            item_rows = conn.execute(
-                text("SELECT DISTINCT type_id FROM fittings_fittingitem WHERE fit_id = :fit_id"),
-                {"fit_id": p["fit_id"]},
-            ).fetchall()
-    finally:
-        fittings_engine.dispose()
+def _prepare_watchlist_for_fit(
+    p: dict,
+    alias: str,
+    *,
+    conn=None,
+    fittings_conn=None,
+) -> None:
+    """Ensure all component type_ids for a fit are present in ``alias``'s watchlist."""
+    if fittings_conn is not None:
+        item_rows = fittings_conn.execute(
+            text("SELECT DISTINCT type_id FROM fittings_fittingitem WHERE fit_id = :fit_id"),
+            {"fit_id": p["fit_id"]},
+        ).fetchall()
+    else:
+        with _uow(auto_push=False) as uow:
+            with uow.read("fittings") as fconn:
+                item_rows = fconn.execute(
+                    text("SELECT DISTINCT type_id FROM fittings_fittingitem WHERE fit_id = :fit_id"),
+                    {"fit_id": p["fit_id"]},
+                ).fetchall()
     component_ids = [r.type_id for r in item_rows]
     component_ids.append(p["ship_type_id"])
-    add_missing_items_to_watchlist(component_ids, remote=remote, db_alias=alias)
+    add_missing_items_to_watchlist(component_ids, db_alias=alias, conn=conn)
 
 
 def _provision_fit_in_market(
     conn,
     p: dict,
     market_flag: str,
+    *,
+    fittings_conn=None,
 ) -> bool:
-    """Write every per-fit-per-market row inside the caller's transaction.
-
-    Upserts doctrine_fits / doctrine_map / ship_targets, rebuilds the
-    ``doctrines`` rows for this fit, and inserts a ``lead_ships`` row only
-    when none exists for the doctrine — so the first fit added "adopts" a
-    doctrine but an explicit user pick via ``update-lead-ship`` is never
-    overwritten.
-
-    Caller owns the transaction (commit happens on ``with engine.begin()``
-    exit). Returns True when a new lead_ship row was inserted.
-    """
+    """Write every per-fit-per-market row inside the caller's transaction."""
     doctrine_fit = DoctrineFit.from_resolved(
         doctrine_id=p["doctrine_id"],
         fit_id=p["fit_id"],
@@ -1175,75 +915,48 @@ def _provision_fit_in_market(
         ship_type_id=p["ship_type_id"],
         ship_name=p["ship_name"],
     )
-    upsert_doctrine_fits(doctrine_fit, market_flag=market_flag, conn=conn)
-    upsert_doctrine_map(p["doctrine_id"], p["fit_id"], conn=conn)
+    upsert_doctrine_fits(conn, doctrine_fit, market_flag=market_flag)
+    upsert_doctrine_map(conn, p["doctrine_id"], p["fit_id"])
     upsert_ship_target(
-        p["fit_id"], p["fit_name"], p["ship_type_id"], p["ship_name"],
-        p["target"], conn=conn,
+        conn,
+        p["fit_id"],
+        p["fit_name"],
+        p["ship_type_id"],
+        p["ship_name"],
+        p["target"],
     )
-    refresh_doctrines_for_fit(p["fit_id"], p["ship_type_id"], p["ship_name"], conn=conn)
+    refresh_doctrines_for_fit(
+        conn,
+        p["fit_id"],
+        p["ship_type_id"],
+        p["ship_name"],
+        fittings_conn=fittings_conn,
+    )
     return upsert_lead_ship(
+        conn,
         doctrine_id=p["doctrine_id"],
         doctrine_name=p["doctrine_name"],
         fit_id=p["fit_id"],
         ship_type_id=p["ship_type_id"],
-        conn=conn,
     )
 
 
-def _provision_market_db(
-    p: dict,
-    alias: str,
-    new_flag: str,
-    remote: bool,
-) -> None:
-    """Legacy entry point: provision a single fit using its own engine + transaction.
-
-    Kept so callers that do one-off provisioning (without bucketing) still
-    work. Bulk callers should use ``_provision_fit_in_market`` directly
-    inside a shared ``engine.begin()`` block.
-    """
-    _prepare_watchlist_for_fit(p, alias, remote)
-    db = DatabaseConfig(alias)
-    engine = db.remote_engine if remote else db.engine
-    try:
-        with engine.begin() as conn:
-            _provision_fit_in_market(conn=conn, p=p, market_flag=new_flag)
-    finally:
-        engine.dispose()
-
-
-def _cleanup_fit_in_market(
-    conn,
-    fit_id: int,
-    doctrine_id: int,
-) -> None:
-    """Remove doctrine_fits / doctrine_map for a fit inside a caller's transaction;
-    if the fit is now orphaned, also strip its doctrines + ship_targets rows.
-    """
-    remove_doctrine_fits(doctrine_id, fit_id, conn=conn)
-    remove_doctrine_map(doctrine_id, fit_id, conn=conn)
-    orphan_check = conn.execute(
-        text("SELECT COUNT(*) FROM doctrine_fits WHERE fit_id = :fit_id"),
-        {"fit_id": fit_id},
-    ).fetchone()
-    if orphan_check and orphan_check[0] == 0:
-        removed = remove_doctrines_for_fit(fit_id, conn=conn)
+def _cleanup_fit_in_market(conn, fit_id: int, doctrine_id: int) -> None:
+    """Remove doctrine_fits / doctrine_map for a fit; strip doctrines + ship_targets if orphaned."""
+    remove_doctrine_fits(conn, doctrine_id, fit_id)
+    remove_doctrine_map(conn, doctrine_id, fit_id)
+    if _check_fit_orphaned(conn, fit_id):
+        removed = remove_doctrines_for_fit(conn, fit_id)
         if removed:
-            console.print(f"  [dim]Cleaned up {removed} orphaned doctrines rows for fit {fit_id}[/dim]")
-        remove_ship_target(fit_id, conn=conn)
+            console.print(
+                f"  [dim]Cleaned up {removed} orphaned doctrines rows for fit {fit_id}[/dim]"
+            )
+        remove_ship_target(conn, fit_id)
         console.print(f"  [dim]Cleaned up ship_targets for fit {fit_id}[/dim]")
 
 
 def _report_lead_ship(adopted: bool, fit_id: int, doctrine_id: int) -> None:
-    """Emit a user-visible message describing lead_ships outcome.
-
-    ``adopted=True`` means a new lead_ships row was inserted for the doctrine;
-    ``adopted=False`` means an existing row was preserved (e.g. set by a prior
-    ``update-lead-ship`` call) and this provisioning did not override it. Users
-    running ``doctrine-add-fit`` against a doctrine with an explicit lead ship
-    need this signal to understand why their new fit did not become lead.
-    """
+    """Emit a user-visible message describing ``lead_ships`` outcome."""
     if adopted:
         console.print(
             f"  [green]Adopted[/green] fit {fit_id} as lead ship for doctrine {doctrine_id}"
@@ -1255,32 +968,24 @@ def _report_lead_ship(adopted: bool, fit_id: int, doctrine_id: int) -> None:
 
 
 def _apply_step(conn, step_type: str, p: dict, arg, alias: str = "") -> bool:
-    """Apply one provisioning step within a caller-owned transaction.
-
-    ``alias`` is the canonical DB alias this transaction targets; forwarded to
-    helpers that use it solely for log attribution. Defaults to "" for callers
-    that cannot yet thread it — those will see the helper's own default log.
-
-    Returns True when the step did meaningful work (used to decide whether a
-    heal plan counted as "updated" vs "skipped").
-    """
+    """Apply one provisioning step within a caller-owned transaction."""
     fit_id = p["fit_id"]
     doctrine_id = p["doctrine_id"]
 
     if step_type == "update_and_heal":
         new_flag = arg
         update_fit_market_flag(
-            fit_id, new_flag, doctrine_id=doctrine_id, db_alias=alias, conn=conn,
+            conn, fit_id, new_flag, doctrine_id=doctrine_id, db_label=alias
         )
-        if _needs_provisioning(fit_id, "", conn=conn, doctrine_id=doctrine_id):
-            adopted = _provision_fit_in_market(conn=conn, p=p, market_flag=new_flag)
+        if _needs_provisioning(conn, fit_id, doctrine_id=doctrine_id):
+            adopted = _provision_fit_in_market(conn, p, market_flag=new_flag)
             console.print(f"  [green]Provisioned[/green] missing data for fit {fit_id}")
             _report_lead_ship(adopted, fit_id, doctrine_id)
             return True
         return False
 
     if step_type == "provision":
-        adopted = _provision_fit_in_market(conn=conn, p=p, market_flag=arg)
+        adopted = _provision_fit_in_market(conn, p, market_flag=arg)
         _report_lead_ship(adopted, fit_id, doctrine_id)
         return True
 
@@ -1290,34 +995,27 @@ def _apply_step(conn, step_type: str, p: dict, arg, alias: str = "") -> bool:
 
     if step_type == "heal_if_needed":
         new_flag = arg
-        if _needs_provisioning(fit_id, "", conn=conn, doctrine_id=doctrine_id):
-            adopted = _provision_fit_in_market(conn=conn, p=p, market_flag=new_flag)
+        if _needs_provisioning(conn, fit_id, doctrine_id=doctrine_id):
+            adopted = _provision_fit_in_market(conn, p, market_flag=new_flag)
             console.print(f"  [green]Provisioned[/green] missing data for fit {fit_id}")
             _report_lead_ship(adopted, fit_id, doctrine_id)
             return True
         return False
 
     if step_type == "remove_row":
-        remove_doctrine_fits(doctrine_id, fit_id, conn=conn)
-        remove_doctrine_map(doctrine_id, fit_id, conn=conn)
+        remove_doctrine_fits(conn, doctrine_id, fit_id)
+        remove_doctrine_map(conn, doctrine_id, fit_id)
         return True
 
     raise ValueError(f"Unknown step type: {step_type}")
 
 
-def _execute_market_plan(
-    plans: List[dict],
-    remote: bool,
-    db_alias: str,
-) -> dict:
+def _execute_market_plan(plans: List[dict], db_alias: str = "wcmkt") -> dict:
     """Execute a list of planned assign / unassign / heal actions.
 
-    Groups every write by (is_remote, alias) so each database is touched from
-    exactly one engine and inside exactly one transaction per command
-    invocation. For an N-fit doctrine this produces at most
-    ``2 × len(configured markets)`` engines instead of one per helper call.
-
-    Returns aggregate counts: ``{"updated": int, "deleted": int, "skipped": int}``.
+    Groups every write by market DB alias so each replica is opened once,
+    written inside one transaction per phase via :class:`ReplicaUnitOfWork`,
+    and pushed once at exit (skipping any alias whose transaction rolled back).
     """
     configured_aliases = _configured_market_db_aliases()
     if not configured_aliases:
@@ -1328,229 +1026,149 @@ def _execute_market_plan(
         logger.error("_execute_market_plan aborted: _configured_market_db_aliases() returned []")
         return {"updated": 0, "deleted": 0, "skipped": len(plans), "step_failures": 0}
 
-    # Canonicalize the caller's db_alias so "remove" buckets key on the same
-    # alias that "update" buckets derive from _flag_to_aliases. Without this,
-    # `db_alias="wcmkt"` and `alias="wcmktprod"` would open two engines against
-    # the same physical DB and defeat the batching.
-    canonical_db_alias = DatabaseConfig(db_alias).alias
-
-    buckets: dict[tuple[bool, str], list] = defaultdict(list)
+    buckets: dict[str, list] = defaultdict(list)
     counters = {"updated": 0, "deleted": 0, "skipped": 0, "step_failures": 0}
     deleted_fit_ids: set[int] = set()
     heal_worked: dict[int, bool] = {}
     plan_by_fit: dict[int, dict] = {}
-    # Aliases actually written (Phase 3 and/or Phase 4) and aliases whose
-    # bucket raised and rolled back. Populated across both write phases below;
-    # pushed once, after both phases, at the bottom of this function.
-    touched: set[str] = set()
-    failed: set[str] = set()
 
-    # Phase 1: bucket every action by (is_remote, alias)
-    for p in plans:
-        fit_id = p["fit_id"]
-        doc_id = p["doctrine_id"]
-        plan_by_fit[fit_id] = p
-        action = p["action"]
+    with _uow() as uow:
+        canonical_db_alias = uow.db(db_alias).alias
 
-        if action == "update":
-            old_aliases = _flag_to_aliases(p["market_flag"])
-            new_aliases = _flag_to_aliases(p["new_flag"])
-            new_flag = p["new_flag"]
+        # Phase 1: bucket every action by target alias
+        for p in plans:
+            fit_id = p["fit_id"]
+            doc_id = p["doctrine_id"]
+            plan_by_fit[fit_id] = p
+            action = p["action"]
 
-            for alias in old_aliases & new_aliases:
-                buckets[(False, alias)].append(("update_and_heal", p, new_flag))
-            for alias in new_aliases - old_aliases:
-                buckets[(False, alias)].append(("provision", p, new_flag))
-            for alias in old_aliases - new_aliases:
-                buckets[(False, alias)].append(("cleanup", p, None))
+            if action == "update":
+                old_aliases = _flag_to_aliases(p["market_flag"])
+                new_aliases = _flag_to_aliases(p["new_flag"])
+                new_flag = p["new_flag"]
 
-            if remote:
-                for alias in configured_aliases:
-                    if alias in new_aliases:
-                        buckets[(True, alias)].append(("update_and_heal", p, new_flag))
-                    else:
-                        buckets[(True, alias)].append(("cleanup", p, None))
+                for alias in old_aliases & new_aliases:
+                    buckets[alias].append(("update_and_heal", p, new_flag))
+                for alias in new_aliases - old_aliases:
+                    buckets[alias].append(("provision", p, new_flag))
+                for alias in old_aliases - new_aliases:
+                    buckets[alias].append(("cleanup", p, None))
 
-            counters["updated"] += 1
-            console.print(
-                f"  [green]Planned update[/green] fit {fit_id}: "
-                f"market_flag '{p['market_flag']}' -> '{new_flag}'"
-            )
-
-        elif action == "remove":
-            buckets[(False, canonical_db_alias)].append(("remove_row", p, None))
-            if remote:
-                for alias in configured_aliases:
-                    buckets[(True, alias)].append(("remove_row", p, None))
-            deleted_fit_ids.add(fit_id)
-            counters["deleted"] += 1
-            console.print(
-                f"  [red]Planned remove[/red] fit {fit_id} from doctrine {doc_id} "
-                f"({p.get('doctrine_name', '?')})"
-            )
-
-        else:  # heal
-            heal_worked[id(p)] = False
-            target_aliases = _flag_to_aliases(p["new_flag"])
-            non_target = set(configured_aliases) - target_aliases
-            for alias in target_aliases:
-                buckets[(False, alias)].append(("heal_if_needed", p, p["new_flag"]))
-            if remote:
-                for alias in target_aliases:
-                    buckets[(True, alias)].append(("update_and_heal", p, p["new_flag"]))
-                for alias in non_target:
-                    buckets[(True, alias)].append(("cleanup", p, None))
-
-    # Phase 2: prepare watchlists (outside transactions, idempotent).
-    # Per-(fit, alias) error handling so one unreachable remote does not abort
-    # the entire plan — the remainder of Phase 3/4 for other buckets still runs.
-    watchlist_needs: set[tuple[int, str, bool]] = set()
-    for (is_remote, alias), steps in buckets.items():
-        for step_type, p, _ in steps:
-            if step_type in ("provision", "heal_if_needed", "update_and_heal"):
-                watchlist_needs.add((p["fit_id"], alias, is_remote))
-    for fit_id_w, alias_w, remote_w in watchlist_needs:
-        w_loc = f"{alias_w} ({'remote' if remote_w else 'local'})"
-        try:
-            _prepare_watchlist_for_fit(plan_by_fit[fit_id_w], alias_w, remote_w)
-        except (OperationalError, DatabaseError, ConnectionError, TimeoutError) as e:
-            console.print(
-                f"[yellow]Watchlist prep skipped for fit {fit_id_w} on {w_loc}: {e}[/yellow]"
-            )
-        except Exception as e:
-            console.print(
-                f"[red]Watchlist prep failed for fit {fit_id_w} on {w_loc}: {e}[/red]"
-            )
-            logger.exception("Unexpected error preparing watchlist for fit %s on %s", fit_id_w, w_loc)
-
-    # Phase 3: execute each bucket in a single transaction.
-    # Per-step try/except so a bad SDE lookup in one fit does not take down
-    # the other fits in the same bucket; DB errors (which the transaction must
-    # roll back as a whole) are caught at the outer level with the fit_id of
-    # the last-attempted step for diagnostics.
-    for (is_remote, alias), steps in buckets.items():
-        db = DatabaseConfig(alias)
-        engine = db.remote_engine if is_remote else db.engine
-        loc = f"{alias} ({'remote' if is_remote else 'local'})"
-        current_fit_id: int | None = None
-        try:
-            with engine.begin() as conn:
-                for step_type, p, arg in steps:
-                    current_fit_id = p["fit_id"]
-                    try:
-                        did_work = _apply_step(conn, step_type, p, arg, alias=alias)
-                    except (OperationalError, DatabaseError, ConnectionError, TimeoutError):
-                        # DB errors must abort the transaction — re-raise to
-                        # the outer handler which rolls the whole bucket back.
-                        raise
-                    except Exception as step_err:
-                        console.print(
-                            f"[red]Step {step_type} failed for fit {current_fit_id} on {loc}: "
-                            f"{step_err}[/red] (bucket continues)"
-                        )
-                        logger.exception(
-                            "Non-DB error in %s for fit %s on %s",
-                            step_type, current_fit_id, loc,
-                        )
-                        counters["step_failures"] += 1
-                        continue
-                    if p["action"] == "heal" and did_work:
-                        heal_worked[id(p)] = True
-            touched.add(alias)
-        except (OperationalError, DatabaseError, ConnectionError, TimeoutError) as e:
-            console.print(
-                f"[yellow]Skipped {loc} (rolled back at fit {current_fit_id}): {e}[/yellow]"
-            )
-            failed.add(alias)
-        finally:
-            engine.dispose()
-
-    # Heal counters — a heal counts as "updated" iff any bucket did work
-    for pid, did in heal_worked.items():
-        if did:
-            counters["updated"] += 1
-        else:
-            counters["skipped"] += 1
-
-    # Phase 4: orphan cleanup for deleted fits (one transaction per alias)
-    if deleted_fit_ids:
-        orphan_targets: list[tuple[bool, str]] = [(False, a) for a in configured_aliases]
-        if remote:
-            orphan_targets += [(True, a) for a in configured_aliases]
-        for is_remote, alias in orphan_targets:
-            db = DatabaseConfig(alias)
-            engine = db.remote_engine if is_remote else db.engine
-            loc = f"{alias} ({'remote' if is_remote else 'local'})"
-            current_fit_id = None
-            try:
-                with engine.begin() as conn:
-                    for fid in deleted_fit_ids:
-                        current_fit_id = fid
-                        if _check_fit_orphaned(fid, conn=conn):
-                            removed = remove_doctrines_for_fit(fid, conn=conn)
-                            st_removed = remove_ship_target(fid, conn=conn)
-                            if removed:
-                                console.print(
-                                    f"  [dim]Cleaned up {removed} orphaned doctrines rows for fit {fid} on {loc}[/dim]"
-                                )
-                            if st_removed:
-                                console.print(
-                                    f"  [dim]Cleaned up ship_targets for fit {fid} on {loc}[/dim]"
-                                )
-                touched.add(alias)
-            except (OperationalError, DatabaseError, ConnectionError, TimeoutError) as e:
+                counters["updated"] += 1
                 console.print(
-                    f"[yellow]Orphan cleanup skipped for {loc} "
-                    f"(rolled back at fit {current_fit_id}): {e}[/yellow]"
+                    f"  [green]Planned update[/green] fit {fit_id}: "
+                    f"market_flag '{p['market_flag']}' -> '{new_flag}'"
                 )
-                failed.add(alias)
-            finally:
-                engine.dispose()
 
-    # Phase 5: push every alias touched by either phase above — once each,
-    # sorted, and only after both write phases have finished (the orphan
-    # cleanup pass in Phase 4 can add writes to an alias Phase 3 already
-    # processed). An alias with any failed bucket is excluded so a rolled-back
-    # bucket never masks a genuinely-pending push for that alias; its
-    # already-committed writes (from a different, successful bucket for the
-    # same alias) stay queued locally for a later command to push.
-    pushed_ok = True
-    for alias in sorted(touched - failed):
-        if not push_or_log(alias):
-            pushed_ok = False
+            elif action == "remove":
+                buckets[canonical_db_alias].append(("remove_row", p, None))
+                deleted_fit_ids.add(fit_id)
+                counters["deleted"] += 1
+                console.print(
+                    f"  [red]Planned remove[/red] fit {fit_id} from doctrine {doc_id} "
+                    f"({p.get('doctrine_name', '?')})"
+                )
 
-    counters["push_failed"] = not pushed_ok
-    counters["bucket_failures"] = len(failed)
+            else:  # skip / heal
+                heal_worked[id(p)] = False
+                for alias in _flag_to_aliases(p["new_flag"]):
+                    buckets[alias].append(("heal_if_needed", p, p["new_flag"]))
+
+        # Phase 2: prepare watchlists (idempotent, per-(fit, alias) error isolation)
+        watchlist_needs: set[tuple[int, str]] = set()
+        for alias, steps in buckets.items():
+            for step_type, p, _ in steps:
+                if step_type in ("provision", "heal_if_needed", "update_and_heal"):
+                    watchlist_needs.add((p["fit_id"], alias))
+        for fit_id_w, alias_w in watchlist_needs:
+            try:
+                _prepare_watchlist_for_fit(plan_by_fit[fit_id_w], alias_w)
+            except _DB_ERRORS as e:
+                console.print(
+                    f"[yellow]Watchlist prep skipped for fit {fit_id_w} on {alias_w}: {e}[/yellow]"
+                )
+            except Exception as e:
+                console.print(
+                    f"[red]Watchlist prep failed for fit {fit_id_w} on {alias_w}: {e}[/red]"
+                )
+                logger.exception(
+                    "Unexpected error preparing watchlist for fit %s on %s", fit_id_w, alias_w
+                )
+
+        # Phase 3: execute each bucket in a single transaction
+        for alias, steps in buckets.items():
+            current_fit_id: int | None = None
+            try:
+                with uow.tx(alias) as conn:
+                    for step_type, p, arg in steps:
+                        current_fit_id = p["fit_id"]
+                        try:
+                            did_work = _apply_step(conn, step_type, p, arg, alias=alias)
+                        except _DB_ERRORS:
+                            raise
+                        except Exception as step_err:
+                            console.print(
+                                f"[red]Step {step_type} failed for fit {current_fit_id} on {alias}: "
+                                f"{step_err}[/red] (bucket continues)"
+                            )
+                            logger.exception(
+                                "Non-DB error in %s for fit %s on %s",
+                                step_type, current_fit_id, alias,
+                            )
+                            counters["step_failures"] += 1
+                            continue
+                        if p["action"] == "heal" and did_work:
+                            heal_worked[id(p)] = True
+            except _DB_ERRORS as e:
+                console.print(
+                    f"[yellow]Skipped {alias} (rolled back at fit {current_fit_id}): {e}[/yellow]"
+                )
+
+        for did in heal_worked.values():
+            if did:
+                counters["updated"] += 1
+            else:
+                counters["skipped"] += 1
+
+        # Phase 4: orphan cleanup for deleted fits (one transaction per configured alias)
+        if deleted_fit_ids:
+            for alias in configured_aliases:
+                current_fit_id = None
+                try:
+                    with uow.tx(alias) as conn:
+                        for fid in deleted_fit_ids:
+                            current_fit_id = fid
+                            if _check_fit_orphaned(conn, fid):
+                                removed = remove_doctrines_for_fit(conn, fid)
+                                st_removed = remove_ship_target(conn, fid)
+                                if removed:
+                                    console.print(
+                                        f"  [dim]Cleaned up {removed} orphaned doctrines rows "
+                                        f"for fit {fid} on {alias}[/dim]"
+                                    )
+                                if st_removed:
+                                    console.print(
+                                        f"  [dim]Cleaned up ship_targets for fit {fid} on {alias}[/dim]"
+                                    )
+                except _DB_ERRORS as e:
+                    console.print(
+                        f"[yellow]Orphan cleanup skipped for {alias} "
+                        f"(rolled back at fit {current_fit_id}): {e}[/yellow]"
+                    )
+
+    counters["push_failed"] = uow.push_failed
+    counters["bucket_failures"] = len(uow.failed)
     return counters
 
 
 def unassign_market_command(
     fit_id: int,
     market_to_remove: str,
-    remote: bool = False,
     db_alias: str = "wcmkt",
     doctrine_id: Optional[int] = None,
     skip_confirm: bool = False,
 ) -> dict:
-    """
-    Remove a fit from a specific market (or both).
-
-    When doctrine_id is provided, only the specific doctrine_fits row is affected.
-    Without doctrine_id, ALL doctrine_fits rows for the fit are processed.
-
-    Args:
-        fit_id: The fit ID to unassign
-        market_to_remove: Market to remove from ('primary', 'deployment', or 'all')
-        remote: Use remote database
-        db_alias: Database alias
-        doctrine_id: Optionally target a specific doctrine row only
-        skip_confirm: Skip the confirmation prompt (used when called from
-            unassign_doctrine_market which does its own confirmation)
-
-    Returns:
-        Dict with counts: {"updated": int, "deleted": int, "skipped": int}
-        Empty dict on error or cancellation.
-    """
+    """Remove a fit from a specific market (or all)."""
     if market_to_remove not in ("primary", "deployment", "both", "all"):
         console.print(
             f"[red]Error: invalid market '{market_to_remove}'. "
@@ -1559,34 +1177,24 @@ def unassign_market_command(
         return {}
 
     try:
-        rows = _get_doctrine_fits_rows(fit_id, db_alias, remote, doctrine_id)
+        rows = _find_doctrine_fits_rows_with_fallback(fit_id, db_alias, doctrine_id)
         if not rows:
-            for fallback in _configured_market_db_aliases():
-                if fallback == db_alias:
-                    continue
-                rows = _get_doctrine_fits_rows(fit_id, fallback, remote, doctrine_id)
-                if rows:
-                    logger.info(
-                        f"Fit {fit_id} not in {db_alias}, found in {fallback}"
-                    )
-                    break
-        if not rows:
-            console.print(f"[yellow]No doctrine_fits rows found for fit {fit_id}"
-                           + (f" in doctrine {doctrine_id}" if doctrine_id else "") + "[/yellow]")
+            console.print(
+                f"[yellow]No doctrine_fits rows found for fit {fit_id}"
+                + (f" in doctrine {doctrine_id}" if doctrine_id else "")
+                + "[/yellow]"
+            )
             return {}
 
-        # Plan phase — compute what will happen to each row
         plans = [_plan_market_action(row, market_to_remove, mode="unassign") for row in rows]
 
-        # Preview and confirm
         if not skip_confirm:
             _display_market_preview(plans, market_to_remove)
             if not Confirm.ask("[bold]Proceed with these changes?[/bold]"):
                 console.print("[yellow]Cancelled[/yellow]")
                 return {}
 
-        # Execute
-        return _execute_market_plan(plans, remote, db_alias)
+        return _execute_market_plan(plans, db_alias=db_alias)
 
     except Exception as e:
         console.print(f"[red]Error in unassign-market: {e}[/red]")
@@ -1597,18 +1205,9 @@ def unassign_market_command(
 def unassign_doctrine_market(
     doctrine_id: int,
     market_to_remove: str,
-    remote: bool = False,
     db_alias: str = "wcmkt",
 ) -> bool:
-    """
-    Remove an entire doctrine from a specific market (or both).
-
-    Args:
-        doctrine_id: The doctrine to unassign
-        market_to_remove: 'primary', 'deployment', or 'all'
-        remote: Use remote database
-        db_alias: Database alias
-    """
+    """Remove an entire doctrine from a specific market (or all)."""
     if market_to_remove not in ("primary", "deployment", "both", "all"):
         console.print(
             f"[red]Error: invalid market '{market_to_remove}'. "
@@ -1616,46 +1215,27 @@ def unassign_doctrine_market(
         )
         return False
 
-    # Symmetric with assign: discover fits across every configured market.
-    fit_ids, queried_aliases, skipped = _discover_fits_across_markets(doctrine_id, remote)
+    fit_ids, queried_aliases, skipped = _discover_fits_across_markets(doctrine_id)
     if not fit_ids:
         _render_no_fits_message(doctrine_id, queried_aliases, skipped)
         return False
 
-    # Get doctrine name for display
-    all_doctrines = get_available_doctrines(remote=remote)
+    all_doctrines = get_available_doctrines()
     doctrine_name = next(
         (d["name"] for d in all_doctrines if d["id"] == doctrine_id), f"ID {doctrine_id}"
     )
 
-    # Gather all rows and build the full plan
     all_plans = []
     for fid in fit_ids:
-        rows = _get_doctrine_fits_rows(fid, db_alias, remote, doctrine_id)
-        if not rows:
-            for fallback in _configured_market_db_aliases():
-                if fallback == db_alias:
-                    continue
-                rows = _get_doctrine_fits_rows(fid, fallback, remote, doctrine_id)
-                if rows:
-                    logger.info(f"Fit {fid} not in {db_alias}, found in {fallback}")
-                    break
-        for row in rows:
+        for row in _find_doctrine_fits_rows_with_fallback(fid, db_alias, doctrine_id):
             all_plans.append(_plan_market_action(row, market_to_remove, mode="unassign"))
 
     if not all_plans:
         console.print(f"[yellow]No doctrine_fits rows found for doctrine {doctrine_id}[/yellow]")
         return False
 
-    # Preview table showing every fit and its planned action
     _display_market_preview(all_plans, market_to_remove, doctrine_name=doctrine_name)
 
-    # Confirmation
-    action_counts = {}
-    for p in all_plans:
-        action_counts[p["action"]] = action_counts.get(p["action"], 0) + 1
-
-    # A doctrine name may contain square brackets, which Rich reads as markup.
     shown_name = escape(doctrine_name)
     if market_to_remove in ("both", "all"):
         prompt_msg = (
@@ -1674,9 +1254,7 @@ def unassign_doctrine_market(
         return False
 
     console.print()
-
-    # Execute — skip per-fit confirmation since we just confirmed the whole batch
-    result = _execute_market_plan(all_plans, remote, db_alias)
+    result = _execute_market_plan(all_plans, db_alias=db_alias)
 
     summary = (
         f"\n[bold]Summary:[/bold] {result['updated']} updated, "
@@ -1693,9 +1271,9 @@ def unassign_doctrine_market(
     )
 
 
-def list_fits_command(db_alias: str = "wcmkt", remote: bool = False) -> None:
+def list_fits_command(db_alias: str = "wcmkt") -> None:
     """List all doctrine fits and their target quantity for the given market."""
-    fits = get_fits_list(db_alias=db_alias, remote=remote)
+    fits = get_fits_list(db_alias=db_alias)
     fits.sort(key=lambda f: (f["ship_name"], f["fit_name"]))
     if fits:
         display_fits_table(fits)
@@ -1704,16 +1282,12 @@ def list_fits_command(db_alias: str = "wcmkt", remote: bool = False) -> None:
         console.print("[yellow]No fits found[/yellow]")
 
 
-def list_doctrines_command(db_alias: str, remote: bool = False) -> None:
+def list_doctrines_command(db_alias: str) -> None:
     """List doctrines assigned to the given market (excludes deprecated 'zz' prefixed)."""
-    doctrines = get_market_doctrines(db_alias=db_alias, remote=remote)
-    # Filter out deprecated doctrines for count
-    active_doctrines = [
-        d for d in doctrines if not d["name"].lower().startswith("zz")]
+    doctrines = get_market_doctrines(db_alias=db_alias)
+    active_doctrines = [d for d in doctrines if not d["name"].lower().startswith("zz")]
     if active_doctrines:
-        display_doctrines_table(
-            doctrines
-        )  # display_doctrines_table does its own filtering
+        display_doctrines_table(doctrines)
         console.print(f"\n[dim]Total: {len(active_doctrines)} doctrines[/dim]")
     else:
         console.print("[yellow]No doctrines found[/yellow]")
@@ -1723,22 +1297,9 @@ def create_doctrine_command(
     name: Optional[str] = None,
     description: Optional[str] = None,
     doctrine_id: Optional[int] = None,
-    remote: bool = False,
     interactive: bool = True,
 ) -> bool:
-    """
-    Create a new doctrine.
-
-    Args:
-        name: Doctrine name (prompted if interactive)
-        description: Doctrine description (prompted if interactive)
-        doctrine_id: Specific ID to use (auto-assigned if not provided)
-        remote: Use remote database
-        interactive: Use interactive prompts
-
-    Returns:
-        True if successful
-    """
+    """Create a new doctrine in ``fittings`` and push it to Turso."""
     if interactive:
         console.print(
             Panel(
@@ -1750,31 +1311,25 @@ def create_doctrine_command(
             )
         )
 
-        # Show existing doctrines for reference
-        doctrines = get_available_doctrines(remote=remote)
+        doctrines = get_available_doctrines()
         if doctrines:
             console.print("\n[dim]Existing doctrines for reference:[/dim]")
             display_doctrines_table(doctrines)
             console.print()
 
-        # Get doctrine ID
-        next_id = get_next_doctrine_id(remote=remote)
+        next_id = get_next_doctrine_id()
         if doctrine_id is None:
-            doctrine_id = IntPrompt.ask(
-                "[bold]Doctrine ID[/bold]", default=next_id)
+            doctrine_id = IntPrompt.ask("[bold]Doctrine ID[/bold]", default=next_id)
 
-        # Get doctrine name
         if name is None:
             name = Prompt.ask("[bold]Doctrine name[/bold]")
             if not name:
                 console.print("[red]Error: Doctrine name is required[/red]")
                 return False
 
-        # Get description
         if description is None:
             description = Prompt.ask("[bold]Description[/bold]", default="")
 
-        # Confirm
         console.print()
         console.print(
             Panel(
@@ -1789,135 +1344,98 @@ def create_doctrine_command(
         if not Confirm.ask("Create this doctrine?"):
             console.print("[yellow]Cancelled[/yellow]")
             return False
-
     else:
-        # Non-interactive: require name
         if name is None:
-            console.print(
-                "[red]Error: --name is required for non-interactive mode[/red]"
-            )
+            console.print("[red]Error: --name is required for non-interactive mode[/red]")
             return False
         if doctrine_id is None:
-            doctrine_id = get_next_doctrine_id(remote=remote)
+            doctrine_id = get_next_doctrine_id()
 
     try:
-        success = create_doctrine(
-            doctrine_id=doctrine_id,
-            name=name,
-            description=description or "",
-            remote=remote,
-        )
-        if success:
-            if not push_or_log("fittings"):
-                return False
-            console.print(
-                f"[green]Successfully created doctrine {
-                    doctrine_id}: {name}[/green]"
-            )
-        else:
-            console.print(f"[yellow]Doctrine {
-                          doctrine_id} already exists[/yellow]")
-        return success
+        with _uow() as uow:
+            with uow.read("fittings") as fconn:
+                if doctrine_exists(doctrine_id, conn=fconn):
+                    console.print(f"[yellow]Doctrine {doctrine_id} already exists[/yellow]")
+                    return False
+            with uow.tx("fittings") as fconn:
+                success = create_doctrine(
+                    doctrine_id=doctrine_id,
+                    name=name,
+                    description=description or "",
+                    conn=fconn,
+                )
+        if not success or uow.push_failed:
+            return False
+        console.print(f"[green]Successfully created doctrine {doctrine_id}: {name}[/green]")
+        return True
     except Exception as e:
         console.print(f"[red]Error creating doctrine: {e}[/red]")
         logger.exception("Error in create_doctrine_command")
         return False
 
 
-def get_fit_info(fit_id: int, remote: bool = False) -> Optional[dict]:
-    """Get fit info from fittings database."""
-    db = DatabaseConfig("fittings")
-    engine = db.remote_engine if remote else db.engine
+def get_fit_info(fit_id: int) -> Optional[dict]:
+    """Get fit info from fittings database (with ship name from SDE)."""
+    with _uow(auto_push=False) as uow:
+        with uow.read("fittings") as fconn:
+            result = fconn.execute(
+                text(
+                    """
+                    SELECT id, name, description, ship_type_id
+                    FROM fittings_fitting
+                    WHERE id = :fit_id
+                    """
+                ),
+                {"fit_id": fit_id},
+            ).fetchone()
+        if not result:
+            return None
 
-    with engine.connect() as conn:
-        result = conn.execute(
-            text("""
-            SELECT id, name, description, ship_type_id
-            FROM fittings_fitting
-            WHERE id = :fit_id
-        """),
-            {"fit_id": fit_id},
-        ).fetchone()
-
-    engine.dispose()
-
-    if result:
-        # Get ship name from SDE
-        sde_db = DatabaseConfig("sde")
-        sde_engine = sde_db.engine
-        with sde_engine.connect() as conn:
-            ship_name = conn.execute(
-                text("""
-                SELECT typeName FROM sdetypes WHERE typeID = :type_id
-            """),
+        with uow.read("sde") as sconn:
+            ship_name = sconn.execute(
+                text("SELECT typeName FROM sdetypes WHERE typeID = :type_id"),
                 {"type_id": result[3]},
             ).scalar()
-        sde_engine.dispose()
 
-        return {
-            "fit_id": result[0],
-            "fit_name": result[1],
-            "description": result[2],
-            "ship_type_id": result[3],
-            "ship_name": ship_name or "Unknown",
-        }
-    return None
+    return {
+        "fit_id": result[0],
+        "fit_name": result[1],
+        "description": result[2],
+        "ship_type_id": result[3],
+        "ship_name": ship_name or "Unknown",
+    }
 
 
-def is_fit_in_doctrine(doctrine_id: int, fit_id: int, remote: bool = False) -> bool:
-    """Check if a fit is already linked to a doctrine."""
-    db = DatabaseConfig("fittings")
-    engine = db.remote_engine if remote else db.engine
-
-    with engine.connect() as conn:
-        result = conn.execute(
-            text("""
-            SELECT 1 FROM fittings_doctrine_fittings
-            WHERE doctrine_id = :doctrine_id AND fitting_id = :fit_id
-        """),
-            {"doctrine_id": doctrine_id, "fit_id": fit_id},
-        ).fetchone()
-
-    engine.dispose()
-    return result is not None
-
-
-def get_doctrine_fits(doctrine_id: int, remote: bool = False) -> List[int]:
+def get_doctrine_fits(doctrine_id: int) -> List[int]:
     """Get list of fit IDs already in a doctrine (from fittings DB link table)."""
-    db = DatabaseConfig("fittings")
-    engine = db.remote_engine if remote else db.engine
-
-    with engine.connect() as conn:
-        result = conn.execute(
-            text("""
-            SELECT fitting_id FROM fittings_doctrine_fittings
-            WHERE doctrine_id = :doctrine_id
-        """),
-            {"doctrine_id": doctrine_id},
-        ).fetchall()
-
-    engine.dispose()
+    with _uow(auto_push=False) as uow:
+        with uow.read("fittings") as conn:
+            result = conn.execute(
+                text(
+                    "SELECT fitting_id FROM fittings_doctrine_fittings "
+                    "WHERE doctrine_id = :doctrine_id"
+                ),
+                {"doctrine_id": doctrine_id},
+            ).fetchall()
     return [row[0] for row in result]
 
 
-def get_doctrine_fits_from_market(
-    doctrine_id: int, db_alias: str = "wcmkt", remote: bool = False
-) -> List[int]:
+def get_doctrine_fits_from_market(doctrine_id: int, db_alias: str = "wcmkt") -> List[int]:
     """Get list of fit IDs already in a doctrine from the market database."""
-    db = DatabaseConfig(db_alias)
-    engine = db.remote_engine if remote else db.engine
-
-    with engine.connect() as conn:
-        result = conn.execute(
-            text("""
-            SELECT fit_id FROM doctrine_fits
-            WHERE doctrine_id = :doctrine_id
-        """),
-            {"doctrine_id": doctrine_id},
-        ).fetchall()
-
-    engine.dispose()
+    with _uow(auto_push=False) as uow:
+        with uow.read(db_alias) as conn:
+            result = conn.execute(
+                text("SELECT fit_id FROM doctrine_fits WHERE doctrine_id = :doctrine_id"),
+                {"doctrine_id": doctrine_id},
+            ).fetchall()
     return [row[0] for row in result]
+
+
+def _lookup_fit_target(fit_id: int, db_alias: str) -> Optional[int]:
+    """Read existing target for ``fit_id`` from ``db_alias``."""
+    with _uow(auto_push=False) as uow:
+        with uow.read(db_alias) as conn:
+            return get_fit_target(conn, fit_id)
 
 
 def doctrine_add_fit_command(
@@ -1925,47 +1443,26 @@ def doctrine_add_fit_command(
     fit_ids: Optional[List[int]] = None,
     target: int = 100,
     market_flag: str = "primary",
-    remote: bool = False,
     interactive: bool = True,
     db_alias: str = "wcmkt",
     skip_targets: bool = False,
 ) -> bool:
-    """
-    Add existing fit(s) to a doctrine.
-
-    This links fits that are already in the fittings database to a doctrine,
-    and sets up tracking in the market database.
-
-    Args:
-        doctrine_id: Doctrine to add the fit(s) to
-        fit_ids: List of fit IDs to add (or single ID will be wrapped)
-        target: Default target quantity for new fits without existing targets
-        market_flag: Market assignment (primary, deployment, all)
-        remote: Use remote database
-        interactive: Use interactive prompts
-        db_alias: Target market database
-        skip_targets: If True, preserve existing targets and skip target prompts
-
-    Returns:
-        True if at least one fit was successfully added
-    """
-    # Dictionary to hold per-fit targets
+    """Link existing fit(s) to a doctrine and provision market tracking."""
     fit_targets: dict[int, int] = {}
 
-    # Determine target market databases up front (used for both validation and writes)
     if market_flag in ("both", "all"):
         target_aliases = _configured_market_db_aliases()
     else:
         target_aliases = [db_alias]
 
-    # A fit is "already added" only if it is present in ALL target market databases
-    def _get_existing_fit_ids_for_doctrine(doctrine_id: int) -> set[int]:
+    def _get_existing_fit_ids_for_doctrine(did: int) -> set[int]:
         fits_per_alias = [
-            set(get_doctrine_fits_from_market(doctrine_id, alias, remote=remote))
+            set(get_doctrine_fits_from_market(did, alias))
             for alias in target_aliases
         ]
         return set.intersection(*fits_per_alias) if fits_per_alias else set()
 
+    doctrines = get_available_doctrines()
     if interactive:
         console.print(
             Panel(
@@ -1978,154 +1475,124 @@ def doctrine_add_fit_command(
                 border_style="blue",
             )
         )
-
-        # Show available doctrines
-        doctrines = get_available_doctrines(remote=remote)
-        if doctrines:
-            console.print()
-            display_doctrines_table(doctrines)
-            console.print()
-        else:
+        if not doctrines:
             console.print(
                 "[yellow]No doctrines found. Create one first with 'create-doctrine'.[/yellow]"
             )
             return False
-
-        # Get doctrine ID
+        console.print()
+        display_doctrines_table(doctrines)
+        console.print()
         if doctrine_id is None:
-            doctrine_id = IntPrompt.ask(
-                "[bold]Doctrine ID[/bold] to add fit(s) to")
-
-        # Verify doctrine exists
-        doctrine_info = None
-        for d in doctrines:
-            if d["id"] == doctrine_id:
-                doctrine_info = d
-                break
-        if not doctrine_info:
-            console.print(f"[red]Error: Doctrine {
-                          doctrine_id} not found[/red]")
+            doctrine_id = IntPrompt.ask("[bold]Doctrine ID[/bold] to add fit(s) to")
+    else:
+        if doctrine_id is None:
+            console.print("[red]Error: --doctrine-id is required[/red]")
+            return False
+        if not fit_ids:
+            console.print("[red]Error: --fit-id is required (comma-separated for multiple)[/red]")
             return False
 
-        console.print(
-            f"\n[cyan]Selected doctrine:[/cyan] {doctrine_info['name']}")
+    doctrine_info = next((d for d in doctrines if d["id"] == doctrine_id), None)
+    if not doctrine_info:
+        console.print(f"[red]Error: Doctrine {doctrine_id} not found[/red]")
+        return False
 
-        # Show fits already in this doctrine (check market db, not fittings link table)
-        existing_fit_ids = _get_existing_fit_ids_for_doctrine(doctrine_id)
+    existing_fit_ids = _get_existing_fit_ids_for_doctrine(doctrine_id)
+
+    if interactive:
+        console.print(f"\n[cyan]Selected doctrine:[/cyan] {doctrine_info['name']}")
         if existing_fit_ids:
             console.print(
-                f"[dim]Currently has {len(existing_fit_ids)} fit(s): {
-                    existing_fit_ids
-                }[/dim]"
+                f"[dim]Currently has {len(existing_fit_ids)} fit(s): {existing_fit_ids}[/dim]"
             )
-
-        # Get fit IDs
-        if fit_ids is None or len(fit_ids) == 0:
+        if not fit_ids:
             fit_input = Prompt.ask(
                 "\n[bold]Fit ID(s)[/bold] to add (comma-separated for multiple)"
             )
             if not fit_input:
-                console.print(
-                    "[red]Error: At least one fit ID is required[/red]")
+                console.print("[red]Error: At least one fit ID is required[/red]")
                 return False
-            fit_ids = [int(f.strip())
-                       for f in fit_input.split(",") if f.strip()]
+            fit_ids = [int(f.strip()) for f in fit_input.split(",") if f.strip()]
 
-        # Validate and categorize fits
-        valid_fits = []
-        invalid_fits = []
-        already_added = []
+    valid_fits: list[dict] = []
+    invalid_fits: list[int] = []
+    already_added: list[int] = []
+    for fid in fit_ids:
+        fit_info = get_fit_info(fid)
+        if not fit_info:
+            invalid_fits.append(fid)
+        elif fid in existing_fit_ids:
+            already_added.append(fid)
+        else:
+            valid_fits.append(fit_info)
 
-        for fid in fit_ids:
-            fit_info = get_fit_info(fid, remote=remote)
-            if not fit_info:
-                invalid_fits.append(fid)
-            elif fid in existing_fit_ids:
-                already_added.append(fid)
-            else:
-                valid_fits.append(fit_info)
+    if invalid_fits:
+        console.print(f"[red]Not found in fittings database:[/red] {invalid_fits}")
+    if already_added:
+        console.print(f"[yellow]Already in doctrine (skipping):[/yellow] {already_added}")
+    if not valid_fits:
+        console.print("[red]No valid fits to add[/red]")
+        return False
 
-        # Report validation results
-        if invalid_fits:
-            console.print(
-                f"[red]Not found in fittings database:[/red] {invalid_fits}")
-        if already_added:
-            console.print(
-                f"[yellow]Already in doctrine (skipping):[/yellow] {
-                    already_added}"
-            )
+    for fit in valid_fits:
+        fit["existing_target"] = _lookup_fit_target(fit["fit_id"], db_alias)
 
-        if not valid_fits:
-            console.print("[red]No valid fits to add[/red]")
-            return False
-
-        # Display valid fits with existing targets
-        console.print(f"\n[green]Valid fits to add ({
-                      len(valid_fits)}):[/green]")
+    if interactive:
+        console.print(f"\n[green]Valid fits to add ({len(valid_fits)}):[/green]")
         fit_table = Table(box=box.SIMPLE)
         fit_table.add_column("Fit ID", style="dim")
         fit_table.add_column("Fit Name", style="white")
         fit_table.add_column("Ship", style="cyan")
-        fit_table.add_column(
-            "Existing Target", style="yellow", justify="right")
-
-        # Look up existing targets for each fit
+        fit_table.add_column("Existing Target", style="yellow", justify="right")
         for fit in valid_fits:
-            existing_target = get_fit_target(
-                fit["fit_id"], remote=remote, db_alias=db_alias
-            )
-            fit["existing_target"] = existing_target
+            existing_target = fit["existing_target"]
             target_display = (
-                str(existing_target)
-                if existing_target is not None
-                else "[dim]none[/dim]"
+                str(existing_target) if existing_target is not None else "[dim]none[/dim]"
             )
             fit_table.add_row(
                 str(fit["fit_id"]), fit["fit_name"], fit["ship_name"], target_display
             )
         console.print(fit_table)
 
-        # Get market assignment first (applies to all fits)
-        market_choices = ["primary", "deployment", "all"]
         market_flag = Prompt.ask(
             "\n[bold]Market assignment[/bold]",
-            choices=market_choices,
+            choices=["primary", "deployment", "all"],
             default="all" if market_flag in ("both", "all") else (market_flag or "primary"),
         )
+        target_aliases = (
+            _configured_market_db_aliases() if market_flag in ("both", "all") else [db_alias]
+        )
 
-        # Per-fit target collection
         if skip_targets:
             console.print(
-                "\n[dim]Skipping target prompts (--skip-targets). Existing targets will be preserved.[/dim]"
+                "\n[dim]Skipping target prompts (--skip-targets). "
+                "Existing targets will be preserved.[/dim]"
             )
             for fit in valid_fits:
-                # Use existing target or fall back to default
                 fit_targets[fit["fit_id"]] = (
-                    fit["existing_target"]
-                    if fit["existing_target"] is not None
-                    else target
+                    fit["existing_target"] if fit["existing_target"] is not None else target
                 )
         else:
             console.print(
-                "\n[bold]Set target for each fit[/bold] (press Enter to keep existing or use default):"
+                "\n[bold]Set target for each fit[/bold] "
+                "(press Enter to keep existing or use default):"
             )
             for fit in valid_fits:
-                existing = fit["existing_target"]
-                default_val = existing if existing is not None else target
-                fit_target = IntPrompt.ask(
+                default_val = (
+                    fit["existing_target"] if fit["existing_target"] is not None else target
+                )
+                fit_targets[fit["fit_id"]] = IntPrompt.ask(
                     f"  {fit['fit_name']} ({fit['ship_name']})", default=default_val
                 )
-                fit_targets[fit["fit_id"]] = fit_target
 
-        # Confirm with per-fit targets
         console.print()
         targets_summary = "\n".join(
             f"  • {fit['fit_name']}: {fit_targets[fit['fit_id']]}" for fit in valid_fits
         )
         console.print(
             Panel(
-                f"[bold]Doctrine:[/bold] {doctrine_info['name']
-                                          } (ID: {doctrine_id})\n"
+                f"[bold]Doctrine:[/bold] {doctrine_info['name']} (ID: {doctrine_id})\n"
                 f"[bold]Fits to add:[/bold] {len(valid_fits)}\n"
                 f"[bold]Market:[/bold] {market_flag}\n"
                 f"[bold]Targets:[/bold]\n{targets_summary}",
@@ -2133,150 +1600,76 @@ def doctrine_add_fit_command(
                 border_style="green",
             )
         )
-
         if not Confirm.ask(f"Add {len(valid_fits)} fit(s) to the doctrine?"):
             console.print("[yellow]Cancelled[/yellow]")
             return False
-
     else:
-        # Non-interactive mode: require both IDs
-        if doctrine_id is None:
-            console.print("[red]Error: --doctrine-id is required[/red]")
-            return False
-        if fit_ids is None or len(fit_ids) == 0:
-            console.print(
-                "[red]Error: --fit-id is required (comma-separated for multiple)[/red]"
-            )
-            return False
-
-        doctrines = get_available_doctrines(remote=remote)
-        doctrine_info = None
-        for d in doctrines:
-            if d["id"] == doctrine_id:
-                doctrine_info = d
-                break
-        if not doctrine_info:
-            console.print(f"[red]Error: Doctrine {
-                          doctrine_id} not found[/red]")
-            return False
-
-        existing_fit_ids = _get_existing_fit_ids_for_doctrine(doctrine_id)
-
-        # Validate fits
-        valid_fits = []
-        invalid_fits = []
-        already_added = []
-
-        for fid in fit_ids:
-            fit_info = get_fit_info(fid, remote=remote)
-            if not fit_info:
-                invalid_fits.append(fid)
-            elif fid in existing_fit_ids:
-                already_added.append(fid)
-            else:
-                valid_fits.append(fit_info)
-
-        if invalid_fits:
-            console.print(f"[red]Not found: {invalid_fits}[/red]")
-        if already_added:
-            console.print(f"[yellow]Already in doctrine: {
-                          already_added}[/yellow]")
-
-        if not valid_fits:
-            console.print("[red]No valid fits to add[/red]")
-            return False
-
-        # Non-interactive: look up existing targets and apply skip_targets logic
         for fit in valid_fits:
-            existing_target = get_fit_target(
-                fit["fit_id"], remote=remote, db_alias=db_alias
+            existing_target = fit["existing_target"]
+            fit_targets[fit["fit_id"]] = (
+                existing_target if (skip_targets and existing_target is not None) else target
             )
-            fit["existing_target"] = existing_target
-            if skip_targets and existing_target is not None:
-                # Preserve existing target
-                fit_targets[fit["fit_id"]] = existing_target
-            else:
-                # Use provided target or default
-                fit_targets[fit["fit_id"]] = target
 
-    # Process all valid fits
     success_count = 0
     fail_count = 0
-
-    # Stage 1: per-fit preparation (fittings DB link + DoctrineFit resolution).
-    # Independent of market DBs; failures here skip the fit entirely.
     prepared: list[tuple[dict, DoctrineFit, int]] = []
-    for fit_info in valid_fits:
-        fit_id = fit_info["fit_id"]
-        fit_target = fit_targets.get(fit_id, target)
-        try:
-            ensure_doctrine_link(doctrine_id, fit_id, remote=remote)
-            doctrine_fit = DoctrineFit(
-                doctrine_id=doctrine_id,
-                fit_id=fit_id,
-                target=fit_target,
-                remote=remote,
-            )
-            prepared.append((fit_info, doctrine_fit, fit_target))
-        except Exception as e:
-            console.print(f"[red]✗ Failed to prepare fit {fit_id}: {e}[/red]")
-            logger.exception(f"Error preparing fit {fit_id} for doctrine {doctrine_id}")
-            fail_count += 1
+    fit_alias_success: dict[int, int] = {}
 
-    # Stage 2: watchlist prep per (fit, alias) — idempotent, outside any transaction.
-    for alias in target_aliases:
-        for _, doctrine_fit, _ in prepared:
-            p_like = {
-                "fit_id": doctrine_fit.fit_id,
-                "ship_type_id": doctrine_fit.ship_type_id,
-            }
-            _prepare_watchlist_for_fit(p_like, alias, remote)
+    with _uow() as uow:
+        # Stage 1: per-fit preparation (fittings DB link + DoctrineFit resolution)
+        for fit_info in valid_fits:
+            fit_id = fit_info["fit_id"]
+            fit_target = fit_targets.get(fit_id, target)
+            try:
+                with uow.tx("fittings") as fconn:
+                    ensure_doctrine_link(doctrine_id, fit_id, conn=fconn)
+                doctrine_fit = DoctrineFit(
+                    doctrine_id=doctrine_id,
+                    fit_id=fit_id,
+                    target=fit_target,
+                )
+                prepared.append((fit_info, doctrine_fit, fit_target))
+            except Exception as e:
+                console.print(f"[red]✗ Failed to prepare fit {fit_id}: {e}[/red]")
+                logger.exception(f"Error preparing fit {fit_id} for doctrine {doctrine_id}")
+                fail_count += 1
 
-    # Stage 3: one transaction per market DB — all fits for that DB in one batch.
-    fit_alias_success: dict[int, int] = {df.fit_id: 0 for _, df, _ in prepared}
-    touched: set[str] = set()
-    failed: set[str] = set()
-    for alias in target_aliases:
-        db = DatabaseConfig(alias)
-        engine = db.remote_engine if remote else db.engine
-        loc = f"{alias} ({'remote' if remote else 'local'})"
-        current_fit_id: int | None = None
-        try:
-            with engine.begin() as conn:
-                for _, doctrine_fit, fit_target in prepared:
-                    current_fit_id = doctrine_fit.fit_id
-                    p = {
-                        "fit_id": doctrine_fit.fit_id,
-                        "fit_name": doctrine_fit.fit_name,
-                        "ship_type_id": doctrine_fit.ship_type_id,
-                        "ship_name": doctrine_fit.ship_name,
-                        "doctrine_id": doctrine_fit.doctrine_id,
-                        "doctrine_name": doctrine_fit.doctrine_name,
-                        "target": fit_target,
-                    }
-                    adopted = _provision_fit_in_market(conn=conn, p=p, market_flag=market_flag)
-                    _report_lead_ship(adopted, doctrine_fit.fit_id, doctrine_fit.doctrine_id)
+        # Stage 2: watchlist prep per (fit, alias)
+        for alias in target_aliases:
             for _, doctrine_fit, _ in prepared:
-                fit_alias_success[doctrine_fit.fit_id] += 1
-            touched.add(alias)
-        except (OperationalError, DatabaseError, ConnectionError, TimeoutError) as e:
-            console.print(
-                f"[yellow]Bucket {loc} failed "
-                f"(rolled back at fit {current_fit_id}): {e}[/yellow]"
-            )
-            logger.exception(f"Error provisioning {alias} for doctrine {doctrine_id}")
-            failed.add(alias)
-        finally:
-            engine.dispose()
+                _prepare_watchlist_for_fit(
+                    {"fit_id": doctrine_fit.fit_id, "ship_type_id": doctrine_fit.ship_type_id},
+                    alias,
+                )
 
-    # Push every touched alias once, after the write loop above, skipping any
-    # alias whose bucket raised (see _execute_market_plan for the same shape).
-    pushed_ok = True
-    for alias in sorted(touched - failed):
-        if not push_or_log(alias):
-            pushed_ok = False
+        # Stage 3: one transaction per market DB
+        fit_alias_success = {df.fit_id: 0 for _, df, _ in prepared}
+        for alias in target_aliases:
+            current_fit_id: int | None = None
+            try:
+                with uow.tx(alias) as conn:
+                    for _, doctrine_fit, fit_target in prepared:
+                        current_fit_id = doctrine_fit.fit_id
+                        p = {
+                            "fit_id": doctrine_fit.fit_id,
+                            "fit_name": doctrine_fit.fit_name,
+                            "ship_type_id": doctrine_fit.ship_type_id,
+                            "ship_name": doctrine_fit.ship_name,
+                            "doctrine_id": doctrine_fit.doctrine_id,
+                            "doctrine_name": doctrine_fit.doctrine_name,
+                            "target": fit_target,
+                        }
+                        adopted = _provision_fit_in_market(conn, p, market_flag=market_flag)
+                        _report_lead_ship(adopted, doctrine_fit.fit_id, doctrine_fit.doctrine_id)
+                for _, doctrine_fit, _ in prepared:
+                    fit_alias_success[doctrine_fit.fit_id] += 1
+            except _DB_ERRORS as e:
+                console.print(
+                    f"[yellow]Bucket {alias} failed "
+                    f"(rolled back at fit {current_fit_id}): {e}[/yellow]"
+                )
+                logger.exception(f"Error provisioning {alias} for doctrine {doctrine_id}")
 
-    # Per-fit success reporting
     for _, doctrine_fit, fit_target in prepared:
         n_ok = fit_alias_success[doctrine_fit.fit_id]
         if n_ok == len(target_aliases):
@@ -2296,7 +1689,6 @@ def doctrine_add_fit_command(
             console.print(f"[red]✗ Failed to add fit {doctrine_fit.fit_id}[/red]")
             fail_count += 1
 
-    # Summary
     console.print()
     if success_count > 0:
         console.print(
@@ -2305,53 +1697,23 @@ def doctrine_add_fit_command(
     if fail_count > 0:
         console.print(f"[red]Failed to add {fail_count} fit(s)[/red]")
 
-    return success_count > 0 and pushed_ok and not failed
+    return success_count > 0 and uow.ok
 
 
 def remove_fit_command(
     fit_id: int,
-    remote: bool = False,
     db_alias: str = "wcmkt",
     keep_doctrine_links: bool = False,
 ) -> bool:
-    """
-    Remove a fit from one market: all of its doctrines, its ship target, and
-    its market data in ``db_alias``. The inverse of the add command.
-
-    Tables affected:
-        1. doctrines       - market analysis rows for this fit
-        2. doctrine_map    - doctrine-to-fit mappings (all doctrines)
-        3. doctrine_fits   - fit tracking entries (all doctrines)
-        4. fittings_doctrine_fittings - doctrine link table (all doctrines)
-        5. ship_targets    - target quantity for this fit
-
-    Args:
-        fit_id: The fit ID to remove
-        remote: Use remote database
-        db_alias: Target market database alias
-        keep_doctrine_links: Skip step 4. The links live in the shared
-            fittings database, so the caller sets this when a market other
-            than the ones being removed still tracks the fit.
-
-    Returns:
-        True if the fit was successfully removed
-    """
-    # Get fit info for display
-    fit_info = get_fit_info(fit_id, remote=remote)
+    """Remove a fit from one market (doctrines, doctrine_map, doctrine_fits, ship_targets)."""
+    fit_info = get_fit_info(fit_id)
     if not fit_info:
         console.print(f"[red]Error: Fit {fit_id} not found in fittings database[/red]")
         return False
 
-    # Find all doctrines containing this fit
-    doctrine_ids = get_doctrine_ids_for_fit(fit_id, remote=remote)
+    doctrine_ids = get_doctrine_ids_for_fit(fit_id)
+    doctrine_names = {d["id"]: d["name"] for d in get_available_doctrines()}
 
-    # Get doctrine names for display
-    all_doctrines = get_available_doctrines(remote=remote)
-    doctrine_names = {}
-    for d in all_doctrines:
-        doctrine_names[d["id"]] = d["name"]
-
-    # Display what will be removed
     console.print(
         Panel(
             f"[bold]Remove fit from {db_alias}[/bold]\n\n"
@@ -2391,53 +1753,38 @@ def remove_fit_command(
         console.print("[yellow]Cancelled[/yellow]")
         return False
 
-    # Execute removal in reverse order of creation
     try:
-        # Step 1: Remove from doctrines table (market data)
-        doctrines_removed = remove_doctrines_for_fit(
-            fit_id, remote=remote, db_alias=db_alias
-        )
-        console.print(f"  [dim]doctrines:[/dim] {doctrines_removed} rows removed")
+        with _uow() as uow:
+            with uow.tx(db_alias) as mconn:
+                doctrines_removed = remove_doctrines_for_fit(mconn, fit_id)
+                console.print(f"  [dim]doctrines:[/dim] {doctrines_removed} rows removed")
 
-        # Step 2: Remove from doctrine_map (all doctrines)
-        map_removed = remove_all_doctrine_map_for_fit(
-            fit_id, remote=remote, db_alias=db_alias
-        )
-        console.print(f"  [dim]doctrine_map:[/dim] {map_removed} rows removed")
+                map_removed = remove_all_doctrine_map_for_fit(mconn, fit_id)
+                console.print(f"  [dim]doctrine_map:[/dim] {map_removed} rows removed")
 
-        # Step 3: Remove from doctrine_fits (all doctrines)
-        fits_removed = remove_all_doctrine_fits_for_fit(
-            fit_id, remote=remote, db_alias=db_alias
-        )
-        console.print(f"  [dim]doctrine_fits:[/dim] {fits_removed} rows removed")
+                fits_removed = remove_all_doctrine_fits_for_fit(mconn, fit_id)
+                console.print(f"  [dim]doctrine_fits:[/dim] {fits_removed} rows removed")
 
-        # Step 4: Remove from fittings_doctrine_fittings (all doctrines)
-        if keep_doctrine_links:
-            links_removed = 0
-            console.print(
-                "  [dim]fittings_doctrine_fittings:[/dim] kept "
-                "(another market still tracks this fit)"
-            )
-        else:
-            links_removed = remove_all_doctrine_links_for_fit(fit_id, remote=remote)
-            console.print(
-                f"  [dim]fittings_doctrine_fittings:[/dim] {links_removed} rows removed"
-            )
+                target_removed = remove_ship_target(mconn, fit_id)
+                console.print(
+                    f"  [dim]ship_targets:[/dim] {'removed' if target_removed else 'not found'}"
+                )
 
-        # Step 5: Remove from ship_targets
-        target_removed = remove_ship_target(
-            fit_id, remote=remote, db_alias=db_alias
-        )
-        console.print(
-            f"  [dim]ship_targets:[/dim] {'removed' if target_removed else 'not found'}"
-        )
+            if keep_doctrine_links:
+                console.print(
+                    "  [dim]fittings_doctrine_fittings:[/dim] kept "
+                    "(another market still tracks this fit)"
+                )
+            else:
+                with uow.tx("fittings") as fconn:
+                    links_removed = remove_all_doctrine_links_for_fit(fit_id, conn=fconn)
+                if links_removed == 0:
+                    uow.touched.discard(uow.db("fittings").alias)
+                console.print(
+                    f"  [dim]fittings_doctrine_fittings:[/dim] {links_removed} rows removed"
+                )
 
-        # Push the market-side writes (steps 1, 2, 3, 5); push the shared
-        # fittings db too, but only when a link actually changed (step 4).
-        if not push_or_log(db_alias):
-            return False
-
-        if links_removed > 0 and not push_or_log("fittings"):
+        if not uow.ok:
             return False
 
         console.print()
@@ -2456,45 +1803,28 @@ def update_lead_ship_command(
     doctrine_id: int,
     fit_id: int,
     market_flag: str,
-    remote: bool = False,
 ) -> bool:
-    """
-    Set or change the lead ship for a doctrine across one or more markets.
-
-    ``market_flag`` must be ``primary``, ``deployment``, or ``all``; the
-    list of target DB aliases is resolved from settings via
-    ``_configured_market_db_aliases``.
-    """
-    # Validate doctrine exists
-    doctrines = get_available_doctrines(remote=remote)
-    doctrine_info = None
-    for d in doctrines:
-        if d["id"] == doctrine_id:
-            doctrine_info = d
-            break
+    """Set or change the lead ship for a doctrine across one or more markets."""
+    doctrines = get_available_doctrines()
+    doctrine_info = next((d for d in doctrines if d["id"] == doctrine_id), None)
     if not doctrine_info:
         console.print(f"[red]Error: Doctrine {doctrine_id} not found[/red]")
         return False
 
-    # Validate fit exists and get ship info
-    fit_info = get_fit_info(fit_id, remote=remote)
+    fit_info = get_fit_info(fit_id)
     if not fit_info:
         console.print(f"[red]Error: Fit {fit_id} not found[/red]")
         return False
 
-    # Resolve target DB aliases from the market flag
     try:
         target_aliases = _configured_market_db_aliases(market_flag)
     except RuntimeError as e:
         console.print(f"[red]Error: {e}[/red]")
         return False
     if not target_aliases:
-        console.print(
-            f"[red]Error: no DB aliases resolved for market '{market_flag}'[/red]"
-        )
+        console.print(f"[red]Error: no DB aliases resolved for market '{market_flag}'[/red]")
         return False
 
-    # Show what will happen
     console.print()
     info_table = Table(box=box.SIMPLE, show_header=False)
     info_table.add_column("Field", style="dim")
@@ -2515,72 +1845,42 @@ def update_lead_ship_command(
 
     successes = 0
     failures = 0
-    touched: set[str] = set()
-    failed: set[str] = set()
-    for alias in target_aliases:
-        db = DatabaseConfig(alias)
-        engine = db.remote_engine if remote else db.engine
-        loc = f"{alias} ({'remote' if remote else 'local'})"
-        try:
-            with engine.begin() as conn:
-                set_lead_ship(
-                    doctrine_id=doctrine_id,
-                    doctrine_name=doctrine_info["name"],
-                    fit_id=fit_id,
-                    ship_type_id=fit_info["ship_type_id"],
-                    conn=conn,
+    with _uow() as uow:
+        for alias in target_aliases:
+            try:
+                with uow.tx(alias) as conn:
+                    set_lead_ship(
+                        conn,
+                        doctrine_id=doctrine_id,
+                        doctrine_name=doctrine_info["name"],
+                        fit_id=fit_id,
+                        ship_type_id=fit_info["ship_type_id"],
+                    )
+                console.print(
+                    f"[green]✓ Lead ship for doctrine {doctrine_id} set to "
+                    f"{fit_info['ship_name']} (fit {fit_id}) in {alias}[/green]"
                 )
-            console.print(
-                f"[green]✓ Lead ship for doctrine {doctrine_id} set to "
-                f"{fit_info['ship_name']} (fit {fit_id}) in {loc}[/green]"
-            )
-            successes += 1
-            touched.add(alias)
-        except (OperationalError, DatabaseError, ConnectionError, TimeoutError) as e:
-            console.print(f"[yellow]Skipped {loc}: {e}[/yellow]")
-            failures += 1
-            failed.add(alias)
-        except Exception as e:
-            console.print(f"[red]✗ Error in {loc}: {e}[/red]")
-            logger.exception("Error in update_lead_ship_command for %s", loc)
-            failures += 1
-            failed.add(alias)
-        finally:
-            engine.dispose()
+                successes += 1
+            except _DB_ERRORS as e:
+                console.print(f"[yellow]Skipped {alias}: {e}[/yellow]")
+                failures += 1
+            except Exception as e:
+                console.print(f"[red]✗ Error in {alias}: {e}[/red]")
+                logger.exception("Error in update_lead_ship_command for %s", alias)
+                failures += 1
 
-    # Push every touched alias once, after the write loop above, skipping any
-    # alias whose bucket raised (see _execute_market_plan for the same shape).
-    pushed_ok = True
-    for alias in sorted(touched - failed):
-        if not push_or_log(alias):
-            pushed_ok = False
-
-    return successes > 0 and failures == 0 and pushed_ok
+    return successes > 0 and failures == 0 and uow.ok
 
 
 def doctrine_remove_fit_command(
     doctrine_id: Optional[int] = None,
     fit_ids: Optional[List[int]] = None,
-    remote: bool = False,
     interactive: bool = True,
     db_alias: str = "wcmkt",
 ) -> bool:
-    """
-    Remove fit(s) from a doctrine.
+    """Unlink fit(s) from a doctrine in the market database (and fittings if unused elsewhere)."""
+    doctrines = get_available_doctrines()
 
-    This unlinks fits from a doctrine in both the fittings and market databases.
-    The reverse operation of doctrine_add_fit_command.
-
-    Args:
-        doctrine_id: Doctrine to remove the fit(s) from
-        fit_ids: List of fit IDs to remove
-        remote: Use remote database
-        interactive: Use interactive prompts
-        db_alias: Target market database
-
-    Returns:
-        True if at least one fit was successfully removed
-    """
     if interactive:
         console.print(
             Panel(
@@ -2592,421 +1892,248 @@ def doctrine_remove_fit_command(
                 border_style="yellow",
             )
         )
-
-        # Show available doctrines
-        doctrines = get_available_doctrines(remote=remote)
-        if doctrines:
-            console.print()
-            display_doctrines_table(doctrines)
-            console.print()
-        else:
+        if not doctrines:
             console.print("[yellow]No doctrines found.[/yellow]")
             return False
-
-        # Get doctrine ID
+        console.print()
+        display_doctrines_table(doctrines)
+        console.print()
         if doctrine_id is None:
-            doctrine_id = IntPrompt.ask(
-                "[bold]Doctrine ID[/bold] to remove fit(s) from"
-            )
-
-        # Verify doctrine exists
-        doctrine_info = None
-        for d in doctrines:
-            if d["id"] == doctrine_id:
-                doctrine_info = d
-                break
-        if not doctrine_info:
-            console.print(f"[red]Error: Doctrine {
-                          doctrine_id} not found[/red]")
+            doctrine_id = IntPrompt.ask("[bold]Doctrine ID[/bold] to remove fit(s) from")
+    else:
+        if doctrine_id is None:
+            console.print("[red]Error: --doctrine-id is required[/red]")
+            return False
+        if not fit_ids:
+            console.print("[red]Error: --fit-id is required (comma-separated for multiple)[/red]")
             return False
 
-        console.print(
-            f"\n[cyan]Selected doctrine:[/cyan] {doctrine_info['name']}")
+    doctrine_info = next((d for d in doctrines if d["id"] == doctrine_id), None)
+    if not doctrine_info:
+        console.print(f"[red]Error: Doctrine {doctrine_id} not found[/red]")
+        return False
 
-        # Show fits currently in this doctrine
-        existing_fit_ids = get_doctrine_fits(doctrine_id, remote=remote)
+    existing_fit_ids = get_doctrine_fits(doctrine_id)
+    if interactive:
+        console.print(f"\n[cyan]Selected doctrine:[/cyan] {doctrine_info['name']}")
         if not existing_fit_ids:
-            console.print(
-                f"[yellow]This doctrine has no fits to remove.[/yellow]")
+            console.print("[yellow]This doctrine has no fits to remove.[/yellow]")
             return False
-
-        console.print(
-            f"\n[dim]Current fits in doctrine ({len(existing_fit_ids)}):[/dim]"
-        )
-
-        # Display existing fits with details
+        console.print(f"\n[dim]Current fits in doctrine ({len(existing_fit_ids)}):[/dim]")
         fit_table = Table(box=box.SIMPLE)
         fit_table.add_column("Fit ID", style="dim")
         fit_table.add_column("Fit Name", style="white")
         fit_table.add_column("Ship", style="cyan")
-
-        existing_fits_info = []
         for fid in existing_fit_ids:
-            fit_info = get_fit_info(fid, remote=remote)
-            if fit_info:
-                existing_fits_info.append(fit_info)
-                fit_table.add_row(
-                    str(fit_info["fit_id"]
-                        ), fit_info["fit_name"], fit_info["ship_name"]
-                )
+            info = get_fit_info(fid)
+            if info:
+                fit_table.add_row(str(info["fit_id"]), info["fit_name"], info["ship_name"])
             else:
-                fit_table.add_row(
-                    str(fid), "[dim]Unknown[/dim]", "[dim]Unknown[/dim]")
+                fit_table.add_row(str(fid), "[dim]Unknown[/dim]", "[dim]Unknown[/dim]")
         console.print(fit_table)
 
-        # Get fit IDs to remove
-        if fit_ids is None or len(fit_ids) == 0:
+        if not fit_ids:
             fit_input = Prompt.ask(
                 "\n[bold]Fit ID(s)[/bold] to remove (comma-separated for multiple)"
             )
             if not fit_input:
-                console.print(
-                    "[red]Error: At least one fit ID is required[/red]")
+                console.print("[red]Error: At least one fit ID is required[/red]")
                 return False
-            fit_ids = [int(f.strip())
-                       for f in fit_input.split(",") if f.strip()]
+            fit_ids = [int(f.strip()) for f in fit_input.split(",") if f.strip()]
 
-        # Validate fits are in the doctrine
-        valid_fits = []
-        not_in_doctrine = []
-
-        for fid in fit_ids:
-            if fid in existing_fit_ids:
-                fit_info = get_fit_info(fid, remote=remote)
-                if fit_info:
-                    valid_fits.append(fit_info)
-                else:
-                    # Fit is in doctrine but no details available
-                    valid_fits.append(
-                        {
-                            "fit_id": fid,
-                            "fit_name": "Unknown",
-                            "ship_name": "Unknown",
-                            "ship_type_id": 0,
-                        }
-                    )
-            else:
-                not_in_doctrine.append(fid)
-
-        # Report validation results
-        if not_in_doctrine:
-            console.print(
-                f"[yellow]Not in this doctrine (skipping):[/yellow] {
-                    not_in_doctrine}"
+    valid_fits: list[dict] = []
+    not_in_doctrine: list[int] = []
+    for fid in fit_ids:
+        if fid in existing_fit_ids:
+            info = get_fit_info(fid)
+            valid_fits.append(
+                info
+                or {
+                    "fit_id": fid,
+                    "fit_name": "Unknown",
+                    "ship_name": "Unknown",
+                    "ship_type_id": 0,
+                }
             )
+        else:
+            not_in_doctrine.append(fid)
 
-        if not valid_fits:
-            console.print("[red]No valid fits to remove[/red]")
-            return False
+    if not_in_doctrine:
+        console.print(f"[yellow]Not in this doctrine (skipping):[/yellow] {not_in_doctrine}")
+    if not valid_fits:
+        console.print("[red]No valid fits to remove[/red]")
+        return False
 
-        # Display fits to be removed
-        console.print(f"\n[yellow]Fits to remove ({
-                      len(valid_fits)}):[/yellow]")
+    if interactive:
+        console.print(f"\n[yellow]Fits to remove ({len(valid_fits)}):[/yellow]")
         remove_table = Table(box=box.SIMPLE)
         remove_table.add_column("Fit ID", style="dim")
         remove_table.add_column("Fit Name", style="white")
         remove_table.add_column("Ship", style="cyan")
         for fit in valid_fits:
-            remove_table.add_row(
-                str(fit["fit_id"]), fit["fit_name"], fit["ship_name"])
+            remove_table.add_row(str(fit["fit_id"]), fit["fit_name"], fit["ship_name"])
         console.print(remove_table)
 
-        # Confirm
         console.print()
         console.print(
             Panel(
-                f"[bold]Doctrine:[/bold] {doctrine_info['name']
-                                          } (ID: {doctrine_id})\n"
+                f"[bold]Doctrine:[/bold] {doctrine_info['name']} (ID: {doctrine_id})\n"
                 f"[bold]Fits to remove:[/bold] {len(valid_fits)}",
                 title="[bold yellow]Remove Fits Summary[/bold yellow]",
                 border_style="yellow",
             )
         )
-
         if not Confirm.ask(f"Remove {len(valid_fits)} fit(s) from the doctrine?"):
             console.print("[yellow]Cancelled[/yellow]")
             return False
 
-    else:
-        # Non-interactive mode: require both IDs
-        if doctrine_id is None:
-            console.print("[red]Error: --doctrine-id is required[/red]")
-            return False
-        if fit_ids is None or len(fit_ids) == 0:
-            console.print(
-                "[red]Error: --fit-id is required (comma-separated for multiple)[/red]"
-            )
-            return False
-
-        doctrines = get_available_doctrines(remote=remote)
-        doctrine_info = None
-        for d in doctrines:
-            if d["id"] == doctrine_id:
-                doctrine_info = d
-                break
-        if not doctrine_info:
-            console.print(f"[red]Error: Doctrine {
-                          doctrine_id} not found[/red]")
-            return False
-
-        existing_fit_ids = get_doctrine_fits(doctrine_id, remote=remote)
-
-        # Validate fits
-        valid_fits = []
-        not_in_doctrine = []
-
-        for fid in fit_ids:
-            if fid in existing_fit_ids:
-                fit_info = get_fit_info(fid, remote=remote)
-                if fit_info:
-                    valid_fits.append(fit_info)
-                else:
-                    valid_fits.append(
-                        {
-                            "fit_id": fid,
-                            "fit_name": "Unknown",
-                            "ship_name": "Unknown",
-                            "ship_type_id": 0,
-                        }
-                    )
-            else:
-                not_in_doctrine.append(fid)
-
-        if not_in_doctrine:
-            console.print(f"[yellow]Not in doctrine: {
-                          not_in_doctrine}[/yellow]")
-
-        if not valid_fits:
-            console.print("[red]No valid fits to remove[/red]")
-            return False
-
-    # Process all valid fits - REVERSE ORDER of add operations
     success_count = 0
     fail_count = 0
-    touched_aliases: set = set()
+    other_aliases = [a for a in _configured_market_db_aliases() if a != db_alias]
 
-    for fit_info in valid_fits:
-        fit_id = fit_info["fit_id"]
-        try:
-            # Step 1: Remove from doctrines table (market data)
-            rows_removed = remove_doctrines_for_fit(
-                fit_id, remote=remote, db_alias=db_alias
-            )
+    with _uow() as uow:
+        for fit_info in valid_fits:
+            fit_id = fit_info["fit_id"]
+            try:
+                with uow.tx(db_alias) as mconn:
+                    rows_removed = remove_doctrines_for_fit(mconn, fit_id)
+                    remove_doctrine_map(mconn, doctrine_id, fit_id)
+                    remove_doctrine_fits(mconn, doctrine_id, fit_id)
 
-            # Step 2: Remove from doctrine_map
-            remove_doctrine_map(doctrine_id, fit_id,
-                                remote=remote, db_alias=db_alias)
-
-            # Step 3: Remove from doctrine_fits
-            remove_doctrine_fits(doctrine_id, fit_id,
-                                 remote=remote, db_alias=db_alias)
-
-            touched_aliases.add(db_alias)
-
-            # Step 4: Remove from fittings_doctrine_fittings ONLY if the fit
-            # is no longer in this doctrine on ANY market database.
-            still_in_other_market = False
-            for other_alias in _configured_market_db_aliases():
-                if other_alias == db_alias:
-                    continue
-                other_fits = get_doctrine_fits_from_market(
-                    doctrine_id, db_alias=other_alias, remote=remote
+                still_in_other_market = any(
+                    fit_id in get_doctrine_fits_from_market(doctrine_id, db_alias=other_alias)
+                    for other_alias in other_aliases
                 )
-                if fit_id in other_fits:
-                    still_in_other_market = True
-                    break
+                if not still_in_other_market:
+                    with uow.tx("fittings") as fconn:
+                        link_removed = remove_doctrine_link(doctrine_id, fit_id, conn=fconn)
+                    if not link_removed:
+                        uow.touched.discard(uow.db("fittings").alias)
+                else:
+                    logger.info(
+                        f"Fit {fit_id} still in doctrine {doctrine_id} on another market; "
+                        "keeping fittings link"
+                    )
 
-            if not still_in_other_market:
-                link_removed = remove_doctrine_link(doctrine_id, fit_id, remote=remote)
-                if link_removed:
-                    touched_aliases.add("fittings")
-            else:
-                logger.info(
-                    f"Fit {fit_id} still in doctrine {doctrine_id} on another market; "
-                    f"keeping fittings link"
+                console.print(
+                    f"[green]✓ Removed fit {fit_id}: {fit_info['fit_name']} "
+                    f"({rows_removed} doctrine rows)[/green]"
                 )
+                success_count += 1
+            except Exception as e:
+                console.print(f"[red]✗ Failed to remove fit {fit_id}: {e}[/red]")
+                logger.exception(f"Error removing fit {fit_id} from doctrine {doctrine_id}")
+                fail_count += 1
 
-            console.print(
-                f"[green]✓ Removed fit {fit_id}: {fit_info['fit_name']} ({
-                    rows_removed
-                } doctrine rows)[/green]"
-            )
-            success_count += 1
-
-        except Exception as e:
-            console.print(f"[red]✗ Failed to remove fit {fit_id}: {e}[/red]")
-            logger.exception(f"Error removing fit {
-                             fit_id} from doctrine {doctrine_id}")
-            fail_count += 1
-
-    # Summary
     console.print()
     if success_count > 0:
         console.print(
-            f"[green]Successfully removed {success_count} fit(s) from doctrine {
-                doctrine_id
-            }[/green]"
+            f"[green]Successfully removed {success_count} fit(s) from doctrine {doctrine_id}[/green]"
         )
     if fail_count > 0:
         console.print(f"[red]Failed to remove {fail_count} fit(s)[/red]")
 
-    for alias in sorted(touched_aliases):
-        if not push_or_log(alias):
-            return False
-
-    return success_count > 0
+    return success_count > 0 and not uow.push_failed
 
 
 def update_target_command(
     fit_id: int,
     target: int,
     db_alias: str = "wcmkt",
-    remote: bool = False,
     market_flag: str = "primary",
 ) -> bool:
-    """
-    Update the target quantity for a fit.
-
-    Target databases are resolved from ``market_flag`` (config-driven, with
-    market3 shimmed to primary). ``db_alias`` is only a fallback when
-    ``market_flag`` maps to no configured market.
-    """
+    """Update the target quantity for a fit across target markets."""
     target_aliases = sorted(_flag_to_aliases(market_flag))
     if not target_aliases:
         target_aliases = [db_alias]
 
+    stored_flag = "both" if market_flag == "all" else market_flag
     ok = True
-    for alias in target_aliases:
-        if not _update_target_single(
-            fit_id, target, remote=remote, market_flag=market_flag, db_alias=alias
-        ):
-            ok = False
-    return ok
 
+    with _uow() as uow:
+        for alias in target_aliases:
+            try:
+                with uow.read(alias) as rconn:
+                    existing_target = get_fit_target(rconn, fit_id)
+                    if existing_target is None:
+                        console.print(
+                            f"[red]Fit {fit_id} not present in doctrine_fits for {alias} database[/red]"
+                        )
+                        ok = False
+                        continue
+                    row = rconn.execute(
+                        text(
+                            "SELECT fit_name, ship_type_id, ship_name "
+                            "FROM doctrine_fits WHERE fit_id = :fit_id LIMIT 1"
+                        ),
+                        {"fit_id": fit_id},
+                    ).fetchone()
+                    if not row:
+                        console.print(f"[red]Fit {fit_id} not found in doctrine_fits[/red]")
+                        ok = False
+                        continue
+                    fit_name, ship_id, ship_name = row[0], row[1], row[2]
 
-def _update_target_single(
-    fit_id: int,
-    target: int,
-    remote: bool = False,
-    market_flag: str = "primary",
-    db_alias: str = "wcmkt",
-) -> bool:
-    """Update the target quantity for a fit in a single database.
+                with uow.tx(alias) as conn:
+                    conn.execute(
+                        text(
+                            "UPDATE doctrine_fits SET target = :target, market_flag = :market_flag "
+                            "WHERE fit_id = :fit_id"
+                        ),
+                        {"target": target, "market_flag": stored_flag, "fit_id": fit_id},
+                    )
+                    upsert_ship_target(conn, fit_id, fit_name, ship_id, ship_name, target)
 
-    Updates both doctrine_fits.target and ship_targets.ship_target.
-    If the fit does not exist in ship_targets, creates the record using
-    metadata from doctrine_fits.
-    """
-    if market_flag == "all":
-        market_flag = "both"  # canonical stored value (no DB migration)
-    db = DatabaseConfig(db_alias)
-    engine = db.remote_engine if remote else db.engine
-    try:
-        existing_target = get_fit_target(
-            fit_id, remote=remote, db_alias=db_alias)
-        if existing_target is None:
-            console.print(
-                f"[red]Fit {fit_id} not present in doctrine_fits for {db_alias} database[/red]"
-            )
-            return False
+                console.print(
+                    f"[green]Updated target for fit {fit_id} from [yellow]{existing_target}[/yellow] "
+                    f"to [yellow]{target}[/yellow] for {alias}[/green]"
+                )
+            except Exception as e:
+                console.print(f"[red]Failed to update target for fit {fit_id} to {target}: {e}[/red]")
+                logger.exception("Error in update_target_command")
+                ok = False
 
-        # Get fit metadata from doctrine_fits for ship_targets upsert
-        with engine.connect() as conn:
-            row = conn.execute(
-                text(
-                    "SELECT fit_name, ship_type_id, ship_name "
-                    "FROM doctrine_fits WHERE fit_id = :fit_id LIMIT 1"
-                ),
-                {"fit_id": fit_id},
-            ).fetchone()
-
-        if not row:
-            console.print(f"[red]Fit {fit_id} not found in doctrine_fits[/red]")
-            return False
-
-        fit_name, ship_id, ship_name = row[0], row[1], row[2]
-
-        # Update doctrine_fits
-        with engine.connect() as conn:
-            conn.execute(
-                text(
-                    "UPDATE doctrine_fits SET target = :target, market_flag = :market_flag "
-                    "WHERE fit_id = :fit_id"
-                ),
-                {"target": target, "market_flag": market_flag, "fit_id": fit_id},
-            )
-            conn.commit()
-
-        # Upsert ship_targets (creates if missing)
-        upsert_ship_target(
-            fit_id, fit_name, ship_id, ship_name, target,
-            remote=remote, db_alias=db_alias,
-        )
-
-        if not push_or_log(db_alias):
-            return False
-
-        console.print(
-            f"[green]Updated target for fit {fit_id} from [yellow]{existing_target}[/yellow] "
-            f"to [yellow]{target}[/yellow] for {db_alias} (remote: {remote})[/green]"
-        )
-        return True
-    except Exception as e:
-        console.print(f"[red]Failed to update target for fit {fit_id} to {target}: {e}[/red]")
-        logger.exception("Error in _update_target_single")
-        return False
+    return ok and uow.ok
 
 
 def update_friendly_name_command(
     doctrine_id: int,
     friendly_name: str,
-    remote: bool = False,
     db_alias: str = "wcmkt",
 ) -> bool:
-    """Update friendly_name for all fits in a doctrine across every configured market.
-
-    ``db_alias`` and the configured market aliases are deduplicated into a
-    single target-alias loop (each alias is written and pushed exactly
-    once) — this used to write ``db_alias`` twice, once as "local" and
-    again as "remote" whenever it also appeared in the configured markets.
-    """
+    """Update ``friendly_name`` for all fits in a doctrine across every configured market."""
     target_aliases = sorted({db_alias} | set(_configured_market_db_aliases()))
 
     any_success = False
-    for alias in target_aliases:
-        ensure_friendly_name_column(db_alias=alias, remote=False)
-        ok = update_doctrine_friendly_name(doctrine_id, friendly_name, db_alias=alias, remote=False)
-        if not ok:
-            console.print(f"[yellow]No rows found for doctrine_id {doctrine_id} on {alias}[/yellow]")
-            continue
-
-        console.print(f"[green]Updated friendly_name for doctrine_id {doctrine_id} to '{friendly_name}' ({alias})[/green]")
-        if not push_or_log(alias):
-            return False
-        any_success = True
+    with _uow() as uow:
+        for alias in target_aliases:
+            with uow.tx(alias) as conn:
+                ensure_friendly_name_column(conn, db_label=alias)
+                ok = update_doctrine_friendly_name(conn, doctrine_id, friendly_name)
+            if not ok:
+                uow.touched.discard(uow.db(alias).alias)
+                console.print(f"[yellow]No rows found for doctrine_id {doctrine_id} on {alias}[/yellow]")
+                continue
+            console.print(
+                f"[green]Updated friendly_name for doctrine_id {doctrine_id} "
+                f"to '{friendly_name}' ({alias})[/green]"
+            )
+            any_success = True
 
     if not any_success:
-        console.print(f"[red]No rows found for doctrine_id {doctrine_id} on any configured market[/red]")
+        console.print(
+            f"[red]No rows found for doctrine_id {doctrine_id} on any configured market[/red]"
+        )
         return False
 
-    return True
+    return not uow.push_failed
 
 
 def populate_friendly_names_command(
     json_path: str = "doctrine_names.json",
     db_alias: str = "wcmkt",
 ) -> bool:
-    """Bulk populate friendly_names from JSON across every configured market.
-
-    Runs ``populate_friendly_names_from_json`` once per distinct alias in
-    ``{db_alias} ∪ configured market aliases`` and pushes each alias that
-    actually updated a row. Previously this updated ``db_alias`` locally and
-    then re-synced via ``sync_friendly_names_to_remote`` (deleted — same
-    self-referential shape as ``sync_equiv_to_remote``); pushing only the
-    source alias here would silently stop propagating friendly names to the
-    other markets.
-    """
-    import os
+    """Bulk populate ``friendly_name`` from JSON across every configured market."""
     if not os.path.exists(json_path):
         console.print(f"[red]JSON file not found: {json_path}[/red]")
         return False
@@ -3014,17 +2141,18 @@ def populate_friendly_names_command(
     target_aliases = sorted({db_alias} | set(_configured_market_db_aliases()))
 
     any_success = False
-    for alias in target_aliases:
-        ensure_friendly_name_column(db_alias=alias, remote=False)
-        count = populate_friendly_names_from_json(json_path, db_alias=alias, remote=False)
-        console.print(f"[green]Updated {count} rows ({alias})[/green]")
-        if count <= 0:
-            continue
-        if not push_or_log(alias):
-            return False
-        any_success = True
+    with _uow() as uow:
+        for alias in target_aliases:
+            with uow.tx(alias) as conn:
+                ensure_friendly_name_column(conn, db_label=alias)
+                count = populate_friendly_names_from_json(conn, json_path)
+            console.print(f"[green]Updated {count} rows ({alias})[/green]")
+            if count <= 0:
+                uow.touched.discard(uow.db(alias).alias)
+                continue
+            any_success = True
 
     if not any_success:
         console.print("[yellow]No friendly_name rows updated on any configured market[/yellow]")
 
-    return True
+    return not uow.push_failed

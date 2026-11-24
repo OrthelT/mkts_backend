@@ -24,8 +24,8 @@ from mkts_backend.cli_tools.market_args import (
     resolve_market_alias_interactive,
 )
 from mkts_backend.cli_tools.prompter import get_multiline_input
-from mkts_backend.cli_tools.push import push_or_log
 from mkts_backend.config.logging_config import configure_logging
+from mkts_backend.db.unit_of_work import ReplicaUnitOfWork
 from mkts_backend.utils.parse_fits import parse_fit_metadata, update_fit_workflow
 from rich.prompt import Confirm, IntPrompt
 
@@ -141,21 +141,17 @@ def _write_fit(
     clear_existing: bool = True,
     dry_run: bool = False,
 ) -> bool:
-    """Run ``update_fit_workflow`` for each market, then push each replica once."""
-    touched: set[str] = set()
-    result = None
-    for alias in db_aliases:
+    """Run ``update_fit_workflow`` across ``db_aliases`` and push each replica once."""
+    if dry_run:
         result = update_fit_workflow(
             fit_id=fit_id,
             fit_file=fit_file,
             fit_metadata_file=meta_file,
             clear_existing=clear_existing,
-            dry_run=dry_run,
-            target_alias=alias,
+            dry_run=True,
+            target_aliases=db_aliases,
             metadata_override=metadata_override,
-            touched_aliases=touched,
         )
-    if dry_run:
         print("Dry run: nothing was saved.")
         print(f"Ship: {result['ship_name']} ({result['ship_type_id']})")
         print(f"Items: {len(result['items'])}")
@@ -163,9 +159,20 @@ def _write_fit(
             print(f"Items with no type ID: {result['missing_items']}")
         print(f"Markets: {', '.join(db_aliases)}")
         return True
-    for alias in sorted(touched):
-        if not push_or_log(alias):
-            return False
+
+    with ReplicaUnitOfWork() as uow:
+        update_fit_workflow(
+            fit_id=fit_id,
+            fit_file=fit_file,
+            fit_metadata_file=meta_file,
+            clear_existing=clear_existing,
+            dry_run=False,
+            target_aliases=db_aliases,
+            metadata_override=metadata_override,
+            uow=uow,
+        )
+    if not uow.ok:
+        return False
     print(f"Saved fit {fit_id} to {', '.join(db_aliases)}")
     return True
 

@@ -147,7 +147,8 @@ identical default-market/help handling.
   unlisted items. `add` requires `--file` or `--paste`, and exactly one of
   `--interactive` or `--meta-file`. Only `add` and `update` support `--dry-run`.
 - `fit-manager` rejects `--remote`, `--local-only`, and `--update-targets`; all
-  three were inert. The `remote=` parameters inside `fit_update.py` remain.
+  three were inert, and the legacy `remote=` parameters and `remote_engine`
+  alias have been removed.
 - `--fit-id` takes a comma-separated list only on `doctrine-add-fit` and
   `doctrine-remove-fit`. `doctrine-add-fit` always prompts for the doctrine and
   rejects `--doctrine-id`; do not promise unattended use.
@@ -200,11 +201,11 @@ upsert shared `structures`, not market databases.
 
 ## Replica verification and recovery
 
-`DatabaseConfig.engine` and `remote_engine` share the same engine. Before engine
-or raw connection access, `assert_remote_compatible()` rejects a known mismatch
-between the remote in `-info` and the configured URL. Comparison uses host and
-path, ignoring scheme and trailing slash; unknown metadata returns `None`, not
-proof of compatibility.
+`DatabaseConfig.engine` is the sole SQLAlchemy engine (sync-dialect for
+Turso-managed replicas). Before engine or raw connection access,
+`assert_remote_compatible()` rejects a known mismatch between the remote in
+`-info` and the configured URL. Comparison uses host and path, ignoring scheme
+and trailing slash; unknown metadata returns `None`, not proof of compatibility.
 
 `verify_db_exists()` handles missing DB/metadata pairs by rebuilding and pulling.
 When both exist it checks remote compatibility and calls `heal_metadata()`.
@@ -221,8 +222,8 @@ use a plain `sqlite+turso` connection for a sync-managed replica.
 
 pyturso is **local-first and bidirectional**, which inverts the old libsql rule:
 
-- Every engine — `db.engine` and its alias `db.remote_engine` — writes to the
-  **local** replica. There is no direct-to-cloud engine any more.
+- `db.engine` writes to the **local** replica. There is no direct-to-cloud
+  engine (`remote_engine` and `remote=` parameters have been removed).
 - A write lands in the local CDC queue on `commit()` and reaches Turso only when
   `db.push()` runs.
 - `db.sync()` / `db.pull()` bring remote changes down.
@@ -232,10 +233,11 @@ pyturso is **local-first and bidirectional**, which inverts the old libsql rule:
   baseline `pull()` needs and panicking turso core (`wal.rs` `frame_watermark`).
 
 **Consequence for writers:** any code path that writes must end with a `push()`.
-Every CLI-reachable writer and operator script does so as of this branch. Many
-call sites still name `remote_engine` (and still take a `remote=` parameter);
-both are inert aliases of the local engine, so a new writer must add its own
-`push()` rather than assume `remote_engine` reaches Turso.
+Management commands coordinate multi-replica transactions, engine disposal, and
+end-of-command pushing through `ReplicaUnitOfWork` (`db/unit_of_work.py`), while
+low-level helpers in `utils/doctrine_update.py` take a plain SQLAlchemy `conn`.
+`ReplicaUnitOfWork` disposes pooled `TursoSyncDialect` engines before calling
+`push()` so no idle `ConnectionSync` handles block WAL checkpointing.
 
 **Convergence when a push is skipped or fails:** a stranded write sits in the
 local CDC queue until some later command pushes that alias. Market databases

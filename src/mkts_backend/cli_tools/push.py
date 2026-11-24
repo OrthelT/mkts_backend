@@ -16,8 +16,8 @@ logger = configure_logging(__name__)
 console = Console()
 
 
-def push_or_log(alias: str) -> bool:
-    """Push ``alias``'s pending local writes to Turso.
+def push_db(db: DatabaseConfig) -> bool:
+    """Push ``db``'s pending local writes to Turso.
 
     Callers decide what a failure means for their command — this only
     attempts the push and reports it.
@@ -27,9 +27,19 @@ def push_or_log(alias: str) -> bool:
         printed to the console).
     """
     try:
-        DatabaseConfig(alias).push()
+        db.push()
         return True
     except Exception as exc:
-        logger.exception(f"{alias}: push failed: {exc}")
-        console.print(f"[red]Push failed for {alias}: {exc}[/red]")
+        logger.exception(f"{db.alias}: push failed: {exc}")
+        console.print(f"[red]Push failed for {db.alias}: {exc}[/red]")
         return False
+
+
+def push_or_log(alias: str) -> bool:
+    """Push ``alias``'s pending local writes to Turso.
+
+    Returns:
+        True if the push succeeded, False if it raised (already logged and
+        printed to the console).
+    """
+    return push_db(DatabaseConfig(alias))

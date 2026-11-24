@@ -77,7 +77,6 @@ class TestLoadAndSaveESICache:
 
         mock_db = MagicMock()
         mock_db.engine = engine
-        mock_db.remote_engine = engine
 
         with patch("mkts_backend.db.db_handlers._get_db", return_value=mock_db):
             results = [
@@ -103,7 +102,6 @@ class TestLoadAndSaveESICache:
 
         mock_db = MagicMock()
         mock_db.engine = engine
-        mock_db.remote_engine = engine
 
         with patch("mkts_backend.db.db_handlers._get_db", return_value=mock_db):
             save_esi_cache(
@@ -130,7 +128,6 @@ class TestLoadAndSaveESICache:
 
         mock_db = MagicMock()
         mock_db.engine = engine
-        mock_db.remote_engine = engine
 
         with patch("mkts_backend.db.db_handlers._get_db", return_value=mock_db):
             save_esi_cache(
@@ -149,7 +146,6 @@ class TestLoadAndSaveESICache:
 
         mock_db = MagicMock()
         mock_db.engine = engine
-        mock_db.remote_engine = engine
 
         with patch("mkts_backend.db.db_handlers._get_db", return_value=mock_db):
             save_esi_cache(

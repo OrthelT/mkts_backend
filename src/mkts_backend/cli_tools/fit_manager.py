@@ -205,7 +205,10 @@ def _run_add(inv: Invocation) -> bool:
         _selected_db_aliases(inv),
         meta_file=meta_file,
         dry_run=dry_run,
-        market_flag=inv.market,
+        # doctrine_fits.market_flag stores assignment values only. Any other
+        # market passes None: a new row gets "primary", an existing row keeps
+        # its flag.
+        market_flag=inv.market if inv.market in MARKETS_ASSIGNMENT.split(", ") else None,
     )
 
 

@@ -229,9 +229,11 @@ class TestReplicaUnitOfWork:
         assert uow.pushed == {"b_ok"}
         assert dbs["b_ok"].pushes == 1
 
-    def test_uncaught_exception_skips_all_pushes_and_disposes_engines(
+    def test_uncaught_exception_still_pushes_committed_aliases(
         self, tmp_path, fake_db_factory
     ):
+        """A committed transaction is already in the local CDC queue, so an
+        exception later in the block must not skip its push."""
         db = fake_db_factory(tmp_path / "m.db", alias="m")
         _init_items_table(db)
         disposed = []
@@ -244,8 +246,48 @@ class TestReplicaUnitOfWork:
                     conn.execute(text("INSERT INTO items VALUES (1, 'committed')"))
                 raise ValueError("abort")
 
-        assert db.pushes == 0
+        assert db.pushes == 1
         assert len(disposed) >= 1
+
+    def test_keyboard_interrupt_skips_pushes(self, tmp_path, fake_db_factory):
+        db = fake_db_factory(tmp_path / "m.db", alias="m")
+        _init_items_table(db)
+
+        with pytest.raises(KeyboardInterrupt):
+            with ReplicaUnitOfWork(db_factory=lambda _: db) as uow:
+                with uow.tx("m") as conn:
+                    conn.execute(text("INSERT INTO items VALUES (1, 'committed')"))
+                raise KeyboardInterrupt
+
+        assert db.pushes == 0
+
+    def test_tx_records_failure_when_replica_cannot_be_resolved(self):
+        def factory(alias):
+            raise RuntimeError(f"{alias}: remote mismatch")
+
+        with ReplicaUnitOfWork(db_factory=factory) as uow:
+            with pytest.raises(RuntimeError, match="remote mismatch"):
+                with uow.tx("m"):
+                    pass
+
+        assert uow.failed == {"m"}
+        assert uow.ok is False
+
+    def test_tx_records_failure_when_engine_cannot_be_opened(self):
+        class _BrokenDb:
+            alias = "m_canonical"
+
+            @property
+            def engine(self):
+                raise RuntimeError("remote mismatch")
+
+        with ReplicaUnitOfWork(db_factory=lambda _: _BrokenDb()) as uow:
+            with pytest.raises(RuntimeError, match="remote mismatch"):
+                with uow.tx("m"):
+                    pass
+
+        assert uow.failed == {"m_canonical"}
+        assert uow.ok is False
 
     def test_auto_push_false_skips_pushes(self, tmp_path, fake_db_factory):
         db = fake_db_factory(tmp_path / "m.db", alias="m")

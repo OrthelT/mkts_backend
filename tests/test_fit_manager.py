@@ -18,6 +18,7 @@ from mkts_backend.cli_tools.command_registry import (
     removed_command_message,
 )
 from mkts_backend.cli_tools.fit_manager import (
+    MARKETS_ASSIGNMENT,
     PROG,
     SUBCOMMANDS,
     format_overview_help,
@@ -231,6 +232,22 @@ class TestAdd:
         assert workflow.call_args.kwargs["target_aliases"] == [DEPLOYMENT_DB]
         assert workflow.call_args.kwargs["fit_id"] == 313
         assert workflow.call_args.kwargs["clear_existing"] is True
+
+    def test_meta_file_add_passes_only_assignment_markets_as_market_flag(
+        self, tmp_path, workflow
+    ):
+        """``doctrine_fits.market_flag`` stores assignment values only. Any
+        other configured market passes ``None``, which inserts ``primary``
+        and leaves an existing row's flag unchanged."""
+        meta = _meta_file(tmp_path)
+        assignment_markets = MARKETS_ASSIGNMENT.split(", ")
+        for market in [*MARKET_DB_MAP, "all"]:
+            handle_fit_manager(
+                ["add", "--file=fit.txt", f"--meta-file={meta}", f"--market={market}"],
+                market,
+            )
+            expected = market if market in assignment_markets else None
+            assert workflow.call_args.kwargs["market_flag"] == expected, market
 
     def test_add_requires_exactly_one_metadata_source(self, tmp_path, workflow):
         meta = _meta_file(tmp_path)

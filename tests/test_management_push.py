@@ -658,6 +658,50 @@ class TestFittingsPush:
         for alias in expected_markets:
             assert dbs[alias].pushes == 1, {a: d.pushes for a, d in dbs.items()}
 
+    def test_add_fails_when_one_market_replica_cannot_be_opened(
+        self, tmp_path, monkeypatch, fake_db_factory, capsys
+    ):
+        """A market replica that raises before its transaction starts (for
+        example a remote mismatch) must fail the command. The fittings write
+        and the healthy markets still push."""
+        from mkts_backend.config.market_context import MarketContext
+
+        markets = sorted(
+            MarketContext.from_settings(m).database_alias
+            for m in MarketContext.list_available()
+        )
+        assert len(markets) > 1, "test requires more than one configured market"
+        broken = markets[-1]
+
+        dbs = {}
+        healthy_factory = _fittings_workflow_dbs_factory(tmp_path, fake_db_factory, dbs)
+
+        def factory(alias=None, market_context=None):
+            if (alias or market_context.database_alias) == broken:
+                raise RuntimeError(f"{broken}: remote mismatch")
+            return healthy_factory(alias, market_context)
+
+        _patch_fittings_workflow_dbs(monkeypatch, factory)
+        monkeypatch.setattr(
+            "mkts_backend.utils.db_utils.get_type_info",
+            lambda type_ids, remote=False: _fake_multi_type_info(type_ids),
+        )
+
+        fit_file = _write_fittings_eft_fixture(tmp_path, suffix="_broken")
+        meta_file = _write_fittings_meta_fixture(
+            tmp_path, fit_id=99003, doctrine_id=503, suffix="_broken"
+        )
+
+        assert handle_fit_manager(
+            ["add", f"--file={fit_file}", f"--meta-file={meta_file}", "--market=all"],
+            "all",
+        ) is False
+
+        assert "Saved fit" not in capsys.readouterr().out
+        assert dbs["fittings"].pushes == 1
+        for alias in markets[:-1]:
+            assert dbs[alias].pushes == 1, {a: d.pushes for a, d in dbs.items()}
+
 
 class TestCreateDoctrineCommandPush:
     """``create_doctrine_command`` calls ``create_doctrine`` exactly once

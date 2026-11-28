@@ -280,54 +280,45 @@ def display_doctrines_table(doctrines: List[dict]) -> None:
     console.print(table)
 
 
-def _prompt_create_doctrine() -> tuple[Optional[int], Optional[str]]:
-    """Interactive prompt to create a new doctrine in ``fittings`` and push it."""
+def _prompt_new_doctrine() -> tuple[Optional[int], Optional[str], Optional[dict]]:
+    """Prompt for a new doctrine. Writes nothing.
+
+    Returns ``(doctrine_id, name, create_args)``. ``create_args`` holds the
+    ``create_doctrine`` arguments for the caller to write once the user has
+    confirmed the fit. It is ``None`` when the ID already exists, and ``name``
+    is then the stored name.
+    """
     next_id = get_next_doctrine_id()
     new_doctrine_id = IntPrompt.ask("[bold]New doctrine ID[/bold]", default=next_id)
     new_doctrine_name = Prompt.ask("[bold]New doctrine name[/bold]")
     if not new_doctrine_name:
         console.print("[red]Error: Doctrine name is required[/red]")
-        return None, None
+        return None, None, None
     new_doctrine_desc = Prompt.ask("[bold]Description[/bold]", default="")
 
-    existing_name: Optional[str] = None
-    with _uow() as uow:
+    with _uow(auto_push=False) as uow:
         with uow.read("fittings") as fconn:
             existing_row = fconn.execute(
                 text("SELECT name FROM fittings_doctrine WHERE id = :doctrine_id"),
                 {"doctrine_id": new_doctrine_id},
             ).fetchone()
-        if existing_row is None:
-            with uow.tx("fittings", auto_touch=False) as fconn:
-                success = create_doctrine(
-                    doctrine_id=new_doctrine_id,
-                    name=new_doctrine_name,
-                    description=new_doctrine_desc,
-                    conn=fconn,
-                )
-                if not success:
-                    fallback_row = fconn.execute(
-                        text("SELECT name FROM fittings_doctrine WHERE id = :doctrine_id"),
-                        {"doctrine_id": new_doctrine_id},
-                    ).fetchone()
-                    existing_name = fallback_row[0] if fallback_row else None
-            if success:
-                uow.mark_touched("fittings")
-        else:
-            existing_name = existing_row[0]
-            success = False
 
-    if success:
-        if not uow.ok:
-            return None, None
-        console.print(f"[green]Created doctrine {new_doctrine_id}: {new_doctrine_name}[/green]")
-        return new_doctrine_id, new_doctrine_name
+    if existing_row is not None:
+        console.print(
+            f"[yellow]Doctrine {new_doctrine_id} ('{existing_row[0]}') already exists, "
+            "using it[/yellow]"
+        )
+        return new_doctrine_id, existing_row[0], None
 
-    resolved_name = existing_name or new_doctrine_name
     console.print(
-        f"[yellow]Doctrine {new_doctrine_id} ('{resolved_name}') already exists, using it[/yellow]"
+        f"[dim]Doctrine {new_doctrine_id} ({new_doctrine_name}) will be created "
+        "with the fit[/dim]"
     )
-    return new_doctrine_id, resolved_name
+    return new_doctrine_id, new_doctrine_name, {
+        "doctrine_id": new_doctrine_id,
+        "name": new_doctrine_name,
+        "description": new_doctrine_desc,
+    }
 
 
 def interactive_add_fit(
@@ -388,6 +379,7 @@ def interactive_add_fit(
     doctrines = get_available_doctrines()
     doctrine_ids: list[int] = []
     doctrine_name_map = {d["id"]: d["name"] for d in doctrines} if doctrines else {}
+    new_doctrine: Optional[dict] = None
 
     if doctrines:
         console.print("\n[cyan]Existing doctrines:[/cyan]")
@@ -415,12 +407,11 @@ def interactive_add_fit(
                     doctrine_ids = [did for did in doctrine_ids if did in existing_ids]
         elif action == "new":
             console.print("\n[cyan]Creating a new doctrine:[/cyan]")
-            new_id, new_name = _prompt_create_doctrine()
+            new_id, new_name, new_doctrine = _prompt_new_doctrine()
             if new_id is None:
                 return False
             doctrine_ids = [new_id]
-            if new_name:
-                doctrine_name_map[new_id] = new_name
+            doctrine_name_map[new_id] = new_name
         else:
             console.print("[yellow]Skipping doctrine assignment[/yellow]")
             if not Confirm.ask("Continue without doctrine assignment?"):
@@ -428,12 +419,11 @@ def interactive_add_fit(
     else:
         console.print("[yellow]No doctrines found in database[/yellow]")
         if Confirm.ask("Create a new doctrine now?"):
-            new_id, new_name = _prompt_create_doctrine()
+            new_id, new_name, new_doctrine = _prompt_new_doctrine()
             if new_id is None:
                 return False
             doctrine_ids = [new_id]
-            if new_name:
-                doctrine_name_map[new_id] = new_name
+            doctrine_name_map[new_id] = new_name
         else:
             console.print("[yellow]Warning: Continuing without doctrine assignment[/yellow]")
 
@@ -502,6 +492,14 @@ def interactive_add_fit(
             target_aliases = [target_alias]
 
         with _uow() as uow:
+            if new_doctrine:
+                with uow.tx("fittings") as fconn:
+                    create_doctrine(**new_doctrine, conn=fconn)
+                console.print(
+                    f"[green]Created doctrine {new_doctrine['doctrine_id']}: "
+                    f"{new_doctrine['name']}[/green]"
+                )
+
             update_fit_workflow(
                 fit_id=fit_id,
                 fit_file=fit_file,
@@ -513,10 +511,11 @@ def interactive_add_fit(
             )
 
             for alias in target_aliases:
-                canonical = uow.db(alias).alias
-                if canonical in uow.failed:
+                if alias in uow.failed:
                     continue
                 try:
+                    if uow.db(alias).alias in uow.failed:
+                        continue
                     with uow.tx(alias) as conn:
                         update_fit_market_flag(conn, fit_id, market_flag, db_label=alias)
                         for did in doctrine_ids:
@@ -1706,7 +1705,7 @@ def doctrine_add_fit_command(
                             _report_lead_ship(adopted, doctrine_fit.fit_id, doctrine_fit.doctrine_id)
                     for _, doctrine_fit, _ in prepared:
                         fit_alias_success[doctrine_fit.fit_id] += 1
-                except _DB_ERRORS as e:
+                except Exception as e:
                     console.print(
                         f"[yellow]Bucket {alias} failed "
                         f"(rolled back at fit {current_fit_id}): {e}[/yellow]"

@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import importlib
 import json
+from types import SimpleNamespace
+
 import pandas as pd
 from sqlalchemy import text
 
@@ -390,10 +392,11 @@ class TestFinding6PromptCreateDoctrineExistingName:
         answers = iter(["Wrong Typed Name", "some desc"])
         monkeypatch.setattr(fit_update.Prompt, "ask", lambda *a, **k: next(answers))
 
-        doc_id, doc_name = fit_update._prompt_create_doctrine()
+        doc_id, doc_name, create_args = fit_update._prompt_new_doctrine()
 
         assert doc_id == 42
         assert doc_name == "Canonical Doctrine Name"
+        assert create_args is None
         assert fittings_db.pushes == 0
 
 
@@ -658,3 +661,177 @@ class TestFinding10WatchlistPrepInsideUow:
         assert dbs["aliasA"].pushes == 0
         with dbs["aliasA"].engine.connect() as conn:
             assert conn.execute(text("SELECT COUNT(*) FROM watchlist")).scalar() == 0
+
+
+class TestDoctrineAddFitNonDbError:
+    def test_non_db_error_in_watchlist_prep_fails_the_market_and_still_pushes_fittings(
+        self, tmp_path, monkeypatch, fake_db_factory
+    ):
+        dbs = {}
+
+        def factory(alias=None, market_context=None):
+            key = alias or market_context.database_alias
+            if key not in dbs:
+                db = fake_db_factory(tmp_path / f"{key}.db", alias=key)
+                with db.engine.begin() as conn:
+                    if key == "fittings":
+                        conn.execute(text(
+                            "CREATE TABLE fittings_fittingitem (fit_id INTEGER, type_id INTEGER)"
+                        ))
+                        conn.execute(text("INSERT INTO fittings_fittingitem VALUES (1, 2048)"))
+                    elif key != "sde":
+                        conn.execute(text(
+                            "CREATE TABLE watchlist (type_id INTEGER PRIMARY KEY, "
+                            "type_name TEXT, group_id INTEGER, group_name TEXT, "
+                            "category_id INTEGER, category_name TEXT)"
+                        ))
+                dbs[key] = db
+            return dbs[key]
+
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(fit_update, "DatabaseConfig", factory)
+        monkeypatch.setattr(
+            fit_update, "_configured_market_db_aliases", lambda *a, **k: ["aliasA"]
+        )
+        monkeypatch.setattr(fit_update, "get_doctrine_fits_from_market", lambda *a, **k: [])
+        monkeypatch.setattr(
+            fit_update, "get_available_doctrines", lambda: [{"id": 10, "name": "D"}]
+        )
+        monkeypatch.setattr(
+            fit_update, "get_fit_info",
+            lambda fid: {"fit_id": fid, "fit_name": "F", "ship_name": "Rifter", "ship_type_id": 587},
+        )
+        monkeypatch.setattr(fit_update, "_lookup_fit_target", lambda *a, **k: None)
+        monkeypatch.setattr(fit_update, "ensure_doctrine_link", lambda *a, **k: None)
+        # A NaN group_id makes int() raise ValueError inside the watchlist insert.
+        monkeypatch.setattr(
+            "mkts_backend.utils.db_utils.get_type_info",
+            lambda type_ids: pd.DataFrame([
+                {
+                    "type_id": tid, "type_name": f"Type {tid}", "group_id": float("nan"),
+                    "group_name": "G", "category_id": 6, "category_name": "C",
+                }
+                for tid in type_ids
+            ]),
+        )
+
+        class _FakeDF:
+            @classmethod
+            def from_connections(cls, fconn, sconn, doctrine_id, fit_id, target):
+                return DoctrineFit.from_resolved(
+                    doctrine_id=doctrine_id, fit_id=fit_id, target=target,
+                    doctrine_name="D", fit_name="F", ship_type_id=587, ship_name="Rifter",
+                )
+
+        monkeypatch.setattr(fit_update, "DoctrineFit", _FakeDF)
+
+        result = fit_update.doctrine_add_fit_command(
+            doctrine_id=10, fit_ids=[1], target=100, market_flag="primary",
+            interactive=False, db_alias="aliasA",
+        )
+
+        assert result is False
+        assert dbs["fittings"].pushes == 1, "the committed fittings link must be pushed"
+        assert dbs["aliasA"].pushes == 0, "the rolled-back market must not be pushed"
+
+
+class TestInteractiveAddDefersDoctrineCreation:
+    """``fit-manager add --interactive`` with a new doctrine writes nothing
+    before the dry-run check and the final confirmation."""
+
+    def _setup(self, tmp_path, monkeypatch, fake_db_factory, *, proceed=True):
+        dbs = {}
+
+        def factory(alias=None, market_context=None):
+            key = alias or market_context.database_alias
+            if key not in dbs:
+                db = fake_db_factory(tmp_path / f"{key}.db", alias=key)
+                if key == "fittings":
+                    with db.engine.begin() as conn:
+                        conn.execute(text(
+                            "CREATE TABLE fittings_doctrine (id INTEGER PRIMARY KEY, name TEXT, "
+                            "icon_url TEXT, description TEXT, created TEXT, last_updated TEXT)"
+                        ))
+                dbs[key] = db
+            return dbs[key]
+
+        answers = {
+            "Fit description": "fit desc",
+            "Choose action": "new",
+            "New doctrine ID": 77,
+            "New doctrine name": "Typed Doctrine",
+            "]Description[": "doctrine desc",
+            "Target quantity": 100,
+            "Fit ID": 500,
+            "Market assignment": "primary",
+            "Proceed with adding": proceed,
+        }
+
+        def ask(prompt, *args, **kwargs):
+            for key, value in answers.items():
+                if key in prompt:
+                    return value
+            raise AssertionError(f"unexpected prompt: {prompt}")
+
+        for prompt_cls in (fit_update.Prompt, fit_update.IntPrompt, fit_update.Confirm):
+            monkeypatch.setattr(prompt_cls, "ask", ask)
+
+        monkeypatch.setattr(fit_update, "DatabaseConfig", factory)
+        monkeypatch.setattr(fit_update, "get_next_doctrine_id", lambda: 77)
+        monkeypatch.setattr(
+            fit_update, "get_available_doctrines", lambda: [{"id": 1, "name": "Existing"}]
+        )
+        monkeypatch.setattr(
+            fit_update, "parse_eft_file",
+            lambda path: SimpleNamespace(
+                ship_name="Rifter", fit_name="F", items=[], has_missing_types=False,
+                missing_types=[], ship_type_id=587,
+            ),
+        )
+        monkeypatch.setattr(fit_update, "update_fit_workflow", lambda **kwargs: None)
+        monkeypatch.setattr(fit_update, "update_fit_market_flag", lambda *a, **k: None)
+        monkeypatch.setattr(fit_update, "upsert_lead_ship", lambda *a, **k: False)
+        return dbs, factory
+
+    def _doctrine_rows(self, factory):
+        with factory("fittings").engine.connect() as conn:
+            return conn.execute(text("SELECT id, name FROM fittings_doctrine")).fetchall()
+
+    def test_dry_run_does_not_create_or_push_the_new_doctrine(
+        self, tmp_path, monkeypatch, fake_db_factory
+    ):
+        dbs, factory = self._setup(tmp_path, monkeypatch, fake_db_factory)
+
+        result = fit_update.interactive_add_fit(
+            fit_file="fit.txt", dry_run=True, target_alias="aliasA", market_flag="primary"
+        )
+
+        assert result is True
+        assert self._doctrine_rows(factory) == []
+        assert dbs["fittings"].pushes == 0
+
+    def test_declining_the_confirmation_does_not_create_the_new_doctrine(
+        self, tmp_path, monkeypatch, fake_db_factory
+    ):
+        dbs, factory = self._setup(tmp_path, monkeypatch, fake_db_factory, proceed=False)
+
+        result = fit_update.interactive_add_fit(
+            fit_file="fit.txt", target_alias="aliasA", market_flag="primary"
+        )
+
+        assert result is False
+        assert self._doctrine_rows(factory) == []
+        assert dbs["fittings"].pushes == 0
+
+    def test_confirmed_add_creates_the_doctrine_with_the_typed_name_and_pushes_once(
+        self, tmp_path, monkeypatch, fake_db_factory
+    ):
+        dbs, factory = self._setup(tmp_path, monkeypatch, fake_db_factory)
+
+        result = fit_update.interactive_add_fit(
+            fit_file="fit.txt", target_alias="aliasA", market_flag="primary"
+        )
+
+        assert result is True
+        assert [tuple(r) for r in self._doctrine_rows(factory)] == [(77, "Typed Doctrine")]
+        assert dbs["fittings"].pushes == 1

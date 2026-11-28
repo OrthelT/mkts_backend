@@ -29,8 +29,10 @@ Guarantees:
   ``uow.failed`` records the rollback and ``uow.ok`` is ``False``.
 - A push failure for one alias is logged and recorded in ``uow.failed_pushes``
   without aborting pushes for the remaining aliases.
-- If an uncaught exception escapes the ``with`` block, all engines are still
-  disposed and no pushes are attempted.
+- If an uncaught ``Exception`` escapes the ``with`` block, all engines are
+  still disposed and ``self.touched`` is still pushed: those transactions
+  already committed to the local CDC queue, so skipping the push would only
+  strand them. ``KeyboardInterrupt`` and ``SystemExit`` skip the pushes.
 """
 
 from __future__ import annotations
@@ -100,8 +102,9 @@ class ReplicaUnitOfWork:
     def engine(self, alias: str) -> Engine:
         """Return the cached engine for ``alias`` and register it for disposal."""
         db = self.db(alias)
+        engine = db.engine
         self._engines_opened.add(getattr(db, "alias", alias))
-        return db.engine
+        return engine
 
     @contextmanager
     def read(self, alias: str) -> Iterator[Connection]:
@@ -122,24 +125,28 @@ class ReplicaUnitOfWork:
 
         Re-entering ``tx()`` for an alias that already has an active
         transaction yields the existing connection without starting a second
-        transaction. If the outermost transaction rolls back, the alias is
-        recorded in ``self.failed`` and the exception propagates.
+        transaction. If the replica cannot be opened or the outermost
+        transaction rolls back, the alias is recorded in ``self.failed`` and
+        the exception propagates.
 
         Pass ``auto_touch=False`` when the transaction may be a no-op and the
         caller wants to call :meth:`mark_touched` only after confirming rows
         changed — this avoids ever calling ``touched.discard()`` and erasing
         an earlier committed transaction on the same alias.
         """
-        db = self.db(alias)
+        try:
+            db = self.db(alias)
+        except Exception:
+            self.failed.add(alias)
+            raise
         canonical = getattr(db, "alias", alias)
         active = self._active_conns.get(canonical)
         if active is not None:
             yield active
             return
 
-        engine = self.engine(canonical)
         try:
-            with engine.begin() as conn:
+            with self.engine(canonical).begin() as conn:
                 self._active_conns[canonical] = conn
                 try:
                     yield conn
@@ -202,7 +209,7 @@ class ReplicaUnitOfWork:
     def __exit__(self, exc_type, exc_val, exc_tb) -> bool:
         try:
             self.dispose_all()
-            if exc_type is None and self._auto_push:
+            if self._auto_push and (exc_type is None or issubclass(exc_type, Exception)):
                 self.push_touched()
         finally:
             self.dispose_all()
